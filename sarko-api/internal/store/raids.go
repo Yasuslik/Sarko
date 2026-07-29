@@ -162,65 +162,21 @@ func debitItemsTx(ctx context.Context, tx pgx.Tx, playerID string, stacks []doma
 	return nil
 }
 
-// sweepPlayerTx closes this player's expired raids inside an existing transaction.
-// Pending sessions never entered the map, so their loadout goes back; active
-// sessions ran out of time, which counts as death (§11).
+// sweepPlayerTx closes this player's expired raids inside an existing
+// transaction. Pending sessions never entered the map, so their loadout goes
+// back; active sessions ran out of time, which counts as death (§11). The
+// scan-then-close logic is shared with SweepExpired via closeExpiredTx
+// (sweeper.go); this just scopes the query to one player and one already-open
+// transaction, so no SKIP LOCKED is needed here — the caller already holds
+// the player's garage_progress row lock (see StartRaid).
 func sweepPlayerTx(ctx context.Context, tx pgx.Tx, playerID string) error {
 	// state is cast to text: pgx has no type mapping for our custom enum OIDs,
 	// so every enum column is read and written as text throughout this package.
-	rows, err := tx.Query(ctx,
-		`SELECT id, state::text, loadout FROM raid_sessions
+	_, _, err := closeExpiredTx(ctx, tx,
+		`SELECT id, player_id, state::text, loadout FROM raid_sessions
 		 WHERE player_id = $1 AND state IN ('pending', 'active') AND expires_at <= now()
 		 FOR UPDATE`, playerID)
-	if err != nil {
-		return fmt.Errorf("select expired: %w", err)
-	}
-
-	type expired struct {
-		id      string
-		state   domain.RaidState
-		loadout []domain.ItemStack
-	}
-	var batch []expired
-
-	for rows.Next() {
-		var e expired
-		var raw []byte
-		var state string
-		if err := rows.Scan(&e.id, &state, &raw); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan expired: %w", err)
-		}
-		e.state = domain.RaidState(state)
-		if err := json.Unmarshal(raw, &e.loadout); err != nil {
-			rows.Close()
-			return fmt.Errorf("unmarshal loadout: %w", err)
-		}
-		batch = append(batch, e)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate expired: %w", err)
-	}
-
-	for _, e := range batch {
-		if e.state == domain.StatePending {
-			if err := addItemsTx(ctx, tx, playerID, e.loadout); err != nil {
-				return err
-			}
-			_, err = tx.Exec(ctx,
-				`UPDATE raid_sessions SET state = 'voided', closed_at = now() WHERE id = $1`, e.id)
-		} else {
-			_, err = tx.Exec(ctx,
-				`UPDATE raid_sessions
-				 SET state = 'closed', outcome = 'died', closed_at = now(), result_items = '[]'::jsonb
-				 WHERE id = $1`, e.id)
-		}
-		if err != nil {
-			return fmt.Errorf("close expired session %s: %w", e.id, err)
-		}
-	}
-	return nil
+	return err
 }
 
 var (

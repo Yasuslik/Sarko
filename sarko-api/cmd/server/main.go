@@ -51,6 +51,8 @@ func run() error {
 		PendingTTL: cfg.PendingTTL,
 	}
 
+	go store.RunSweeper(ctx, deps.Store, 15*time.Second)
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           api.NewRouter(deps),
