@@ -25,6 +25,10 @@ func TestMergeStacksIsDeterministic(t *testing.T) {
 	first := MergeStacks(in)
 	second := MergeStacks(in)
 
+	if len(first) != len(second) {
+		t.Fatalf("length differs between calls: %d vs %d", len(first), len(second))
+	}
+
 	for i := range first {
 		if first[i] != second[i] {
 			t.Fatalf("order differs between calls: %v vs %v", first, second)

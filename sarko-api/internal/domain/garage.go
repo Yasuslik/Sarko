@@ -85,7 +85,12 @@ func NextTier(t Tier) (Tier, bool) {
 // Recipe returns the parts needed to build a tier. TierNone is not buildable.
 func Recipe(t Tier) ([]ItemStack, bool) {
 	parts, ok := recipes[t]
-	return parts, ok
+	if !ok {
+		return nil, false
+	}
+	out := make([]ItemStack, len(parts))
+	copy(out, parts)
+	return out, true
 }
 
 // IsValidTier reports whether s names a known tier.

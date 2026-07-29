@@ -54,3 +54,57 @@ func TestRecipeExistsForEveryBuildableTier(t *testing.T) {
 		t.Error("TierNone must not be buildable")
 	}
 }
+
+func TestRecipeReturnsCopy(t *testing.T) {
+	// First call: get a recipe and mutate it
+	first, ok := Recipe(TierBicycle)
+	if !ok {
+		t.Fatal("Recipe(TierBicycle) should exist")
+	}
+	if len(first) == 0 {
+		t.Fatal("Recipe(TierBicycle) is empty")
+	}
+
+	// Mutate the returned slice
+	originalQuantity := first[0].Quantity
+	first[0].Quantity = 999
+
+	// Second call: get the same recipe again
+	second, ok := Recipe(TierBicycle)
+	if !ok {
+		t.Fatal("Recipe(TierBicycle) should still exist")
+	}
+
+	// The second call must be unaffected by the mutation
+	if second[0].Quantity != originalQuantity {
+		t.Errorf("Recipe result is not a copy: first mutation affected second call. "+
+			"first[0].Quantity = %d, second[0].Quantity = %d, want both = %d",
+			first[0].Quantity, second[0].Quantity, originalQuantity)
+	}
+}
+
+func TestIsValidTier(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"none", "none", true},
+		{"bicycle", "bicycle", true},
+		{"motorcycle", "motorcycle", true},
+		{"car", "car", true},
+		{"helicopter", "helicopter", true},
+		{"empty string", "", false},
+		{"bogus", "bogus", false},
+		{"None capitalized", "None", false},
+		{"random string", "tank", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := IsValidTier(tc.in)
+			if got != tc.want {
+				t.Errorf("IsValidTier(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
