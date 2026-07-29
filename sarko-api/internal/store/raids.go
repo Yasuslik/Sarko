@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -220,4 +221,131 @@ func sweepPlayerTx(ctx context.Context, tx pgx.Tx, playerID string) error {
 		}
 	}
 	return nil
+}
+
+var (
+	// ErrBadSessionToken means the token does not match the session.
+	ErrBadSessionToken = errors.New("bad session token")
+	// ErrSessionNotOpen means the session is voided or never existed.
+	ErrSessionNotOpen = errors.New("session not open")
+)
+
+// SubmitResultParams is the input to SubmitResult.
+type SubmitResultParams struct {
+	SessionID    string
+	SessionToken string
+	Outcome      domain.RaidOutcome
+	Items        []domain.ItemStack
+}
+
+// RaidResult reports what the server recorded.
+type RaidResult struct {
+	SessionID     string             `json:"session_id"`
+	Outcome       domain.RaidOutcome `json:"outcome"`
+	CreditedItems []domain.ItemStack `json:"credited_items"`
+	// AlreadyClosed is true when this call replayed an earlier result.
+	AlreadyClosed bool `json:"already_closed"`
+}
+
+// ConfirmRaid marks a pending raid as actually entered and extends its deadline
+// to the full raid duration. Without this the sweeper returns the loadout (§11).
+func (s *Store) ConfirmRaid(ctx context.Context, sessionID, sessionToken string, raidTTL time.Duration) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE raid_sessions
+		 SET state = 'active', confirmed_at = now(), expires_at = now() + $3::interval
+		 WHERE id = $1 AND session_token_hash = $2 AND state = 'pending'`,
+		sessionID, auth.HashToken(sessionToken),
+		fmt.Sprintf("%d seconds", int(raidTTL.Seconds())))
+	if err != nil {
+		return fmt.Errorf("confirm raid: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSessionNotOpen
+	}
+	return nil
+}
+
+// SubmitResult closes a raid and credits surviving items, exactly once.
+// Replays return the stored result instead of crediting again.
+func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidResult, error) {
+	// Same exposure as StartRaid's loadout: a negative quantity would make
+	// addItemsTx's arithmetic debit rather than credit, so validate before
+	// any mutation (and before the transaction even opens).
+	if err := domain.ValidateStacks(p.Items); err != nil {
+		return RaidResult{}, err
+	}
+	items := domain.MergeStacks(p.Items)
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return RaidResult{}, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var (
+		playerID    string
+		stateText   string
+		storedHash  []byte
+		storedRaw   []byte
+		outcomeText *string
+	)
+	// Enum columns are read as text — see the note in sweepPlayerTx.
+	err = tx.QueryRow(ctx,
+		`SELECT player_id, state::text, session_token_hash, result_items, outcome::text
+		 FROM raid_sessions WHERE id = $1 FOR UPDATE`, p.SessionID,
+	).Scan(&playerID, &stateText, &storedHash, &storedRaw, &outcomeText)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RaidResult{}, ErrNotFound
+	}
+	if err != nil {
+		return RaidResult{}, fmt.Errorf("load session: %w", err)
+	}
+	state := domain.RaidState(stateText)
+
+	// The token is checked before anything else, and for every state.
+	if subtle.ConstantTimeCompare(storedHash, auth.HashToken(p.SessionToken)) != 1 {
+		return RaidResult{}, ErrBadSessionToken
+	}
+
+	// Idempotency: a closed session replays its stored answer.
+	if state == domain.StateClosed {
+		out := RaidResult{SessionID: p.SessionID, AlreadyClosed: true, CreditedItems: []domain.ItemStack{}}
+		if outcomeText != nil {
+			out.Outcome = domain.RaidOutcome(*outcomeText)
+		}
+		if len(storedRaw) > 0 {
+			if err := json.Unmarshal(storedRaw, &out.CreditedItems); err != nil {
+				return RaidResult{}, fmt.Errorf("unmarshal stored result: %w", err)
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return RaidResult{}, fmt.Errorf("commit: %w", err)
+		}
+		return out, nil
+	}
+
+	if state != domain.StatePending && state != domain.StateActive {
+		return RaidResult{}, ErrSessionNotOpen
+	}
+
+	if err := addItemsTx(ctx, tx, playerID, items); err != nil {
+		return RaidResult{}, err
+	}
+
+	itemsJSON, err := json.Marshal(items)
+	if err != nil {
+		return RaidResult{}, fmt.Errorf("marshal result items: %w", err)
+	}
+	_, err = tx.Exec(ctx,
+		`UPDATE raid_sessions
+		 SET state = 'closed', outcome = $2::raid_outcome, result_items = $3, closed_at = now()
+		 WHERE id = $1`, p.SessionID, string(p.Outcome), itemsJSON)
+	if err != nil {
+		return RaidResult{}, fmt.Errorf("close session: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return RaidResult{}, fmt.Errorf("commit: %w", err)
+	}
+	return RaidResult{SessionID: p.SessionID, Outcome: p.Outcome, CreditedItems: items}, nil
 }
