@@ -13,7 +13,10 @@ import (
 	"time"
 
 	"github.com/Yasuslik/sarko-api/internal/api"
+	"github.com/Yasuslik/sarko-api/internal/auth"
 	"github.com/Yasuslik/sarko-api/internal/config"
+	"github.com/Yasuslik/sarko-api/internal/db"
+	"github.com/Yasuslik/sarko-api/internal/store"
 )
 
 func main() {
@@ -29,14 +32,30 @@ func run() error {
 		return err
 	}
 
-	srv := &http.Server{
-		Addr:              ":" + cfg.Port,
-		Handler:           api.NewRouter(api.Deps{}),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	if err := db.Migrate(cfg.DatabaseURL); err != nil {
+		return err
+	}
+	pool, err := db.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	deps := api.Deps{
+		Store:      store.New(pool),
+		Issuer:     auth.Issuer{Secret: cfg.JWTSecret, TTL: 30 * 24 * time.Hour},
+		RaidTTL:    cfg.RaidTTL,
+		PendingTTL: cfg.PendingTTL,
+	}
+
+	srv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           api.NewRouter(deps),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
 	if err := serve(ctx, cfg.Port, srv, stop); err != nil {
 		return err
