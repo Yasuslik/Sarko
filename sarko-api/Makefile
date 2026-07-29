@@ -1,4 +1,4 @@
-.PHONY: test-db test-db-down test run migrate tidy
+.PHONY: test-db test-db-down test run tidy
 
 TEST_DATABASE_URL ?= postgres://sarko:sarko@localhost:5455/sarko_test?sslmode=disable
 
