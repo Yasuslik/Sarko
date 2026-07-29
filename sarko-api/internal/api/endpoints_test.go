@@ -133,12 +133,31 @@ func TestFullRaidCycleOverHTTP(t *testing.T) {
 func TestProtectedEndpointsRequireAuth(t *testing.T) {
 	c := newTestServer(t)
 
-	if code := c.do(http.MethodGet, "/v1/profile", nil, nil); code != http.StatusUnauthorized {
-		t.Errorf("GET /v1/profile without token = %d, want 401", code)
+	tests := []struct {
+		method string
+		path   string
+		body   any
+	}{
+		{http.MethodGet, "/v1/profile", nil},
+		{http.MethodPost, "/v1/raid/start", map[string]any{"map_id": "forest"}},
+		{http.MethodPost, "/v1/raid/confirm", map[string]string{
+			"session_id":    "dummy",
+			"session_token": "dummy",
+		}},
+		{http.MethodPost, "/v1/raid/result", map[string]any{
+			"session_id":    "dummy",
+			"session_token": "dummy",
+			"outcome":       "extracted",
+			"items":         []map[string]any{},
+		}},
+		{http.MethodPost, "/v1/garage/craft", map[string]any{}},
 	}
-	if code := c.do(http.MethodPost, "/v1/raid/start",
-		map[string]any{"map_id": "forest"}, nil); code != http.StatusUnauthorized {
-		t.Errorf("POST /v1/raid/start without token = %d, want 401", code)
+
+	for _, tt := range tests {
+		code := c.do(tt.method, tt.path, tt.body, nil)
+		if code != http.StatusUnauthorized {
+			t.Errorf("%s %s without token = %d, want 401", tt.method, tt.path, code)
+		}
 	}
 }
 
@@ -181,5 +200,48 @@ func TestDeathResultRejectsOversizedSafePocket(t *testing.T) {
 	}, nil)
 	if code != http.StatusBadRequest {
 		t.Errorf("three safe-pocket items on death = %d, want 400", code)
+	}
+}
+
+func TestDeathResultAllowsSplitEntriesOfOneItem(t *testing.T) {
+	c := newTestServer(t)
+	c.login("device-splitter")
+
+	var started store.StartedRaid
+	if code := c.do(http.MethodPost, "/v1/raid/start",
+		map[string]any{"map_id": "forest", "loadout": []any{}}, &started); code != http.StatusOK {
+		t.Fatalf("raid/start status = %d, want 200", code)
+	}
+	if code := c.do(http.MethodPost, "/v1/raid/confirm", map[string]string{
+		"session_id":    started.SessionID,
+		"session_token": started.SessionToken,
+	}, nil); code != http.StatusNoContent {
+		t.Fatalf("raid/confirm status = %d, want 204", code)
+	}
+
+	// Build 50 entries of the same item id: they merge to one stack, within cap of 2.
+	items := make([]map[string]any, 50)
+	for i := 0; i < 50; i++ {
+		items[i] = map[string]any{"item_id": "chain", "quantity": 1}
+	}
+
+	var result store.RaidResult
+	code := c.do(http.MethodPost, "/v1/raid/result", map[string]any{
+		"session_id":    started.SessionID,
+		"session_token": started.SessionToken,
+		"outcome":       "died",
+		"items":         items,
+	}, &result)
+	if code != http.StatusOK {
+		t.Fatalf("raid/result with 50 split entries of one item = %d, want 200", code)
+	}
+
+	// Verify quantities were summed into the stash.
+	var profile store.Profile
+	if code := c.do(http.MethodGet, "/v1/profile", nil, &profile); code != http.StatusOK {
+		t.Fatalf("profile status = %d, want 200", code)
+	}
+	if len(profile.Stash) != 1 || profile.Stash[0].ItemID != "chain" || profile.Stash[0].Quantity != 50 {
+		t.Errorf("stash = %v, want one chain with quantity 50", profile.Stash)
 	}
 }
