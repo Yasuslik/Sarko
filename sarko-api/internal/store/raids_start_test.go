@@ -114,3 +114,87 @@ func TestStartRaidRejectsLockedMap(t *testing.T) {
 		t.Fatalf("err = %v, want ErrMapLocked", err)
 	}
 }
+
+// TestStartRaidRejectsNegativeQuantity proves that a negative Quantity is
+// rejected before any mutation. Against the unfixed code, debitItemsTx's
+// `quantity > $3` guard is trivially true for a negative $3, and
+// `quantity - $3` *adds* to the stash — so this test's stash assertion is
+// the load-bearing part: it catches a regression that lets the value
+// through even if some other error happened to still be returned.
+func TestStartRaidRejectsNegativeQuantity(t *testing.T) {
+	s := store.New(testutil.Pool(t))
+	ctx := context.Background()
+	playerID := seedPlayer(t, s, "dev-negative", []domain.ItemStack{{ItemID: "ammo", Quantity: 5}})
+
+	_, err := s.StartRaid(ctx, startParams(playerID, []domain.ItemStack{{ItemID: "ammo", Quantity: -1}}))
+	if err == nil {
+		t.Error("StartRaid must reject a negative quantity")
+	}
+
+	profile, err := s.Profile(ctx, playerID)
+	if err != nil {
+		t.Fatalf("Profile: %v", err)
+	}
+	if len(profile.Stash) != 1 || profile.Stash[0].Quantity != 5 {
+		t.Errorf("stash must be unchanged after a rejected start, got %v (want ammo x5)", profile.Stash)
+	}
+}
+
+// TestStartRaidRejectsZeroQuantity proves a zero Quantity is rejected too.
+// Unfixed, the UPDATE succeeds as a silent no-op and a spurious
+// zero-quantity stack gets persisted into the session's loadout JSON.
+func TestStartRaidRejectsZeroQuantity(t *testing.T) {
+	s := store.New(testutil.Pool(t))
+	ctx := context.Background()
+	playerID := seedPlayer(t, s, "dev-zero", []domain.ItemStack{{ItemID: "ammo", Quantity: 5}})
+
+	_, err := s.StartRaid(ctx, startParams(playerID, []domain.ItemStack{{ItemID: "ammo", Quantity: 0}}))
+	if err == nil {
+		t.Error("StartRaid must reject a zero quantity")
+	}
+
+	profile, err := s.Profile(ctx, playerID)
+	if err != nil {
+		t.Fatalf("Profile: %v", err)
+	}
+	if len(profile.Stash) != 1 || profile.Stash[0].Quantity != 5 {
+		t.Errorf("stash must be unchanged after a rejected start, got %v (want ammo x5)", profile.Stash)
+	}
+}
+
+// TestStartRaidRollsBackFirstItemOnSecondItemShortfall exercises
+// debitItemsTx's central invariant: it loops per stack inside one open
+// transaction, so if the loadout's second item is short, the first item's
+// debit has already executed and correctness depends entirely on the
+// deferred rollback in StartRaid undoing it.
+func TestStartRaidRollsBackFirstItemOnSecondItemShortfall(t *testing.T) {
+	s := store.New(testutil.Pool(t))
+	ctx := context.Background()
+	playerID := seedPlayer(t, s, "dev-partial", []domain.ItemStack{
+		{ItemID: "rifle", Quantity: 1},
+		{ItemID: "ammo", Quantity: 5},
+	})
+
+	_, err := s.StartRaid(ctx, startParams(playerID, []domain.ItemStack{
+		{ItemID: "rifle", Quantity: 1}, // sufficient — debited first
+		{ItemID: "ammo", Quantity: 6},  // short — should fail the whole raid
+	}))
+	if !errors.Is(err, store.ErrInsufficientItems) {
+		t.Fatalf("err = %v, want ErrInsufficientItems", err)
+	}
+
+	profile, err := s.Profile(ctx, playerID)
+	if err != nil {
+		t.Fatalf("Profile: %v", err)
+	}
+	got := map[string]int{}
+	for _, item := range profile.Stash {
+		got[item.ItemID] = item.Quantity
+	}
+	if got["rifle"] != 1 {
+		t.Errorf("rifle left = %d, want 1 (debit must roll back)", got["rifle"])
+	}
+	if got["ammo"] != 5 {
+		t.Errorf("ammo left = %d, want 5 (unchanged)", got["ammo"])
+	}
+}

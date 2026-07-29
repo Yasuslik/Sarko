@@ -42,6 +42,9 @@ type StartedRaid struct {
 // StartRaid debits the loadout and opens a pending session, atomically.
 // Either the player loses the items and gets a session, or nothing happens.
 func (s *Store) StartRaid(ctx context.Context, p StartRaidParams) (StartedRaid, error) {
+	if err := domain.ValidateStacks(p.Loadout); err != nil {
+		return StartedRaid{}, err
+	}
 	loadout := domain.MergeStacks(p.Loadout)
 
 	tx, err := s.pool.Begin(ctx)
