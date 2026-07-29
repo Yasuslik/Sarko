@@ -53,7 +53,16 @@ func (s *Store) UpsertPlayer(ctx context.Context, deviceID string) (string, erro
 func (s *Store) Profile(ctx context.Context, playerID string) (Profile, error) {
 	p := Profile{PlayerID: playerID, Stash: []domain.ItemStack{}}
 
-	err := s.pool.QueryRow(ctx,
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return Profile{}, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	err = tx.QueryRow(ctx,
 		`SELECT p.schema_version, COALESCE(g.vehicle_tier, 'none')
 		 FROM players p
 		 LEFT JOIN garage_progress g ON g.player_id = p.id
@@ -65,7 +74,7 @@ func (s *Store) Profile(ctx context.Context, playerID string) (Profile, error) {
 		return Profile{}, fmt.Errorf("read player: %w", err)
 	}
 
-	rows, err := s.pool.Query(ctx,
+	rows, err := tx.Query(ctx,
 		`SELECT item_id, quantity FROM stash_items WHERE player_id = $1 ORDER BY item_id`, playerID)
 	if err != nil {
 		return Profile{}, fmt.Errorf("read stash: %w", err)
@@ -81,6 +90,10 @@ func (s *Store) Profile(ctx context.Context, playerID string) (Profile, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return Profile{}, fmt.Errorf("iterate stash: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Profile{}, fmt.Errorf("commit: %w", err)
 	}
 
 	p.UnlockedMaps = domain.UnlockedMaps(p.Tier)

@@ -78,8 +78,8 @@ func TestAddItemsMergesIntoExistingStacks(t *testing.T) {
 		t.Fatalf("Profile: %v", err)
 	}
 	got := map[string]int{}
-	for _, s := range profile.Stash {
-		got[s.ItemID] = s.Quantity
+	for _, item := range profile.Stash {
+		got[item.ItemID] = item.Quantity
 	}
 	if got["bolt"] != 5 {
 		t.Errorf("bolt = %d, want 5", got["bolt"])
