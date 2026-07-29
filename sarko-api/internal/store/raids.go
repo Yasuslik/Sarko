@@ -250,17 +250,46 @@ type RaidResult struct {
 // ConfirmRaid marks a pending raid as actually entered and extends its deadline
 // to the full raid duration. Without this the sweeper returns the loadout (§11).
 func (s *Store) ConfirmRaid(ctx context.Context, sessionID, sessionToken string, raidTTL time.Duration) error {
-	tag, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var (
+		stateText  string
+		storedHash []byte
+	)
+	// Enum columns are read as text — see the note in sweepPlayerTx.
+	err = tx.QueryRow(ctx,
+		`SELECT state::text, session_token_hash FROM raid_sessions WHERE id = $1 FOR UPDATE`,
+		sessionID,
+	).Scan(&stateText, &storedHash)
+	notFound := errors.Is(err, pgx.ErrNoRows)
+	if err != nil && !notFound {
+		return fmt.Errorf("load session: %w", err)
+	}
+
+	// Anti-oracle: unlike SubmitResult (which reports ErrNotFound,
+	// ErrBadSessionToken and ErrSessionNotOpen as distinct errors), a caller
+	// here must not be able to tell an unknown session id, a wrong token, and
+	// a non-pending session apart — all three collapse to ErrSessionNotOpen.
+	badToken := !notFound && subtle.ConstantTimeCompare(storedHash, auth.HashToken(sessionToken)) != 1
+	if notFound || badToken || stateText != string(domain.StatePending) {
+		return ErrSessionNotOpen
+	}
+
+	_, err = tx.Exec(ctx,
 		`UPDATE raid_sessions
-		 SET state = 'active', confirmed_at = now(), expires_at = now() + $3::interval
-		 WHERE id = $1 AND session_token_hash = $2 AND state = 'pending'`,
-		sessionID, auth.HashToken(sessionToken),
-		fmt.Sprintf("%d seconds", int(raidTTL.Seconds())))
+		 SET state = 'active', confirmed_at = now(), expires_at = now() + $2::interval
+		 WHERE id = $1`,
+		sessionID, fmt.Sprintf("%d seconds", int(raidTTL.Seconds())))
 	if err != nil {
 		return fmt.Errorf("confirm raid: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrSessionNotOpen
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
 }
