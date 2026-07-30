@@ -1,6 +1,8 @@
 #include "Core/SarkoPlayerController.h"
 
 #include "Combat/SarkoWeapon.h"
+#include "Core/SarkoRaidSettings.h"
+#include "Debug/SarkoOverviewShot.h"
 #include "Pawn/SarkoCharacter.h"
 
 bool SarkoInput::IsLeftHalf(FVector2D ScreenPosition, FVector2D ViewportSize)
@@ -215,3 +217,17 @@ bool ASarkoPlayerController::ApplyDesktopTestInput(ASarkoCharacter& Pawn, float 
 	return bMoved;
 }
 #endif
+
+void ASarkoPlayerController::SarkoOverview()
+{
+#if !UE_BUILD_SHIPPING
+	SarkoDebug::FrameWholeSector(*this, GetDefault<USarkoRaidSettings>()->MapExtent);
+
+	// One frame later, so the new camera position is what gets captured.
+	FTimerHandle Handle;
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this, [this]()
+	{
+		ConsoleCommand(TEXT("HighResShot 1600x1600"), /*bWriteToLog*/ true);
+	}), 0.25f, false);
+#endif
+}
