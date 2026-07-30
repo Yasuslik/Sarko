@@ -1,6 +1,7 @@
 #include "Pawn/SarkoCharacter.h"
 
 #include "Camera/CameraComponent.h"
+#include "Combat/SarkoWeapon.h"
 #include "Components/CapsuleComponent.h"
 #include "Core/SarkoRaidSettings.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -63,6 +64,7 @@ ASarkoCharacter::ASarkoCharacter()
 	TopDownCamera->bUsePawnControlRotation = false;
 
 	HealthComponent = CreateDefaultSubobject<USarkoHealthComponent>(TEXT("Health"));
+	WeaponComponent = CreateDefaultSubobject<USarkoWeaponComponent>(TEXT("Weapon"));
 }
 
 void ASarkoCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -158,6 +160,32 @@ FVector ASarkoCharacter::GetMuzzleLocation() const
 	return GetActorLocation() + FVector(0.f, 0.f, 40.f) + FVector(AimDirection) * 60.f;
 }
 
+void ASarkoCharacter::RequestFire()
+{
+	if (HealthComponent && HealthComponent->IsDead())
+	{
+		return;
+	}
+
+	const FVector Origin = GetMuzzleLocation();
+	const FVector Direction = FVector(AimDirection);
+
+	if (HasAuthority())
+	{
+		WeaponComponent->ServerFire(Origin, Direction);
+		return;
+	}
+	// Effects can be drawn locally right away; only the server decides the hit.
+	ServerRequestFire(Origin, Direction);
+}
+
+void ASarkoCharacter::ServerRequestFire_Implementation(FVector Origin, FVector Direction)
+{
+	// The server re-derives the origin from its own copy of the pawn so a
+	// client cannot shoot from an arbitrary position.
+	WeaponComponent->ServerFire(GetMuzzleLocation(), Direction);
+}
+
 void ASarkoCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
@@ -167,12 +195,15 @@ void ASarkoCharacter::Tick(float DeltaSeconds)
 		AddMovementInput(FVector(MoveIntent.X, MoveIntent.Y, 0.f), MoveScale);
 	}
 
+	// A corpse must not keep rotating to face its last aim direction.
+	const bool bIsDead = HealthComponent && HealthComponent->IsDead();
+
 	// Face the aim while aiming, otherwise face travel — spec §9.
 	const FVector Facing = bIsAiming
 		? FVector(AimDirection)
 		: FVector(MoveIntent.X, MoveIntent.Y, 0.f);
 
-	if (!Facing.IsNearlyZero())
+	if (!bIsDead && !Facing.IsNearlyZero())
 	{
 		const FRotator Target(0.f, Facing.Rotation().Yaw, 0.f);
 		SetActorRotation(FMath::RInterpTo(GetActorRotation(), Target, DeltaSeconds, 12.f));

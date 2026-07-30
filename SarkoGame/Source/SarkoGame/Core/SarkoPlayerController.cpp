@@ -44,6 +44,14 @@ void ASarkoPlayerController::PlayerTick(float DeltaTime)
 
 	const FVector2D AimValue = AimStick.Value();
 	Pawn->SetAimIntent(SarkoAim::StickToWorldDirection(AimValue, CameraYaw), AimStick.bActive);
+
+	// Release of the aim thumb is the only fire signal — never auto-fire
+	// (spec §9). bAimReleasedThisFrame is a one-frame edge, so this fires
+	// exactly once per release.
+	if (bAimReleasedThisFrame)
+	{
+		Pawn->RequestFire();
+	}
 }
 
 void ASarkoPlayerController::UpdateSticks()

@@ -18,7 +18,8 @@ public class SarkoGame : ModuleRules
 			"CoreUObject",
 			"Engine",
 			"InputCore",
-			"EnhancedInput",
+			"AIModule",
+			"NavigationSystem",
 			"DeveloperSettings"
 		});
 	}

@@ -1,5 +1,6 @@
 #include "Core/SarkoRaidGameMode.h"
 
+#include "AI/SarkoEnemyCharacter.h"
 #include "Core/SarkoPlayerController.h"
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
@@ -66,6 +67,18 @@ void ASarkoRaidGameMode::StartPlay()
 			// no game mode instance to hand them a precomputed layout.
 			RaidState->SpawnPrebuiltLayout(CachedLayout);
 			CachedLayout = RaidState->GetLayout();
+		}
+
+		// Enemies are real replicated actors (unlike the map's static geometry),
+		// so only the server spawns them; replication hands them to clients.
+		if (UWorld* World = GetWorld())
+		{
+			for (const FVector& Spawn : CachedLayout.EnemySpawns)
+			{
+				FActorSpawnParameters Params;
+				Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+				World->SpawnActor<ASarkoEnemyCharacter>(ASarkoEnemyCharacter::StaticClass(), Spawn, FRotator::ZeroRotator, Params);
+			}
 		}
 	}
 

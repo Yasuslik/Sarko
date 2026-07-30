@@ -9,6 +9,7 @@
 
 class UCameraComponent;
 class USpringArmComponent;
+class USarkoWeaponComponent;
 
 namespace SarkoAim
 {
@@ -53,6 +54,12 @@ public:
 	/** Muzzle position for traces and effects. */
 	FVector GetMuzzleLocation() const;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
+	TObjectPtr<USarkoWeaponComponent> WeaponComponent;
+
+	/** Called by the controller the moment the aim thumb lifts. */
+	void RequestFire();
+
 	/** Where this pawn is aiming, replicated so others see the facing. */
 	UPROPERTY(ReplicatedUsing = OnRep_AimDirection, BlueprintReadOnly, Category = "Combat")
 	FVector_NetQuantizeNormal AimDirection = FVector::ForwardVector;
@@ -91,6 +98,9 @@ private:
 	 */
 	UFUNCTION(Server, Reliable)
 	void ServerSetAimState(bool bInIsAiming);
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestFire(FVector Origin, FVector Direction);
 
 	FVector2D MoveIntent = FVector2D::ZeroVector;
 	float MoveScale = 0.f;

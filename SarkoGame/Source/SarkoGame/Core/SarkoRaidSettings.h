@@ -64,4 +64,9 @@ public:
 
 	UPROPERTY(EditAnywhere, config, Category = "AI")
 	float EnemyFireIntervalSeconds = 0.9f;
+
+	/** Chase/patrol speed. A separate knob from the player's WalkSpeed because
+	 * how fast the enemy closes distance is its own balance question. */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float EnemyWalkSpeed = 340.f;
 };

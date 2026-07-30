@@ -32,6 +32,14 @@ void USarkoHealthComponent::ApplyDamage(float Amount, AActor* DamageInstigator)
 		return;
 	}
 
+	// Only the server may change health. Without this guard nothing structurally
+	// stops a client from calling ApplyDamage directly; a NewObject test
+	// component has no owner, so the null check keeps that seam working.
+	if (const AActor* Owner = GetOwner(); Owner && !Owner->HasAuthority())
+	{
+		return;
+	}
+
 	Health = FMath::Max(0.f, Health - Amount);
 	if (Health > 0.f)
 	{
