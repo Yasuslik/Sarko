@@ -97,4 +97,28 @@ bool FSarkoMagazineGatesFiring::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoReloadingGatesFiring,
+	"Sarko.Combat.ReloadingGatesFiring",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoReloadingGatesFiring::RunTest(const FString& Parameters)
+{
+	// A full magazine must still refuse to fire while a reload is in flight —
+	// this is the seam that pins bReloading as a CanFire gate independently of
+	// ammo count, since ammo alone (FSarkoMagazineGatesFiring above) cannot
+	// exercise this branch.
+	USarkoWeaponComponent* Weapon = NewObject<USarkoWeaponComponent>();
+	Weapon->ResetForTest(30);
+	TestTrue(TEXT("a full, non-reloading weapon can fire"), Weapon->CanFire());
+
+	Weapon->SetReloadingForTest(true);
+	TestFalse(TEXT("a full magazine still cannot fire mid-reload"), Weapon->CanFire());
+	TestTrue(TEXT("IsReloading reports the reloading state"), Weapon->IsReloading());
+
+	Weapon->SetReloadingForTest(false);
+	TestTrue(TEXT("firing resumes once the reload seam clears"), Weapon->CanFire());
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

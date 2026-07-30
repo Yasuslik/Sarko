@@ -76,12 +76,30 @@ void USarkoWeaponComponent::ServerFire(FVector Origin, FVector Direction)
 {
 	AActor* Owner = GetOwner();
 	UWorld* World = GetWorld();
-	if (!Owner || !World || !Owner->HasAuthority() || !CanFire())
+	if (!Owner || !World || !Owner->HasAuthority())
 	{
 		return;
 	}
 
+	if (!CanFire())
+	{
+		// A fire request that lands while the magazine is empty (or a reload
+		// is already running) is the only signal a human tester gets that
+		// something needs to happen — there is no separate reload button on a
+		// two-thumbstick touch layout. StartReload() itself no-ops if a reload
+		// is already in flight, so this is safe to call every time.
+		StartReload();
+		return;
+	}
+
 	--AmmoInMagazine;
+	if (AmmoInMagazine == 0)
+	{
+		// The magazine just ran dry from this very shot: start the reload
+		// immediately instead of waiting for the next fire attempt, so the
+		// weapon is already coming back online while the player notices.
+		StartReload();
+	}
 
 	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
 

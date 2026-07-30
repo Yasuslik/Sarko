@@ -31,6 +31,7 @@ public:
 
 	bool CanFire() const { return AmmoInMagazine > 0 && !bReloading; }
 	int32 GetAmmoInMagazine() const { return AmmoInMagazine; }
+	bool IsReloading() const { return bReloading; }
 
 	/** Server only: traces, applies aim assist and damage. */
 	void ServerFire(FVector Origin, FVector Direction);
@@ -40,6 +41,7 @@ public:
 	/** Test seams — no world required. */
 	void ResetForTest(int32 Rounds);
 	void ConsumeRoundForTest() { AmmoInMagazine = FMath::Max(0, AmmoInMagazine - 1); }
+	void SetReloadingForTest(bool bValue) { bReloading = bValue; }
 
 protected:
 	UPROPERTY(Replicated)

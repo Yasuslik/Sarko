@@ -1,5 +1,6 @@
 #include "UI/SarkoHUD.h"
 
+#include "Combat/SarkoWeapon.h"
 #include "Core/SarkoPlayerController.h"
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
@@ -25,6 +26,7 @@ void ASarkoHUD::DrawHUD()
 	DrawStick(PC->GetAimStick(), FLinearColor(1.f, 0.85f, 0.2f, 0.45f));
 	DrawAimCone();
 	DrawTopBar();
+	DrawAmmo();
 }
 
 void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, const FLinearColor& Colour)
@@ -95,4 +97,24 @@ void ASarkoHUD::DrawTopBar()
 	float OutHeight = 0.f;
 	GetTextSize(Clock, OutWidth, OutHeight, GEngine->GetLargeFont(), 1.f);
 	DrawText(Clock, FLinearColor::White, (Canvas->SizeX - OutWidth) * 0.5f, 24.f, GEngine->GetLargeFont(), 1.f);
+}
+
+void ASarkoHUD::DrawAmmo()
+{
+	// Top-left, alongside the clock: still along the top per spec §9, clear of
+	// both bottom corners so the sticks never cover it. Reloading is drawn as
+	// distinct text rather than a number so the tester can tell "reloading"
+	// from "empty and stuck" at a glance — the whole point of this readout.
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	if (!Pawn || !Pawn->WeaponComponent)
+	{
+		return;
+	}
+
+	const USarkoWeaponComponent* Weapon = Pawn->WeaponComponent;
+	const bool bReloading = Weapon->IsReloading();
+	const FString AmmoText = bReloading ? TEXT("RELOADING") : FString::FromInt(Weapon->GetAmmoInMagazine());
+	const FLinearColor Colour = bReloading ? FLinearColor(1.f, 0.6f, 0.1f, 1.f) : FLinearColor::White;
+
+	DrawText(AmmoText, Colour, 24.f, 24.f, GEngine->GetLargeFont(), 1.f);
 }

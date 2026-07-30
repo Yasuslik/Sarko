@@ -22,4 +22,5 @@ private:
 	void DrawStick(const struct FSarkoTouchStick& Stick, const FLinearColor& Colour);
 	void DrawAimCone();
 	void DrawTopBar();
+	void DrawAmmo();
 };
