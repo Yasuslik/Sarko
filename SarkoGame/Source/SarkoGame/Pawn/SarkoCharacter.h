@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "Net/Core/PushModel/PushModel.h"
+#include "Pawn/SarkoHealthComponent.h"
 
 #include "SarkoCharacter.generated.h"
 
@@ -38,6 +39,7 @@ public:
 	ASarkoCharacter();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 
 	/** Called every frame by the controller from the left stick. */
@@ -55,9 +57,15 @@ public:
 	UPROPERTY(ReplicatedUsing = OnRep_AimDirection, BlueprintReadOnly, Category = "Combat")
 	FVector_NetQuantizeNormal AimDirection = FVector::ForwardVector;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Health")
+	TObjectPtr<USarkoHealthComponent> HealthComponent;
+
 protected:
 	UFUNCTION()
 	void OnRep_AimDirection() {}
+
+	/** Server only: stops movement and disables collision so the corpse does not block shots. */
+	void HandleDeath(AActor* Killer);
 
 	UPROPERTY(VisibleAnywhere, Category = "Camera")
 	TObjectPtr<USpringArmComponent> CameraBoom;

@@ -1,6 +1,7 @@
 #include "Pawn/SarkoCharacter.h"
 
 #include "Camera/CameraComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Core/SarkoRaidSettings.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/SpringArmComponent.h"
@@ -60,12 +61,32 @@ ASarkoCharacter::ASarkoCharacter()
 	TopDownCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("TopDownCamera"));
 	TopDownCamera->SetupAttachment(CameraBoom);
 	TopDownCamera->bUsePawnControlRotation = false;
+
+	HealthComponent = CreateDefaultSubobject<USarkoHealthComponent>(TEXT("Health"));
 }
 
 void ASarkoCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(ASarkoCharacter, AimDirection);
+}
+
+void ASarkoCharacter::BeginPlay()
+{
+	Super::BeginPlay();
+
+	if (HasAuthority() && HealthComponent)
+	{
+		HealthComponent->OnDied.AddUObject(this, &ASarkoCharacter::HandleDeath);
+	}
+}
+
+void ASarkoCharacter::HandleDeath(AActor* Killer)
+{
+	GetCharacterMovement()->StopMovementImmediately();
+	GetCharacterMovement()->DisableMovement();
+	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	MoveIntent = FVector2D::ZeroVector;
 }
 
 void ASarkoCharacter::SetMoveIntent(FVector2D Intent)
