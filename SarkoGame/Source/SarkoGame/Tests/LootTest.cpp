@@ -1,6 +1,8 @@
 #include "Misc/AutomationTest.h"
 
 #include "Loot/SarkoItemCatalog.h"
+#include "Loot/SarkoLootTable.h"
+#include "Map/SarkoMapDefinition.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -124,6 +126,304 @@ bool FSarkoRealItemCatalogIsUsable::RunTest(const FString& Parameters)
 		TestTrue(*FString::Printf(TEXT("'%s' fits the backend's 64-char item_id cap"), *Def.Id.ToString()),
 			Def.Id.ToString().Len() <= 64);
 		TestFalse(*FString::Printf(TEXT("'%s' has a display name"), *Def.Id.ToString()), Def.Name.IsEmpty());
+	}
+	return true;
+}
+
+namespace
+{
+	/** A catalog the table fixtures below can be validated against. */
+	FSarkoItemCatalog FixtureCatalog()
+	{
+		FSarkoItemCatalog Catalog;
+		FString Error;
+		SarkoLoot::ParseItemCatalog(GoodCatalogJson, Catalog, Error);
+		return Catalog;
+	}
+
+	const FString GoodTablesJson = TEXT(R"({
+		"tiers": {
+			"junk":     { "rolls": {"min":1,"max":2}, "emptyChance": 0.15, "entries": [ {"item":"scrap_metal","weight":70,"qty":{"min":1,"max":3}}, {"item":"medkit","weight":30,"qty":{"min":1,"max":1}} ] },
+			"common":   { "rolls": {"min":1,"max":2}, "emptyChance": 0.08, "entries": [ {"item":"scrap_metal","weight":60,"qty":{"min":1,"max":4}}, {"item":"ammo_9mm","weight":40,"qty":{"min":8,"max":16}} ] },
+			"med":      { "rolls": {"min":1,"max":3}, "emptyChance": 0.10, "entries": [ {"item":"medkit","weight":100,"qty":{"min":1,"max":2}} ] },
+			"good":     { "rolls": {"min":2,"max":3}, "emptyChance": 0.0,  "entries": [ {"item":"ammo_9mm","weight":50,"qty":{"min":10,"max":24}}, {"item":"chain","weight":2,"qty":{"min":1,"max":1}} ] },
+			"military": { "rolls": {"min":2,"max":4}, "emptyChance": 0.0,  "entries": [ {"item":"pistol","weight":20,"qty":{"min":1,"max":1}}, {"item":"ammo_9mm","weight":80,"qty":{"min":16,"max":32}} ] }
+		}
+	})");
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoLootTablesParse,
+	"Sarko.Loot.TablesParse",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoLootTablesParse::RunTest(const FString& Parameters)
+{
+	const FSarkoItemCatalog Catalog = FixtureCatalog();
+	FSarkoLootTables Tables;
+	FString Error;
+	TestTrue(TEXT("well-formed tables parse"), SarkoLoot::ParseLootTables(GoodTablesJson, Catalog, Tables, Error));
+	TestEqual(TEXT("no error on success"), Error, FString());
+	TestEqual(TEXT("all five tiers are present"), Tables.Tables.Num(), 5);
+
+	const FSarkoLootTable* Military = Tables.Find(TEXT("military"));
+	if (!Military)
+	{
+		AddError(TEXT("the military tier did not resolve"));
+		return false;
+	}
+	TestEqual(TEXT("rolls.min is read"), Military->MinRolls, 2);
+	TestEqual(TEXT("rolls.max is read"), Military->MaxRolls, 4);
+	TestEqual(TEXT("emptyChance is read"), Military->EmptyChance, 0.f);
+	TestEqual(TEXT("both entries are read"), Military->Entries.Num(), 2);
+	TestEqual(TEXT("entry weight is read"), Military->Entries[0].Weight, 20.f);
+	TestEqual(TEXT("qty.min is read"), Military->Entries[1].MinQuantity, 16);
+	TestEqual(TEXT("qty.max is read"), Military->Entries[1].MaxQuantity, 32);
+
+	TestNull(TEXT("an unknown tier resolves to nothing"), Tables.Find(TEXT("legendary")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoLootTablesRejectBadInput,
+	"Sarko.Loot.TablesRejectBadInput",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoLootTablesRejectBadInput::RunTest(const FString& Parameters)
+{
+	const FSarkoItemCatalog Catalog = FixtureCatalog();
+
+	// Spec §4.1: "Unknown item id in any loot table = load error, not a silent
+	// skip." A skipped entry is a container that quietly yields less than the
+	// designer wrote, which no test and no playthrough would ever localise.
+	const TArray<TPair<FString, FString>> BadCases = {
+		{ TEXT("not json"), TEXT("{{{") },
+		{ TEXT("no tiers object"), TEXT(R"({"stuff":{}})") },
+		{ TEXT("a tier is missing"), TEXT(R"({"tiers":{"junk":{"rolls":{"min":1,"max":1},"emptyChance":0,"entries":[{"item":"scrap_metal","weight":1,"qty":{"min":1,"max":1}}]}}})") },
+		{ TEXT("unknown item id"), TEXT(R"({"tiers":{"junk":{"rolls":{"min":1,"max":1},"emptyChance":0.1,"entries":[{"item":"plutonium","weight":1,"qty":{"min":1,"max":1}}]}}})") },
+		{ TEXT("no entries"), TEXT(R"({"tiers":{"junk":{"rolls":{"min":1,"max":1},"emptyChance":0.1,"entries":[]}}})") },
+		{ TEXT("zero weight"), TEXT(R"({"tiers":{"junk":{"rolls":{"min":1,"max":1},"emptyChance":0.1,"entries":[{"item":"scrap_metal","weight":0,"qty":{"min":1,"max":1}}]}}})") },
+		{ TEXT("qty max below min"), TEXT(R"({"tiers":{"junk":{"rolls":{"min":1,"max":1},"emptyChance":0.1,"entries":[{"item":"scrap_metal","weight":1,"qty":{"min":3,"max":1}}]}}})") },
+		{ TEXT("rolls max below min"), TEXT(R"({"tiers":{"junk":{"rolls":{"min":3,"max":1},"emptyChance":0.1,"entries":[{"item":"scrap_metal","weight":1,"qty":{"min":1,"max":1}}]}}})") },
+		{ TEXT("emptyChance above 1"), TEXT(R"({"tiers":{"junk":{"rolls":{"min":1,"max":1},"emptyChance":1.5,"entries":[{"item":"scrap_metal","weight":1,"qty":{"min":1,"max":1}}]}}})") },
+	};
+
+	for (const TPair<FString, FString>& Case : BadCases)
+	{
+		FSarkoLootTables Tables;
+		FString Error;
+		TestFalse(FString::Printf(TEXT("rejected: %s"), *Case.Key),
+			SarkoLoot::ParseLootTables(Case.Value, Catalog, Tables, Error));
+		TestFalse(FString::Printf(TEXT("names the problem: %s"), *Case.Key), Error.IsEmpty());
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoLootRollIsDeterministicPerContainer,
+	"Sarko.Loot.RollIsDeterministicPerContainer",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoLootRollIsDeterministicPerContainer::RunTest(const FString& Parameters)
+{
+	const FSarkoItemCatalog Catalog = FixtureCatalog();
+	FSarkoLootTables Tables;
+	FString Error;
+	if (!SarkoLoot::ParseLootTables(GoodTablesJson, Catalog, Tables, Error))
+	{
+		AddError(FString::Printf(TEXT("fixture tables failed to parse: %s"), *Error));
+		return false;
+	}
+	const FSarkoLootTable& Military = *Tables.Find(TEXT("military"));
+
+	// Same raid seed and same container index must give the same contents,
+	// forever: the whole reason the seed is replicated is that the server can
+	// re-derive a roll without storing it, and a raid that re-rolls on retry is
+	// a duplication bug.
+	FRandomStream A(SarkoLoot::ContainerSeed(12345, 7));
+	FRandomStream B(SarkoLoot::ContainerSeed(12345, 7));
+	const TArray<FSarkoItemStack> First = SarkoLoot::RollContainer(Military, A);
+	const TArray<FSarkoItemStack> Second = SarkoLoot::RollContainer(Military, B);
+
+	TestEqual(TEXT("the same seed and index give the same number of stacks"), First.Num(), Second.Num());
+	for (int32 i = 0; i < FMath::Min(First.Num(), Second.Num()); ++i)
+	{
+		TestEqual(TEXT("the same item"), First[i].Item, Second[i].Item);
+		TestEqual(TEXT("the same quantity"), First[i].Quantity, Second[i].Quantity);
+	}
+
+	// Different containers in the same raid must not all hold the same thing.
+	int32 Distinct = 0;
+	for (int32 Index = 0; Index < 42; ++Index)
+	{
+		FRandomStream Stream(SarkoLoot::ContainerSeed(12345, Index));
+		const TArray<FSarkoItemStack> Roll = SarkoLoot::RollContainer(Military, Stream);
+		if (Roll.Num() != First.Num() || (Roll.Num() > 0 && Roll[0].Quantity != First[0].Quantity))
+		{
+			++Distinct;
+		}
+	}
+	TestTrue(TEXT("42 containers do not all roll identically"), Distinct > 10);
+
+	// ContainerSeed must not overflow-trap on the largest seeds the backend
+	// sends: StartRaid returns int64(rand.Uint32()), so about half of all real
+	// seeds arrive with the sign bit set.
+	FRandomStream Wrapped(SarkoLoot::ContainerSeed(MIN_int32, 41));
+	TestTrue(TEXT("a negative seed still produces a usable stream"),
+		SarkoLoot::RollContainer(Military, Wrapped).Num() >= Military.MinRolls);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoRollObeysTheTableBounds,
+	"Sarko.Loot.RollObeysTheTableBounds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoRollObeysTheTableBounds::RunTest(const FString& Parameters)
+{
+	const FSarkoItemCatalog Catalog = FixtureCatalog();
+	FSarkoLootTables Tables;
+	FString Error;
+	if (!SarkoLoot::ParseLootTables(GoodTablesJson, Catalog, Tables, Error))
+	{
+		AddError(FString::Printf(TEXT("fixture tables failed to parse: %s"), *Error));
+		return false;
+	}
+
+	// Over a thousand rolls: a stack outside the table's declared range, an item
+	// not in the table, or a good/military container coming up empty are all
+	// silent-in-play, obvious-in-aggregate faults.
+	const FSarkoLootTable& Good = *Tables.Find(TEXT("good"));
+	int32 Empties = 0;
+	for (int32 Index = 0; Index < 1000; ++Index)
+	{
+		FRandomStream Stream(SarkoLoot::ContainerSeed(999, Index));
+		const TArray<FSarkoItemStack> Roll = SarkoLoot::RollContainer(Good, Stream);
+		if (Roll.Num() == 0)
+		{
+			++Empties;
+			continue;
+		}
+		TestTrue(TEXT("roll count is within rolls.min/max"),
+			Roll.Num() >= Good.MinRolls && Roll.Num() <= Good.MaxRolls);
+		for (const FSarkoItemStack& Stack : Roll)
+		{
+			const FSarkoLootEntry* Entry = Good.Entries.FindByPredicate(
+				[&Stack](const FSarkoLootEntry& E) { return E.Item == Stack.Item; });
+			TestNotNull(TEXT("every rolled item is in the table"), Entry);
+			if (Entry)
+			{
+				TestTrue(TEXT("quantity is within qty.min/max"),
+					Stack.Quantity >= Entry->MinQuantity && Stack.Quantity <= Entry->MaxQuantity);
+			}
+		}
+	}
+	TestEqual(TEXT("a good container is never empty (ТЗ §30)"), Empties, 0);
+
+	// A junk container's empty rate must sit near its declared chance, not
+	// wildly off: an emptyChance that does nothing is a table nobody tuned.
+	const FSarkoLootTable& Junk = *Tables.Find(TEXT("junk"));
+	int32 JunkEmpties = 0;
+	for (int32 Index = 0; Index < 2000; ++Index)
+	{
+		FRandomStream Stream(SarkoLoot::ContainerSeed(7, Index));
+		if (SarkoLoot::RollContainer(Junk, Stream).Num() == 0)
+		{
+			++JunkEmpties;
+		}
+	}
+	const float Rate = static_cast<float>(JunkEmpties) / 2000.f;
+	TestTrue(FString::Printf(TEXT("junk empties at roughly 15%% (got %.1f%%)"), Rate * 100.f),
+		Rate > 0.10f && Rate < 0.21f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoRealLootTablesObeyTheDesignRules,
+	"Sarko.Loot.RealLootTablesObeyTheDesignRules",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoRealLootTablesObeyTheDesignRules::RunTest(const FString& Parameters)
+{
+	FSarkoItemCatalog Catalog;
+	FString Error;
+	if (!SarkoLoot::LoadItemCatalogFromDisk(Catalog, Error))
+	{
+		AddError(FString::Printf(TEXT("items.json failed to load: %s"), *Error));
+		return false;
+	}
+	FSarkoLootTables Tables;
+	if (!SarkoLoot::LoadLootTablesFromDisk(Catalog, Tables, Error))
+	{
+		AddError(FString::Printf(TEXT("loot-tables.json failed to load: %s"), *Error));
+		return false;
+	}
+
+	// ТЗ §30, verbatim as rules.
+	const auto EmptyCap = [](FName Tier) -> float
+	{
+		if (Tier == TEXT("junk"))     { return 0.15f; }
+		if (Tier == TEXT("common"))   { return 0.08f; }
+		if (Tier == TEXT("med"))      { return 0.15f; }
+		return 0.f; // good and military are never empty
+	};
+
+	for (const FSarkoLootTable& Table : Tables.Tables)
+	{
+		TestTrue(FString::Printf(TEXT("'%s' emptyChance is within its cap"), *Table.Tier.ToString()),
+			Table.EmptyChance <= EmptyCap(Table.Tier) + KINDA_SMALL_NUMBER);
+
+		float TotalWeight = 0.f;
+		for (const FSarkoLootEntry& Entry : Table.Entries)
+		{
+			TotalWeight += Entry.Weight;
+		}
+		TestTrue(FString::Printf(TEXT("'%s' has positive total weight"), *Table.Tier.ToString()), TotalWeight > 0.f);
+
+		for (const FSarkoLootEntry& Entry : Table.Entries)
+		{
+			const FSarkoItemDef* Def = Catalog.Find(Entry.Item);
+			TestNotNull(*FString::Printf(TEXT("'%s' entry '%s' is a catalog item"),
+				*Table.Tier.ToString(), *Entry.Item.ToString()), Def);
+			if (!Def)
+			{
+				continue;
+			}
+
+			// The med tier is medicine, not a shortcut to a weapon or a bicycle.
+			if (Table.Tier == TEXT("med"))
+			{
+				TestTrue(*FString::Printf(TEXT("med tier does not yield '%s' (a %s)"),
+					*Entry.Item.ToString(), *Entry.Item.ToString()),
+					Def->Category != ESarkoItemCategory::Weapon && Def->Category != ESarkoItemCategory::VehiclePart);
+			}
+
+			// "Bicycle parts appear only as rare singles" — otherwise the first
+			// sector completes a vehicle tier in one or two raids and the whole
+			// garage progression is over before it starts.
+			if (Def->Category == ESarkoItemCategory::VehiclePart)
+			{
+				TestEqual(*FString::Printf(TEXT("vehicle part '%s' drops as a single"), *Entry.Item.ToString()),
+					Entry.MaxQuantity, 1);
+				TestTrue(*FString::Printf(TEXT("vehicle part '%s' is rare in '%s' (%.1f%% of weight)"),
+					*Entry.Item.ToString(), *Table.Tier.ToString(), 100.f * Entry.Weight / TotalWeight),
+					Entry.Weight / TotalWeight <= 0.03f);
+			}
+		}
+	}
+
+	// Every tier the shipped map actually uses must have a table, or those
+	// containers open to nothing at all.
+	FSarkoMapDefinition Map;
+	if (!SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Map, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json failed to load: %s"), *Error));
+		return false;
+	}
+	for (const FSarkoLootContainerSpot& Spot : Map.Containers)
+	{
+		TestNotNull(*FString::Printf(TEXT("bridge.json tier '%s' has a loot table"), *Spot.Tier.ToString()),
+			Tables.Find(Spot.Tier));
 	}
 	return true;
 }
