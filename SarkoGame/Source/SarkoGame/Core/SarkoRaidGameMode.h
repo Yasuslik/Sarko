@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Core/SarkoRaidGameState.h"
 #include "GameFramework/GameModeBase.h"
 #include "Map/SarkoMapDefinition.h"
 
@@ -38,6 +39,26 @@ public:
 	 */
 	virtual void RestartPlayer(AController* NewPlayer) override;
 
+	/**
+	 * Advances every player's extraction dwell and expires the raid clock. The
+	 * server's own copy of each pawn's location is what is measured — a client
+	 * never gets to claim it is standing in a zone (same discipline as the loot
+	 * channel).
+	 */
+	virtual void Tick(float DeltaSeconds) override;
+
+	/** Called by the player pawn's death handler, server side. */
+	void HandlePlayerDied(class ASarkoCharacter* Pawn);
+
+	/**
+	 * Ends the raid exactly once. Freezes input — on the server, by disabling
+	 * every player pawn's movement, not merely by asking the client to stop
+	 * sending — and (from Task 8) submits the result to the backend. Idempotent:
+	 * a death on the same frame the clock expires must not submit twice, and the
+	 * backend's idempotency is a safety net, not a licence.
+	 */
+	void FinishRaid(ESarkoRaidOutcome NewOutcome);
+
 	/** Shared basis for server-authoritative rolls, replicated through the game state. Read from the `Seed` URL option when present. */
 	UPROPERTY(BlueprintReadOnly, Category = "Raid")
 	int32 Seed = 1;
@@ -56,4 +77,11 @@ public:
 private:
 	/** Round-robins through CachedLayout.PlayerStarts across spawns and respawns. */
 	int32 NextPlayerStartIndex = 0;
+
+	/**
+	 * Server-side per-pawn dwell, in seconds. Keyed weakly so a destroyed pawn's
+	 * entry cannot keep it alive; stale entries are pruned when their key goes
+	 * stale rather than left to accumulate.
+	 */
+	TMap<TWeakObjectPtr<class ASarkoCharacter>, float> DwellSeconds;
 };

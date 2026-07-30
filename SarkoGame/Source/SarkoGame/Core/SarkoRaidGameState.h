@@ -16,6 +16,38 @@
 struct FSarkoMapDefinition;
 class ASarkoLootContainer;
 
+/** How a raid ended. Replicated to everyone: the HUD's final screen reads it. */
+UENUM()
+enum class ESarkoRaidOutcome : uint8
+{
+	InProgress,
+	/** Stood the full dwell in a zone. The backpack is the haul. */
+	Extracted,
+	/** HP hit zero. The backpack is already empty by the time this is set. */
+	Died,
+	/**
+	 * The raid clock ran out. Spec §4.5: MIA is death — loot lost, submitted to
+	 * the backend as `died`. It is the ceiling on a raid, not its goal.
+	 */
+	MIA
+};
+
+namespace SarkoRaid
+{
+	/**
+	 * Whether a requested outcome may replace the current one. Pure, so the one
+	 * rule that keeps a raid from being decided twice is unit tested with no
+	 * world, no game mode and no network.
+	 *
+	 * First real outcome wins, and nothing may finish a raid into InProgress.
+	 * The clock reaching zero on the same frame a dwell completes must not turn
+	 * an extraction into an MIA, and a bullet landing on the extraction frame
+	 * must not turn it into a KIA — the outcome is submitted to the backend once
+	 * (Task 8), and the backend's idempotency is a safety net, not a licence.
+	 */
+	bool CanFinishRaid(ESarkoRaidOutcome Current, ESarkoRaidOutcome Requested);
+}
+
 /**
  * Raid clock and raid seed. The server owns both; every client reads
  * RemainingSeconds to draw the timer.
@@ -89,6 +121,16 @@ public:
 	void StartRaidClock(float DurationSeconds);
 
 	bool IsRaidOver() const { return bClockStarted && RemainingSeconds <= 0.f; }
+
+	/**
+	 * How this raid ended, or InProgress. Written only by
+	 * ASarkoRaidGameMode::FinishRaid, on the server, exactly once; replicated to
+	 * everyone because it is what freezes input and draws the summary.
+	 */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Raid")
+	ESarkoRaidOutcome Outcome = ESarkoRaidOutcome::InProgress;
+
+	bool IsRaidFinished() const { return Outcome != ESarkoRaidOutcome::InProgress; }
 
 	/**
 	 * One byte per container index: 1 means emptied. This is the only loot state

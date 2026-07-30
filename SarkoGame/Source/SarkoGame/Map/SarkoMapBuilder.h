@@ -76,4 +76,12 @@ namespace SarkoMap
 	 * local — nothing here replicates.
 	 */
 	void SpawnLootContainers(UWorld& World, const FSarkoMapDefinition& Definition);
+
+	/**
+	 * Spawns one visual pad per extraction spot, in array order, on every
+	 * machine — so ZoneIndex means the same thing everywhere, exactly as
+	 * ContainerIndex does. The pads decide nothing: the dwell is measured by the
+	 * game mode against the definition, server side.
+	 */
+	void SpawnExtractionZones(UWorld& World, const FSarkoMapDefinition& Definition);
 }

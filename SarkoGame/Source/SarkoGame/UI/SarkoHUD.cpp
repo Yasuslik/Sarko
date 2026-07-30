@@ -6,7 +6,10 @@
 #include "Core/SarkoRaidSettings.h"
 #include "Engine/Canvas.h"
 #include "Loot/SarkoBackpack.h"
+#include "Loot/SarkoExtractionZone.h"
+#include "Loot/SarkoItemCatalog.h"
 #include "Loot/SarkoLootContainer.h"
+#include "Map/SarkoMapDefinition.h"
 #include "Pawn/SarkoCharacter.h"
 
 void ASarkoHUD::DrawHUD()
@@ -32,6 +35,9 @@ void ASarkoHUD::DrawHUD()
 	DrawAmmo();
 	DrawBackpack();
 	DrawInteract();
+	DrawExtraction();
+	// Last, so the final screen is over everything else rather than under it.
+	DrawOutcomeSummary();
 }
 
 void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, const FLinearColor& Colour)
@@ -134,6 +140,15 @@ void ASarkoHUD::DrawHealth()
 	DrawRect(Fill, BarX, BarY, BarWidth * Fraction, BarHeight);
 
 	if (!Health->IsDead())
+	{
+		return;
+	}
+
+	// Once the raid has an outcome, DrawOutcomeSummary says KIA in the same place
+	// and says it better. Two centred death banners stacked on each other is
+	// worse than either alone.
+	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
+	if (RaidState && RaidState->IsRaidFinished())
 	{
 		return;
 	}
@@ -259,4 +274,116 @@ void ASarkoHUD::DrawInteract()
 	const float BarY = PromptY + PromptHeight + 10.f;
 	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.5f), BarX - 2.f, BarY - 2.f, BarWidth + 4.f, BarHeight + 4.f);
 	DrawRect(FLinearColor(0.95f, 0.8f, 0.25f, 0.9f), BarX, BarY, BarWidth * Fraction, BarHeight);
+}
+
+const FString& ASarkoHUD::ZoneNameFor(int32 ZoneIndex)
+{
+	// Fallback, not a label: a generic word here means the map file and the
+	// server's zone list have drifted, which should be visible rather than
+	// crash the HUD.
+	static const FString Generic(TEXT("ЕВАКУАЦІЯ"));
+
+	if (!bZoneNamesCached)
+	{
+		// Once per HUD, not once per frame. DrawHUD is a tick path.
+		bZoneNamesCached = true;
+		FSarkoMapDefinition Definition;
+		FString Error;
+		if (SarkoMap::LoadDefinitionFromDisk(GetDefault<USarkoRaidSettings>()->MapId.ToString(), Definition, Error))
+		{
+			CachedZoneNames.Reserve(Definition.Extractions.Num());
+			for (const FSarkoExtractionSpot& Spot : Definition.Extractions)
+			{
+				CachedZoneNames.Add(Spot.Name.IsEmpty() ? Generic : Spot.Name);
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("SarkoHUD: extraction zone names unavailable: %s"), *Error);
+		}
+	}
+
+	return CachedZoneNames.IsValidIndex(ZoneIndex) ? CachedZoneNames[ZoneIndex] : Generic;
+}
+
+void ASarkoHUD::DrawExtraction()
+{
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	if (!Pawn || Pawn->ExtractZoneIndex == INDEX_NONE)
+	{
+		return;
+	}
+
+	const float Required = FMath::Max(0.1f, GetDefault<USarkoRaidSettings>()->ExtractDwellSeconds);
+	const float Left = FMath::Max(0.f, Required - Pawn->ExtractDwellSeconds);
+	const FString Text = FString::Printf(TEXT("%s — %.1f"), *ZoneNameFor(Pawn->ExtractZoneIndex), Left);
+
+	// Top-centre, below the clock and the loot prompt's slot: everything
+	// informational lives along the top (spec §9), and never a bottom corner.
+	float Width = 0.f;
+	float Height = 0.f;
+	GetTextSize(Text, Width, Height, GEngine->GetLargeFont(), 1.5f);
+	const float X = (Canvas->SizeX - Width) * 0.5f;
+	constexpr float Y = 130.f;
+	DrawRect(FLinearColor(0.f, 0.25f, 0.05f, 0.55f), X - 14.f, Y - 6.f, Width + 28.f, Height + 12.f);
+	DrawText(Text, FLinearColor(0.55f, 1.f, 0.6f), X, Y, GEngine->GetLargeFont(), 1.5f);
+}
+
+void ASarkoHUD::DrawOutcomeSummary()
+{
+	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
+	if (!RaidState || !RaidState->IsRaidFinished())
+	{
+		return;
+	}
+
+	FString Title;
+	FLinearColor Colour;
+	switch (RaidState->Outcome)
+	{
+	case ESarkoRaidOutcome::Extracted: Title = TEXT("EXTRACTED"); Colour = FLinearColor(0.4f, 1.f, 0.45f); break;
+	case ESarkoRaidOutcome::MIA:       Title = TEXT("MIA");       Colour = FLinearColor(1.f, 0.65f, 0.2f);  break;
+	default:                           Title = TEXT("KIA");       Colour = FLinearColor(1.f, 0.25f, 0.2f);  break;
+	}
+
+	// Dim the world so the summary is unmistakably a final screen rather than
+	// another HUD element.
+	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.55f), 0.f, 0.f, Canvas->SizeX, Canvas->SizeY);
+
+	float TitleWidth = 0.f;
+	float TitleHeight = 0.f;
+	GetTextSize(Title, TitleWidth, TitleHeight, GEngine->GetLargeFont(), 2.5f);
+	float Y = Canvas->SizeY * 0.22f;
+	DrawText(Title, Colour, (Canvas->SizeX - TitleWidth) * 0.5f, Y, GEngine->GetLargeFont(), 2.5f);
+	Y += TitleHeight + 24.f;
+
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	const USarkoBackpackComponent* Backpack = Pawn ? Pawn->BackpackComponent : nullptr;
+	if (!Backpack || Backpack->GetUsedSlots() == 0)
+	{
+		// Died and MIA both arrive here: the server emptied the backpack before
+		// the outcome was set, so "nothing" is the honest and correct summary.
+		const FString Empty = TEXT("НІЧОГО НЕ ВИНЕСЕНО");
+		float Width = 0.f;
+		float Height = 0.f;
+		GetTextSize(Empty, Width, Height, GEngine->GetLargeFont(), 1.f);
+		DrawText(Empty, FLinearColor(0.8f, 0.8f, 0.8f), (Canvas->SizeX - Width) * 0.5f, Y, GEngine->GetLargeFont(), 1.f);
+		return;
+	}
+
+	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+	for (const FSarkoItemStack& Stack : Backpack->GetSlots())
+	{
+		const FSarkoItemDef* Def = Catalog.Find(Stack.Item);
+		// The id is the fallback, not the label: an id on screen means the
+		// catalog and the loot table have drifted, and it should be visible.
+		const FString Line = FString::Printf(TEXT("%s  x%d"),
+			Def ? *Def->Name : *Stack.Item.ToString(), Stack.Quantity);
+
+		float Width = 0.f;
+		float Height = 0.f;
+		GetTextSize(Line, Width, Height, GEngine->GetLargeFont(), 1.f);
+		DrawText(Line, FLinearColor::White, (Canvas->SizeX - Width) * 0.5f, Y, GEngine->GetLargeFont(), 1.f);
+		Y += Height + 6.f;
+	}
 }

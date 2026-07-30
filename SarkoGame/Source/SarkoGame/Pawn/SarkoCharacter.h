@@ -84,6 +84,27 @@ public:
 	/** Seconds the channel has been running, or 0. Used by the HUD for the progress bar. */
 	float GetLootChannelElapsed() const;
 
+	/** Server only: pushes the dwell state the owning client's HUD draws. */
+	void SetExtractProgress(int32 ZoneIndex, float DwellSeconds);
+
+	/** INDEX_NONE when not in a zone. Owner-only replicated. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Extraction")
+	int32 ExtractZoneIndex = INDEX_NONE;
+
+	/** Seconds stood in the current zone. Owner-only replicated. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Extraction")
+	float ExtractDwellSeconds = 0.f;
+
+	/**
+	 * Server only: the raid is over for this pawn, whatever the outcome.
+	 *
+	 * Movement is disabled on the *server's* copy, which is what makes the
+	 * freeze real: a client that keeps sending ServerMove gets MOVE_None applied
+	 * to it. Deliberately not an unpossess — the HUD still has to read the
+	 * backpack it is about to list on the summary screen.
+	 */
+	void FreezeForRaidEnd();
+
 protected:
 	UFUNCTION()
 	void OnRep_AimDirection() {}
@@ -141,6 +162,14 @@ private:
 
 	/** Server: completes the channel, rolls and transfers. Called from Tick. */
 	void TickLootChannel();
+
+	/**
+	 * True once the game state carries a real outcome. Every server RPC on this
+	 * pawn consults it, so the freeze does not depend on the client politely
+	 * stopping — spec §4.5's "input is frozen" has to hold against a client that
+	 * does not cooperate.
+	 */
+	bool IsRaidFinishedNow() const;
 
 	FVector2D MoveIntent = FVector2D::ZeroVector;
 	float MoveScale = 0.f;

@@ -5,6 +5,11 @@
 #include "Map/SarkoMapDefinition.h"
 #include "Net/UnrealNetwork.h"
 
+bool SarkoRaid::CanFinishRaid(ESarkoRaidOutcome Current, ESarkoRaidOutcome Requested)
+{
+	return Current == ESarkoRaidOutcome::InProgress && Requested != ESarkoRaidOutcome::InProgress;
+}
+
 ASarkoRaidGameState::ASarkoRaidGameState()
 {
 	PrimaryActorTick.bCanEverTick = true;
@@ -19,6 +24,7 @@ void ASarkoRaidGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	// the server is also the only client and always sees its own value.
 	DOREPLIFETIME(ASarkoRaidGameState, Seed);
 	DOREPLIFETIME(ASarkoRaidGameState, LootedContainers);
+	DOREPLIFETIME(ASarkoRaidGameState, Outcome);
 }
 
 void ASarkoRaidGameState::OnRep_Seed()
@@ -71,6 +77,9 @@ void ASarkoRaidGameState::SpawnPrebuiltLayout(const FSarkoMapLayout& InLayout, c
 	// Containers are actors now, not marker boxes, and they spawn here so both
 	// the server and each client build the same set from the same file.
 	SarkoMap::SpawnLootContainers(*World, InDefinition);
+	// Visual only, and local for the same reason: the dwell is measured by the
+	// game mode against this same definition, on the server.
+	SarkoMap::SpawnExtractionZones(*World, InDefinition);
 	SizeLootState(InDefinition.Containers.Num());
 	bLayoutBuilt = true;
 }
@@ -149,6 +158,15 @@ void ASarkoRaidGameState::Tick(float DeltaSeconds)
 
 	// The clock only runs on the server; clients receive RemainingSeconds.
 	if (!HasAuthority() || !bClockStarted)
+	{
+		return;
+	}
+
+	// A finished raid's clock stops where it stopped. Not cosmetic: letting it
+	// keep draining to zero behind the summary screen leaves IsRaidOver() true
+	// for a raid that was extracted from, which is a trap for anything added
+	// later that reads the clock rather than the outcome.
+	if (IsRaidFinished())
 	{
 		return;
 	}

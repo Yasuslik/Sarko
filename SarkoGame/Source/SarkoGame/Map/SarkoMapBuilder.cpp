@@ -6,6 +6,7 @@
 #include "Engine/DirectionalLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
+#include "Loot/SarkoExtractionZone.h"
 #include "Loot/SarkoLootContainer.h"
 #include "Map/SarkoMapDefinition.h"
 #include "Map/SarkoMapKinds.h"
@@ -182,4 +183,29 @@ void SarkoMap::SpawnLootContainers(UWorld& World, const FSarkoMapDefinition& Def
 	}
 
 	UE_LOG(LogTemp, Display, TEXT("SarkoMap: spawned %d loot containers"), Definition.Containers.Num());
+}
+
+void SarkoMap::SpawnExtractionZones(UWorld& World, const FSarkoMapDefinition& Definition)
+{
+	for (int32 Index = 0; Index < Definition.Extractions.Num(); ++Index)
+	{
+		const FSarkoExtractionSpot& Spot = Definition.Extractions[Index];
+		const FTransform SpawnTransform(FRotator::ZeroRotator, Spot.Location);
+
+		// Deferred, unlike SpawnLootContainers: the pad's mesh is scaled to the
+		// zone's radius in BeginPlay, so the radius has to be set *before*
+		// BeginPlay runs or every pad comes out the class-default size.
+		ASarkoExtractionZone* Zone = World.SpawnActorDeferred<ASarkoExtractionZone>(
+			ASarkoExtractionZone::StaticClass(), SpawnTransform, /*Owner*/ nullptr, /*Instigator*/ nullptr,
+			ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+		if (!Zone)
+		{
+			UE_LOG(LogTemp, Error, TEXT("SarkoMap: failed to spawn extraction zone %d"), Index);
+			continue;
+		}
+		Zone->SetupFromSpot(Index, Spot.Name, Spot.RadiusUU);
+		Zone->FinishSpawning(SpawnTransform);
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("SarkoMap: spawned %d extraction zones"), Definition.Extractions.Num());
 }

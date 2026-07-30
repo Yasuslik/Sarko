@@ -80,6 +80,10 @@ void ASarkoCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(ASarkoCharacter, AimDirection);
+	// Owner-only for the same reason the backpack is: "that player is extracting"
+	// is the single most valuable thing an opponent could know.
+	DOREPLIFETIME_CONDITION(ASarkoCharacter, ExtractZoneIndex, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(ASarkoCharacter, ExtractDwellSeconds, COND_OwnerOnly);
 }
 
 void ASarkoCharacter::BeginPlay()
@@ -111,14 +115,70 @@ void ASarkoCharacter::HandleDeath(AActor* Killer)
 	LootChannelIndex = INDEX_NONE;
 	LocalChannelIndex = INDEX_NONE;
 
+	// Nor is a corpse mid-extraction. Cleared before the game mode is told, so
+	// the summary cannot flash a countdown from the frame the player died on.
+	ExtractZoneIndex = INDEX_NONE;
+	ExtractDwellSeconds = 0.f;
+
 	GetCharacterMovement()->StopMovementImmediately();
 	GetCharacterMovement()->DisableMovement();
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	MoveIntent = FVector2D::ZeroVector;
+	MoveScale = 0.f;
+
+	// The game mode owns the raid's outcome; the pawn only reports its own
+	// death. KIA is this path and nothing else — the death handling above is not
+	// duplicated there.
+	if (ASarkoRaidGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ASarkoRaidGameMode>() : nullptr)
+	{
+		GameMode->HandlePlayerDied(this);
+	}
+}
+
+void ASarkoCharacter::SetExtractProgress(int32 ZoneIndex, float DwellSeconds)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	ExtractZoneIndex = ZoneIndex;
+	ExtractDwellSeconds = DwellSeconds;
+}
+
+bool ASarkoCharacter::IsRaidFinishedNow() const
+{
+	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
+	return RaidState && RaidState->IsRaidFinished();
+}
+
+void ASarkoCharacter::FreezeForRaidEnd()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	// Collision is deliberately left alone, unlike HandleDeath: an extracted
+	// player is still a solid body standing on the pad while the summary shows.
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->StopMovementImmediately();
+		Movement->DisableMovement();
+	}
+	MoveIntent = FVector2D::ZeroVector;
+	MoveScale = 0.f;
+	bIsAiming = false;
+	LootChannelIndex = INDEX_NONE;
+	LocalChannelIndex = INDEX_NONE;
 }
 
 void ASarkoCharacter::RequestBeginLoot(int32 ContainerIndex)
 {
+	if (IsRaidFinishedNow())
+	{
+		return;
+	}
+
 	// Local copy first, so the progress bar starts moving this frame rather than
 	// after a round trip — the same reason a shot is drawn before the server
 	// confirms it (spec §10).
@@ -163,7 +223,7 @@ void ASarkoCharacter::ServerBeginLoot_Implementation(int32 ContainerIndex)
 {
 	const ASarkoRaidGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ASarkoRaidGameMode>() : nullptr;
 	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
-	if (!GameMode || !RaidState)
+	if (!GameMode || !RaidState || RaidState->IsRaidFinished())
 	{
 		return;
 	}
@@ -322,12 +382,23 @@ void ASarkoCharacter::SetAimIntent(FVector2D Intent, bool bInIsAiming)
 
 void ASarkoCharacter::ServerSetAim_Implementation(FVector_NetQuantizeNormal NewAim, bool bInIsAiming)
 {
+	// A finished raid does not accept aim either: leaving this open would let a
+	// non-cooperating client keep swinging its pawn around under the summary
+	// screen, and aim is what the next fire request is taken from.
+	if (IsRaidFinishedNow())
+	{
+		return;
+	}
 	AimDirection = NewAim;
 	bIsAiming = bInIsAiming;
 }
 
 void ASarkoCharacter::ServerSetAimState_Implementation(bool bInIsAiming)
 {
+	if (IsRaidFinishedNow())
+	{
+		return;
+	}
 	bIsAiming = bInIsAiming;
 }
 
@@ -340,6 +411,14 @@ FVector ASarkoCharacter::GetMuzzleLocation() const
 void ASarkoCharacter::RequestFire()
 {
 	if (HealthComponent && HealthComponent->IsDead())
+	{
+		return;
+	}
+
+	// Checked here as well as in ServerRequestFire_Implementation: on a listen
+	// server or a standalone run the authority path below calls the weapon
+	// directly and never passes through the RPC's gate.
+	if (IsRaidFinishedNow())
 	{
 		return;
 	}
@@ -362,6 +441,15 @@ void ASarkoCharacter::ServerRequestFire_Implementation(FVector Direction)
 	// modified client could skip that check entirely. The server's own
 	// HealthComponent is the only copy that can be trusted here.
 	if (HealthComponent && HealthComponent->IsDead())
+	{
+		return;
+	}
+
+	// Same reasoning, for the raid's outcome: once the raid is over the server
+	// stops honouring fire requests, rather than trusting the client to stop
+	// sending them. A shot fired after an extraction would damage a pawn in a
+	// raid whose result has already been decided.
+	if (IsRaidFinishedNow())
 	{
 		return;
 	}

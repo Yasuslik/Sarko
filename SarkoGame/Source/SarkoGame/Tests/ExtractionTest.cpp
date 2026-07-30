@@ -1,7 +1,10 @@
 #include "Misc/AutomationTest.h"
 
 #include "Core/SarkoPlayerController.h"
+#include "Core/SarkoRaidGameState.h"
+#include "Loot/SarkoExtractionZone.h"
 #include "Loot/SarkoLootContainer.h"
+#include "Map/SarkoMapDefinition.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -86,6 +89,170 @@ bool FSarkoInteractButtonAvoidsTheThumbs::RunTest(const FString& Parameters)
 		TestTrue(TEXT("the button sits in the vertical centre band, not against an edge"),
 			Rect.GetCenter().Y > Viewport.Y * 0.3f && Rect.GetCenter().Y < Viewport.Y * 0.7f);
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoDwellAccumulatesAndResets,
+	"Sarko.Extract.DwellAccumulatesAndResets",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoDwellAccumulatesAndResets::RunTest(const FString& Parameters)
+{
+	// Inside: time accrues.
+	float Dwell = 0.f;
+	for (int32 Frame = 0; Frame < 10; ++Frame)
+	{
+		Dwell = SarkoExtract::AdvanceDwell(Dwell, /*bInside*/ true, 0.1f);
+	}
+	TestTrue(TEXT("a second inside the zone accrues about a second"), FMath::IsNearlyEqual(Dwell, 1.f, 0.001f));
+
+	// Leaving resets to zero, not "pauses". Spec §4.5: leaving resets it.
+	// A pause would let a player hide behind cover, step in for a moment, step
+	// out, and stitch five seconds together out of safe fragments — which is
+	// exactly the risk the dwell exists to create.
+	Dwell = SarkoExtract::AdvanceDwell(Dwell, /*bInside*/ false, 0.1f);
+	TestEqual(TEXT("stepping out resets the dwell to zero"), Dwell, 0.f);
+
+	// Re-entering starts from zero.
+	Dwell = SarkoExtract::AdvanceDwell(Dwell, true, 0.5f);
+	TestEqual(TEXT("re-entering starts from zero"), Dwell, 0.5f);
+
+	// A frame hitch must not skip the dwell: a 3-second delta on a loading
+	// stall would otherwise complete most of an extraction the player never
+	// stood through. Clamped to a sane per-frame maximum.
+	const float AfterHitch = SarkoExtract::AdvanceDwell(0.f, true, 3.f);
+	TestTrue(TEXT("a huge frame delta is clamped"), AfterHitch <= 0.5f);
+
+	// Negative or zero delta changes nothing.
+	TestEqual(TEXT("a zero delta changes nothing"), SarkoExtract::AdvanceDwell(2.f, true, 0.f), 2.f);
+	TestEqual(TEXT("a negative delta changes nothing"), SarkoExtract::AdvanceDwell(2.f, true, -1.f), 2.f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoZoneLookupIsPlanarAndBounded,
+	"Sarko.Extract.ZoneLookupIsPlanarAndBounded",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoZoneLookupIsPlanarAndBounded::RunTest(const FString& Parameters)
+{
+	TArray<FSarkoExtractionSpot> Zones;
+	FSarkoExtractionSpot First;
+	First.Location = FVector(-14500.f, 18600.f, 0.f);
+	First.RadiusUU = 500.f;
+	First.Name = TEXT("Північна стежка");
+	Zones.Add(First);
+
+	FSarkoExtractionSpot Second;
+	Second.Location = FVector(-1500.f, 18700.f, 0.f);
+	Second.RadiusUU = 500.f;
+	Second.Name = TEXT("Шосе на північ");
+	Zones.Add(Second);
+
+	TestEqual(TEXT("dead centre of the first zone"),
+		SarkoExtract::FindZoneContaining(FVector(-14500.f, 18600.f, 150.f), Zones), 0);
+	TestEqual(TEXT("inside the second zone"),
+		SarkoExtract::FindZoneContaining(FVector(-1400.f, 18650.f, 150.f), Zones), 1);
+	TestEqual(TEXT("between the zones is no zone"),
+		SarkoExtract::FindZoneContaining(FVector(-8000.f, 18600.f, 150.f), Zones), INDEX_NONE);
+
+	// Height is ignored: the zone is a circle on the ground, and the pawn's
+	// origin is at capsule centre 150 uu up.
+	TestEqual(TEXT("standing height does not matter"),
+		SarkoExtract::FindZoneContaining(FVector(-14500.f, 18600.f, 900.f), Zones), 0);
+
+	// The radius boundary is inclusive, for the same reason CanInteract's is: a
+	// value tuned to 500 must not behave like 499.99 on one machine.
+	TestEqual(TEXT("the radius boundary is inclusive"),
+		SarkoExtract::FindZoneContaining(FVector(-14000.f, 18600.f, 150.f), Zones), 0);
+
+	// An empty list is not a crash and not zone zero.
+	const TArray<FSarkoExtractionSpot> NoZones;
+	TestEqual(TEXT("no zones means no zone"),
+		SarkoExtract::FindZoneContaining(FVector::ZeroVector, NoZones), INDEX_NONE);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBridgeExtractionsAreReachableAndDistinct,
+	"Sarko.Extract.BridgeExtractionsAreReachableAndDistinct",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBridgeExtractionsAreReachableAndDistinct::RunTest(const FString& Parameters)
+{
+	FSarkoMapDefinition Map;
+	FString Error;
+	if (!SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Map, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json failed to load: %s"), *Error));
+		return false;
+	}
+
+	TestTrue(TEXT("there is somewhere to extract"), Map.Extractions.Num() >= 1);
+
+	// Overlapping zones would make the dwell ambiguous: the pawn would be in two
+	// at once and FindZoneContaining would silently pick the earlier one, so the
+	// HUD could name a zone the player is not aiming for.
+	for (int32 A = 0; A < Map.Extractions.Num(); ++A)
+	{
+		for (int32 B = A + 1; B < Map.Extractions.Num(); ++B)
+		{
+			const float Distance = FVector2D(
+				Map.Extractions[A].Location.X - Map.Extractions[B].Location.X,
+				Map.Extractions[A].Location.Y - Map.Extractions[B].Location.Y).Size();
+			TestTrue(*FString::Printf(TEXT("extractions '%s' and '%s' do not overlap"),
+				*Map.Extractions[A].Name, *Map.Extractions[B].Name),
+				Distance > Map.Extractions[A].RadiusUU + Map.Extractions[B].RadiusUU);
+		}
+	}
+
+	// No spawn inside an extraction: the player must not be able to extract at
+	// second zero with the loadout they walked in with.
+	for (const FTransform& Spawn : Map.PlayerSpawns)
+	{
+		TestEqual(TEXT("no player spawn sits inside an extraction zone"),
+			SarkoExtract::FindZoneContaining(Spawn.GetLocation(), Map.Extractions), INDEX_NONE);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoRaidOutcomeIsDecidedOnce,
+	"Sarko.Extract.RaidOutcomeIsDecidedOnce",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoRaidOutcomeIsDecidedOnce::RunTest(const FString& Parameters)
+{
+	using ESarkoOutcome = ESarkoRaidOutcome;
+
+	// The three real outcomes are all reachable from a raid in progress.
+	for (const ESarkoOutcome Requested : { ESarkoOutcome::Extracted, ESarkoOutcome::Died, ESarkoOutcome::MIA })
+	{
+		TestTrue(TEXT("a raid in progress can reach any real outcome"),
+			SarkoRaid::CanFinishRaid(ESarkoOutcome::InProgress, Requested));
+	}
+
+	// The mutual exclusion that matters. The clock reaching zero on the same
+	// frame a dwell completes must not turn an extraction into an MIA, and a
+	// bullet landing on the extraction frame must not turn it into a KIA — nor
+	// the reverse. Whichever outcome the server saw first is the raid's outcome,
+	// and it is submitted to the backend exactly once (Task 8).
+	for (const ESarkoOutcome Settled : { ESarkoOutcome::Extracted, ESarkoOutcome::Died, ESarkoOutcome::MIA })
+	{
+		for (const ESarkoOutcome Requested : { ESarkoOutcome::Extracted, ESarkoOutcome::Died, ESarkoOutcome::MIA })
+		{
+			TestFalse(TEXT("a settled raid cannot be re-decided"),
+				SarkoRaid::CanFinishRaid(Settled, Requested));
+		}
+	}
+
+	// InProgress is not an outcome, so nothing may "finish" a raid into it —
+	// that would silently un-freeze input and reopen a submitted raid.
+	TestFalse(TEXT("a raid cannot be finished into InProgress"),
+		SarkoRaid::CanFinishRaid(ESarkoOutcome::InProgress, ESarkoOutcome::InProgress));
+	TestFalse(TEXT("a settled raid cannot be reopened"),
+		SarkoRaid::CanFinishRaid(ESarkoOutcome::Extracted, ESarkoOutcome::InProgress));
 	return true;
 }
 

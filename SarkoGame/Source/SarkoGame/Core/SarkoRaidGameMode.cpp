@@ -5,12 +5,20 @@
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Kismet/GameplayStatics.h"
+#include "Loot/SarkoBackpack.h"
+#include "Loot/SarkoExtractionZone.h"
 #include "Map/SarkoMapBuilder.h"
 #include "Pawn/SarkoCharacter.h"
+#include "Pawn/SarkoHealthComponent.h"
 #include "UI/SarkoHUD.h"
 
 ASarkoRaidGameMode::ASarkoRaidGameMode()
 {
+	// AGameModeBase does not tick by default. Without this the dwell never
+	// advances and the clock never expires into MIA — a silent failure where
+	// standing in the zone simply does nothing.
+	PrimaryActorTick.bCanEverTick = true;
+
 	GameStateClass = ASarkoRaidGameState::StaticClass();
 	DefaultPawnClass = ASarkoCharacter::StaticClass();
 	PlayerControllerClass = ASarkoPlayerController::StaticClass();
@@ -121,4 +129,116 @@ void ASarkoRaidGameMode::RestartPlayer(AController* NewPlayer)
 	}
 
 	Super::RestartPlayer(NewPlayer);
+}
+
+void ASarkoRaidGameMode::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	// A game mode only ever exists on the server, so everything below is
+	// authority-side by construction — including every location it measures.
+	ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>();
+	UWorld* World = GetWorld();
+	if (!RaidState || !World || RaidState->IsRaidFinished())
+	{
+		return;
+	}
+
+	// The clock is the ceiling. Spec §4.5: time out is MIA, which is death.
+	// Checked before the dwell, and FinishRaid is idempotent, so the frame a
+	// dwell completes on an expired clock still resolves to exactly one outcome.
+	if (RaidState->IsRaidOver())
+	{
+		FinishRaid(ESarkoRaidOutcome::MIA);
+		return;
+	}
+
+	const TArray<FSarkoExtractionSpot>& Zones = CachedDefinition.Extractions;
+	if (Zones.Num() == 0)
+	{
+		return;
+	}
+	const float RequiredDwell = FMath::Max(0.1f, GetDefault<USarkoRaidSettings>()->ExtractDwellSeconds);
+
+	// Prune pawns that are gone instead of letting the map grow for the whole
+	// raid. Cheap: it is one entry per living player, not per actor.
+	for (auto Entry = DwellSeconds.CreateIterator(); Entry; ++Entry)
+	{
+		if (!Entry.Key().IsValid())
+		{
+			Entry.RemoveCurrent();
+		}
+	}
+
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		ASarkoCharacter* Pawn = It->IsValid() ? Cast<ASarkoCharacter>((*It)->GetPawn()) : nullptr;
+		if (!Pawn || (Pawn->HealthComponent && Pawn->HealthComponent->IsDead()))
+		{
+			continue;
+		}
+
+		// The server's own copy of the pawn, never a client-supplied position —
+		// the same rule the loot channel follows.
+		const int32 ZoneIndex = SarkoExtract::FindZoneContaining(Pawn->GetActorLocation(), Zones);
+		float& Dwell = DwellSeconds.FindOrAdd(Pawn);
+		Dwell = SarkoExtract::AdvanceDwell(Dwell, ZoneIndex != INDEX_NONE, DeltaSeconds);
+
+		// Replicated to the owner only, so that pawn's HUD can draw a countdown
+		// without anyone else learning that somebody is extracting.
+		Pawn->SetExtractProgress(ZoneIndex, Dwell);
+
+		if (Dwell >= RequiredDwell && Zones.IsValidIndex(ZoneIndex))
+		{
+			UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: extracted at zone %d ('%s') with %d backpack slots used"),
+				ZoneIndex, *Zones[ZoneIndex].Name,
+				Pawn->BackpackComponent ? Pawn->BackpackComponent->GetUsedSlots() : 0);
+			FinishRaid(ESarkoRaidOutcome::Extracted);
+			return;
+		}
+	}
+}
+
+void ASarkoRaidGameMode::HandlePlayerDied(ASarkoCharacter* Pawn)
+{
+	// The pawn has already emptied its own backpack (see ASarkoCharacter::
+	// HandleDeath, which owns the whole death path — this only reports it), so
+	// by the time a result is submitted there is nothing to credit. The order
+	// matters and is deliberate.
+	FinishRaid(ESarkoRaidOutcome::Died);
+}
+
+void ASarkoRaidGameMode::FinishRaid(ESarkoRaidOutcome NewOutcome)
+{
+	ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>();
+	// CanFinishRaid is the whole idempotency and mutual-exclusion rule, pure and
+	// unit tested: first real outcome wins, and InProgress is not an outcome.
+	if (!RaidState || !SarkoRaid::CanFinishRaid(RaidState->Outcome, NewOutcome))
+	{
+		return;
+	}
+	RaidState->Outcome = NewOutcome;
+
+	// Input freeze, on the server. The owning client's controller also stops
+	// sending (ASarkoPlayerController::PlayerTick), but a client that keeps
+	// sending is exactly the case worth defending against: movement is disabled
+	// on the server's own copy of every player pawn, and the aim/fire/loot RPCs
+	// check the outcome for themselves, so ignoring the freeze buys nothing.
+	if (UWorld* World = GetWorld())
+	{
+		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+		{
+			if (ASarkoCharacter* Pawn = It->IsValid() ? Cast<ASarkoCharacter>((*It)->GetPawn()) : nullptr)
+			{
+				Pawn->FreezeForRaidEnd();
+			}
+		}
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: raid finished as %s, %.1f s left on the clock"),
+		*UEnum::GetValueAsString(NewOutcome), RaidState->RemainingSeconds);
+
+	// Task 8 adds the backend submission here. Deliberately after the state is
+	// set: the HUD must show the outcome immediately, whether or not the network
+	// cooperates (spec §4.6 — the game never hard-locks on network).
 }

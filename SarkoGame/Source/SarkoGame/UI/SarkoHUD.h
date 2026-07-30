@@ -28,4 +28,25 @@ private:
 
 	/** The interact button, the "search this crate" prompt and the channel's progress bar. */
 	void DrawInteract();
+
+	/** Zone name and the dwell countdown, top-centre, while the owning pawn is in a zone. */
+	void DrawExtraction();
+
+	/** The final screen: EXTRACTED and the haul, or KIA/MIA and nothing. Drawn last, over everything. */
+	void DrawOutcomeSummary();
+
+	/**
+	 * Extraction zone names, read from the map file once.
+	 *
+	 * Resolved locally rather than replicated: an FString on the wire for a value
+	 * that never changes would be pure waste, and every machine already has the
+	 * file. Cached rather than re-read per frame because DrawHUD is a tick path
+	 * and a disk read plus a whole parsed definition per frame is exactly the
+	 * per-tick allocation this project forbids.
+	 */
+	TArray<FString> CachedZoneNames;
+	bool bZoneNamesCached = false;
+
+	/** The zone's name for the HUD, or a generic label when the file cannot supply one. */
+	const FString& ZoneNameFor(int32 ZoneIndex);
 };

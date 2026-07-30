@@ -98,6 +98,16 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "Loot")
 	float LootChannelSeconds = 1.5f;
 
+	/**
+	 * Seconds the player must stand inside an extraction zone (spec §4.5).
+	 *
+	 * Slice-1 spec §8 says ten; the Stage A spec says five and is the later
+	 * decision, so five it is. This being tunable rather than a constant is the
+	 * point: it is the length of the most frightening moment in the raid.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Extraction")
+	float ExtractDwellSeconds = 5.f;
+
 	UPROPERTY(EditAnywhere, config, Category = "AI")
 	float EnemyHearingRadiusUU = 2500.f;
 

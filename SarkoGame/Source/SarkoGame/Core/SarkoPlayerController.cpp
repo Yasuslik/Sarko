@@ -1,6 +1,7 @@
 #include "Core/SarkoPlayerController.h"
 
 #include "Combat/SarkoWeapon.h"
+#include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Debug/SarkoOverviewShot.h"
 #include "EngineUtils.h"
@@ -40,6 +41,23 @@ void ASarkoPlayerController::PlayerTick(float DeltaTime)
 	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
 	if (!Pawn)
 	{
+		return;
+	}
+
+	// Spec §4.5: on a finished raid input is frozen and the summary is all that
+	// is left. Frozen here rather than by unpossessing the pawn, so the HUD can
+	// still read the backpack it is about to list. This is only the client half
+	// of the freeze — the server disables the pawn's movement and refuses its
+	// aim/fire/loot RPCs (ASarkoRaidGameMode::FinishRaid), because a client that
+	// keeps sending is precisely the case this must survive.
+	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
+	if (RaidState && RaidState->IsRaidFinished())
+	{
+		Pawn->SetMoveIntent(FVector2D::ZeroVector);
+		Pawn->SetAimIntent(FVector2D::ZeroVector, false);
+		bInteractHeld = false;
+		InteractTarget = nullptr;
+		HeldContainerIndex = INDEX_NONE;
 		return;
 	}
 
@@ -232,8 +250,12 @@ void ASarkoPlayerController::UpdateSticks()
 
 void ASarkoPlayerController::UpdateInteract()
 {
+	// UpdateInteract runs ahead of PlayerTick's freeze check, so the same
+	// condition is applied here: without it a finished raid would keep drawing a
+	// loot prompt and re-issuing channel requests the server now refuses.
+	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
 	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
-	if (!Pawn)
+	if (!Pawn || (RaidState && RaidState->IsRaidFinished()))
 	{
 		bInteractHeld = false;
 		HeldContainerIndex = INDEX_NONE;
