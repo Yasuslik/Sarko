@@ -106,6 +106,13 @@ namespace SarkoBackend
 	 * A GUID string, 36 characters, comfortably inside the backend's 128-char
 	 * cap. Persisted rather than derived from hardware so it survives an OS
 	 * update and never identifies the machine.
+	 *
+	 * It identifies an *install*, not a process: the file lives in this project's
+	 * Saved/ directory, so two `-game` instances launched from the same project
+	 * folder on one machine authenticate as the same player and share one stash.
+	 * That is fine for a listen-server test but wrong for testing two independent
+	 * players locally — that needs separate -userdir/project copies, or a
+	 * per-instance override of this id.
 	 */
 	FString EnsureDeviceId();
 
@@ -128,6 +135,14 @@ namespace SarkoBackend
 	 * With RAID_TTL=20m on the deployed service the map's 15 minutes is always the
 	 * smaller of the two, so this is a safety net that normally does not bite —
 	 * the game mode logs at Warning on the frame it ever does.
+	 *
+	 * SecondsUntilDeadline is measured against *this machine's* clock, so it also
+	 * absorbs clock skew. A local clock minutes ahead of the server's would floor a
+	 * 15-minute raid to the 30-second minimum while every log line blamed RAID_TTL,
+	 * so an implausibly short deadline (see the sane lower bound inside) is treated
+	 * as skew: the map's duration wins and the Warning names both numbers. A
+	 * deadline that is merely *short* — the RAID_TTL=12m shape — is still clamped
+	 * honestly.
 	 */
 	float ClockSecondsFromDeadline(float MapDurationSeconds, double SecondsUntilDeadline, float GraceMarginSeconds);
 
@@ -140,14 +155,21 @@ namespace SarkoBackend
 	const TCHAR* OutcomeToWire(ESarkoRaidOutcome Outcome);
 
 	/**
-	 * What the raid takes in. Must be a subset of what the backend's starter kit
-	 * grants, or a new player's first /v1/raid/start is 409 insufficient_items:
-	 * the loadout is debited at entry and a new player owns nothing else.
+	 * What the raid takes in on the wire. **Empty, on purpose** — see the comment
+	 * at the /v1/raid/start call site in SarkoRaidGameMode::BeginBackendSession.
 	 *
-	 * The medkit stays in the stash: this slice has no healing item to use, so
-	 * taking it in would only risk losing it.
+	 * /v1/raid/start debits the loadout from the stash and only the raid *result*
+	 * credits anything back, and the result carries the backpack alone. So any
+	 * non-empty loadout here is a one-way withdrawal: raid 1 spends the starter
+	 * kit, raid 2 gets 409 insufficient_items, and the client falls offline
+	 * permanently. Nothing in the raid reads the loadout anyway — the weapon is
+	 * abstract with infinite reloads — so debiting for it was risk without stakes.
+	 *
+	 * domain.ValidateStacks explicitly allows an empty list. This function stays
+	 * as the named seam to fill in when weapons and ammo become real in-raid
+	 * items and losing them on death is the actual stake.
 	 */
-	TArray<FSarkoItemStack> StarterLoadout();
+	TArray<FSarkoItemStack> WireLoadout();
 }
 
 /**

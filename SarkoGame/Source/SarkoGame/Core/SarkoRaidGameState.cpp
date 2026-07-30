@@ -18,6 +18,13 @@ bool SarkoRaid::OutcomeLosesHaul(ESarkoRaidOutcome Outcome)
 	return Outcome != ESarkoRaidOutcome::InProgress && Outcome != ESarkoRaidOutcome::Extracted;
 }
 
+bool SarkoRaid::CanActivateRaid(bool bSessionReady, ESarkoRaidOutcome Outcome)
+{
+	// Deliberately not IsLootable()'s inverse: this asks "may the raid still
+	// begin", which is false both once it has begun and once it has ended.
+	return !bSessionReady && Outcome == ESarkoRaidOutcome::InProgress;
+}
+
 ASarkoRaidGameState::ASarkoRaidGameState()
 {
 	PrimaryActorTick.bCanEverTick = true;

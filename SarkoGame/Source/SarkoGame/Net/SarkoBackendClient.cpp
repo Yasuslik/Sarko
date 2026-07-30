@@ -14,6 +14,53 @@
 
 namespace
 {
+	/**
+	 * Escapes a string so it can sit inside a JSON double-quoted value.
+	 *
+	 * The bodies below are assembled by hand (so the exact field names stay
+	 * visible in this file and cannot drift with a struct rename), which means
+	 * every interpolated value has to be escaped here instead. Without it a
+	 * designer-edited BackendMapId containing a quote, or any string with a
+	 * newline, produces malformed JSON and an unexplained 400 — the request would
+	 * look correct in the log and be rejected anyway.
+	 *
+	 * Deliberately **not** FString::ReplaceCharWithEscapedChar: its table maps `'`
+	 * to `\'`, which is not a legal JSON escape, so it would turn one awkward
+	 * character into the very 400 this prevents.
+	 */
+	FString EscapeJson(const FString& Value)
+	{
+		FString Out;
+		Out.Reserve(Value.Len());
+		for (const TCHAR Char : Value)
+		{
+			switch (Char)
+			{
+			case TEXT('\"'): Out += TEXT("\\\""); break;
+			case TEXT('\\'): Out += TEXT("\\\\"); break;
+			case TEXT('\b'): Out += TEXT("\\b"); break;
+			case TEXT('\f'): Out += TEXT("\\f"); break;
+			case TEXT('\n'): Out += TEXT("\\n"); break;
+			case TEXT('\r'): Out += TEXT("\\r"); break;
+			case TEXT('\t'): Out += TEXT("\\t"); break;
+			default:
+				if (Char < 0x20)
+				{
+					// Every other control character has to be escaped too; JSON
+					// forbids them raw. Anything above passes through, because Go
+					// reads the body as UTF-8 and so does FString's conversion.
+					Out += FString::Printf(TEXT("\\u%04x"), static_cast<uint32>(Char));
+				}
+				else
+				{
+					Out += Char;
+				}
+				break;
+			}
+		}
+		return Out;
+	}
+
 	/** Serialises stacks as the backend's `[{"item_id","quantity"}]`, dropping non-positive quantities. */
 	FString StacksToJsonArray(const TArray<FSarkoItemStack>& Stacks)
 	{
@@ -29,7 +76,7 @@ namespace
 				continue;
 			}
 			Parts.Add(FString::Printf(TEXT("{\"item_id\":\"%s\",\"quantity\":%d}"),
-				*Stack.Item.ToString(), Stack.Quantity));
+				*EscapeJson(Stack.Item.ToString()), Stack.Quantity));
 		}
 		return FString::Printf(TEXT("[%s]"), *FString::Join(Parts, TEXT(",")));
 	}
@@ -49,17 +96,19 @@ namespace
 
 FString SarkoBackend::MakeAnonymousBody(const FString& DeviceId)
 {
-	return FString::Printf(TEXT("{\"device_id\":\"%s\"}"), *DeviceId);
+	return FString::Printf(TEXT("{\"device_id\":\"%s\"}"), *EscapeJson(DeviceId));
 }
 
 FString SarkoBackend::MakeRaidStartBody(const FString& MapId, const TArray<FSarkoItemStack>& Loadout)
 {
-	return FString::Printf(TEXT("{\"map_id\":\"%s\",\"loadout\":%s}"), *MapId, *StacksToJsonArray(Loadout));
+	return FString::Printf(TEXT("{\"map_id\":\"%s\",\"loadout\":%s}"),
+		*EscapeJson(MapId), *StacksToJsonArray(Loadout));
 }
 
 FString SarkoBackend::MakeSessionBody(const FString& SessionId, const FString& SessionToken)
 {
-	return FString::Printf(TEXT("{\"session_id\":\"%s\",\"session_token\":\"%s\"}"), *SessionId, *SessionToken);
+	return FString::Printf(TEXT("{\"session_id\":\"%s\",\"session_token\":\"%s\"}"),
+		*EscapeJson(SessionId), *EscapeJson(SessionToken));
 }
 
 FString SarkoBackend::MakeRaidResultBody(const FString& SessionId, const FString& SessionToken,
@@ -67,7 +116,7 @@ FString SarkoBackend::MakeRaidResultBody(const FString& SessionId, const FString
 {
 	return FString::Printf(
 		TEXT("{\"session_id\":\"%s\",\"session_token\":\"%s\",\"outcome\":\"%s\",\"items\":%s}"),
-		*SessionId, *SessionToken, *Outcome, *StacksToJsonArray(Items));
+		*EscapeJson(SessionId), *EscapeJson(SessionToken), *EscapeJson(Outcome), *StacksToJsonArray(Items));
 }
 
 bool SarkoBackend::ParseAnonymousResponse(const FString& Json, FString& OutPlayerId, FString& OutToken, FString& OutError)
@@ -186,6 +235,12 @@ FString SarkoBackend::DeviceIdFilePath()
 {
 	// Under Saved/ so it survives a rebuild, is never committed, and is a plain
 	// runtime file rather than an asset — this project ships no binary assets.
+	//
+	// ProjectSavedDir() is per *project*, not per process: two `-game` instances
+	// launched from this same folder read the same file and therefore authenticate
+	// as one player against one stash. Harmless for the listen-server slice, but
+	// testing two independent players on one machine needs separate -userdir values
+	// (or project copies) rather than two windows.
 	return FPaths::ProjectSavedDir() / TEXT("SarkoDevice.txt");
 }
 
@@ -221,14 +276,38 @@ float SarkoBackend::ClockSecondsFromDeadline(float MapDurationSeconds, double Se
 	/** Never end a raid on the spawn frame, whatever the server said. */
 	constexpr float MinimumPlayableSeconds = 30.f;
 
+	/**
+	 * Below this, a deadline-derived clock is not believable for a map that asks
+	 * for minutes. RAID_TTL on the deployed service is longer than any shipped
+	 * map's duration, so the deadline cannot legitimately leave under two minutes
+	 * on a 15-minute map — the likely cause is this machine's clock, not the
+	 * server's configuration.
+	 */
+	constexpr float SanePlayableSeconds = 120.f;
+
 	const float FromMap = MapDurationSeconds > 0.f
 		? MapDurationSeconds
 		: GetDefault<USarkoRaidSettings>()->RaidDurationSeconds;
 
 	const float FromServer = static_cast<float>(SecondsUntilDeadline) - FMath::Max(0.f, GraceMarginSeconds);
 
+	// Clock skew, not a short session. SecondsUntilDeadline was measured with this
+	// machine's FDateTime::UtcNow, so a local clock running minutes fast shrinks it
+	// with nothing wrong on the server; obeying it would floor a 15-minute raid to
+	// 30 seconds while the caller's Warning blamed RAID_TTL for it. Naming both
+	// numbers is the point — the two of them together are what identify skew.
+	if (FromServer < SanePlayableSeconds && FromMap > SanePlayableSeconds)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("SarkoBackend: the server's deadline leaves only %.0fs while the map asks for %.0fs — implausible for RAID_TTL, so this machine's clock is probably skewed against the server's; using the map's %.0fs"),
+			FromServer, FromMap, FromMap);
+		return FromMap;
+	}
+
 	// The map is the ceiling and the server is the other ceiling; the floor stops
 	// a bad clock or an old deadline from producing a raid that is already over.
+	// Still honest when the deadline is genuinely short — the RAID_TTL=12m shape
+	// clamps to deadline − margin, well above the bound above.
 	return FMath::Max(MinimumPlayableSeconds, FMath::Min(FromMap, FMath::Max(FromServer, MinimumPlayableSeconds)));
 }
 
@@ -241,15 +320,18 @@ const TCHAR* SarkoBackend::OutcomeToWire(ESarkoRaidOutcome Outcome)
 	return Outcome == ESarkoRaidOutcome::Extracted ? TEXT("extracted") : TEXT("died");
 }
 
-TArray<FSarkoItemStack> SarkoBackend::StarterLoadout()
+TArray<FSarkoItemStack> SarkoBackend::WireLoadout()
 {
-	// Mirrors domain.StarterKit() minus the medkit. Keep them in step: this is
-	// debited from the stash at /v1/raid/start, and asking for more than the kit
-	// granted is 409 insufficient_items on a brand-new player's first raid.
-	TArray<FSarkoItemStack> Loadout;
-	Loadout.Add(FSarkoItemStack{ TEXT("pistol"), 1 });
-	Loadout.Add(FSarkoItemStack{ TEXT("ammo_9mm"), 60 });
-	return Loadout;
+	// Empty, and that is the fix rather than an omission. /v1/raid/start debits
+	// whatever is listed here, and the only credit back is the raid *result*, which
+	// carries the backpack alone — so a pistol and 60 rounds walked out of the
+	// stash on raid 1 and never returned, and raid 2 answered 409
+	// insufficient_items forever after. domain.ValidateStacks accepts an empty
+	// list, so this is a legal request and not a loophole.
+	//
+	// Refill this — and start crediting survivors' equipment back in the result —
+	// when weapons and ammo are real in-raid items that can actually be lost.
+	return TArray<FSarkoItemStack>();
 }
 
 void FSarkoBackendClient::Send(const FString& Path, const FString& Body, bool bAuthenticated,
@@ -319,9 +401,15 @@ void FSarkoBackendClient::Send(const FString& Path, const FString& Body, bool bA
 
 	if (!Request->ProcessRequest())
 	{
-		const FString Error = FString::Printf(TEXT("%s: the request could not be dispatched"), *Path);
-		UE_LOG(LogTemp, Error, TEXT("SarkoBackend: %s"), *Error);
-		OnComplete(false, FString(), Error);
+		// Logged, but *not* called back: in UE 5.8 a false return means the request
+		// was already finished through FinishRequestNotInHttpManager, which fired
+		// OnProcessRequestComplete synchronously — the lambda above has run with
+		// bConnected=false and OnComplete has already been invoked. Calling it again
+		// here would double-fire every handler: two offline-fallback logs, and on the
+		// result path two SubmitResult attempts for one raid.
+		UE_LOG(LogTemp, Error,
+			TEXT("SarkoBackend: %s: the request could not be dispatched (the completion above is that failure)"),
+			*Path);
 	}
 }
 

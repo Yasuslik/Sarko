@@ -36,7 +36,14 @@ void ASarkoRaidGameMode::InitGame(const FString& MapName, const FString& Options
 	const FString SeedOption = UGameplayStatics::ParseOption(Options, TEXT("Seed"));
 	if (!SeedOption.IsEmpty())
 	{
-		Seed = FCString::Atoi(*SeedOption);
+		// Atoi64 then SeedToInt32, not FCString::Atoi: the seeds worth typing here
+		// are the ones copied out of a sarko-api log line, and StartRaid produces
+		// them as int64(rand.Uint32()) — so about half of them exceed INT32_MAX.
+		// Atoi saturates at 2147483647, which silently rolls a *different* set of
+		// crates than the server logged under that seed and makes the one
+		// reproduction tool in the project lie. SeedToInt32 wraps the same bits the
+		// online path wraps, so `?Seed=3402905197` reproduces that raid exactly.
+		Seed = SarkoBackend::SeedToInt32(FCString::Atoi64(*SeedOption));
 	}
 
 	// The salt, generated here on the authority and never replicated. Unlike Seed
@@ -160,8 +167,24 @@ void ASarkoRaidGameMode::BeginBackendSession()
 			return;
 		}
 
+		// The loadout goes out **empty**, and it must stay empty until in-raid
+		// weapons and ammo are real items.
+		//
+		// /v1/raid/start debits the loadout from the stash; nothing credits it back
+		// except the raid result, and the result submits the backpack alone. So the
+		// pistol and 60 rounds this used to send were a one-way withdrawal: the first
+		// raid spent the starter kit and every raid after it got 409
+		// insufficient_items, which fell through to the offline path permanently —
+		// the online loop worked exactly once per install. Nothing in the raid even
+		// reads the loadout: the weapon is abstract with infinite reloads, so the
+		// debit was risk with no matching stake, which is dishonest rather than hard.
+		//
+		// An empty loadout means a PvE raid risks only the loot it finds, which is
+		// the intended economy for the tutorial sector. Restore the debit — together
+		// with crediting a survivor's kit back in the result — when losing a weapon
+		// on death is a real consequence.
 		const FString MapId = GetDefault<USarkoRaidSettings>()->BackendMapId;
-		Self->Backend->StartRaid(MapId, SarkoBackend::StarterLoadout(),
+		Self->Backend->StartRaid(MapId, SarkoBackend::WireLoadout(),
 			[WeakThis](bool bStarted, const FSarkoRaidSession& NewSession, const FString& StartError)
 			{
 				ASarkoRaidGameMode* Inner = WeakThis.Get();
@@ -246,8 +269,24 @@ void ASarkoRaidGameMode::FallBackToOfflineRaid(const FString& Reason)
 void ASarkoRaidGameMode::ActivateRaid(int32 AuthoritativeSeed, float ClockSeconds)
 {
 	ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>();
-	if (!RaidState || RaidState->bSessionReady)
+	if (!RaidState)
 	{
+		return;
+	}
+	// Both refusals live in SarkoRaid::CanActivateRaid, pure and unit tested. The
+	// settled-outcome half is the one that bites: the damage gate opens on
+	// IsRaidFinished() alone, so a player can be shot dead during the
+	// auth→start→confirm round trip, and the confirm landing afterwards would
+	// otherwise re-arm the raid under its own KIA summary — a fresh seed that
+	// re-rolls every container, and a fresh full clock on a corpse whose result was
+	// already decided.
+	if (!SarkoRaid::CanActivateRaid(RaidState->bSessionReady, RaidState->Outcome))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("SarkoRaidGameMode: refused to activate a raid that is already %s (session ready: %s) — seed %d and a %.0fs clock were discarded"),
+			*UEnum::GetValueAsString(RaidState->Outcome),
+			RaidState->bSessionReady ? TEXT("yes") : TEXT("no"),
+			AuthoritativeSeed, ClockSeconds);
 		return;
 	}
 

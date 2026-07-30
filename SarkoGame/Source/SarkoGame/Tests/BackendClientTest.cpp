@@ -2,8 +2,11 @@
 
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
+#include "Dom/JsonObject.h"
 #include "Loot/SarkoItemCatalog.h"
 #include "Net/SarkoBackendClient.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -212,11 +215,21 @@ bool FSarkoRaidClockStopsShortOfTheServerDeadline::RunTest(const FString& Parame
 		FMath::IsNearlyEqual(SarkoBackend::ClockSecondsFromDeadline(900.f, 1800.0, 120.f), 900.f, 0.5f));
 
 	// A deadline already in the past, or inside the margin, must not produce a
-	// zero or negative clock — that would end the raid on the spawn frame.
+	// zero or negative clock — that would end the raid on the spawn frame. Against a
+	// 15-minute map both of these now route through the clock-skew branch (see
+	// RaidClockDistrustsASkewedLocalClock) and come back with the map's duration,
+	// which is a stronger result than the 30-second floor and satisfies the same
+	// rule; the Warning each one logs is the branch announcing itself.
 	TestTrue(TEXT("an expired deadline still yields a playable floor"),
 		SarkoBackend::ClockSecondsFromDeadline(900.f, -5.0, 120.f) >= 30.f);
 	TestTrue(TEXT("a deadline inside the margin still yields a playable floor"),
 		SarkoBackend::ClockSecondsFromDeadline(900.f, 60.0, 120.f) >= 30.f);
+
+	// The floor itself still exists, for the case the skew branch cannot cover: a
+	// short map *and* a dead deadline, where there is no believable larger number to
+	// fall back to.
+	TestTrue(TEXT("a short map with an expired deadline still gets the 30s floor"),
+		FMath::IsNearlyEqual(SarkoBackend::ClockSecondsFromDeadline(60.f, -5.0, 120.f), 30.f, 0.5f));
 
 	// A map with no duration falls back to the settings default, never to zero.
 	TestTrue(TEXT("a zero map duration does not produce a zero clock"),
@@ -251,17 +264,33 @@ bool FSarkoOutcomeMapsToTheWireStrings::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FSarkoStarterLoadoutIsAffordable,
-	"Sarko.Backend.StarterLoadoutIsAffordable",
+	FSarkoWireLoadoutIsEmptyAndUnpaid,
+	"Sarko.Backend.WireLoadoutIsEmptyAndUnpaid",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FSarkoStarterLoadoutIsAffordable::RunTest(const FString& Parameters)
+bool FSarkoWireLoadoutIsEmptyAndUnpaid::RunTest(const FString& Parameters)
 {
-	const TArray<FSarkoItemStack> Loadout = SarkoBackend::StarterLoadout();
-	TestTrue(TEXT("the raid takes something in"), Loadout.Num() > 0);
+	// The loadout must be empty, and this is the test that says why rather than a
+	// test that merely records the current value.
+	//
+	// /v1/raid/start debits the loadout from the stash and only the raid result
+	// credits anything back — and the result submits the backpack alone. So any
+	// non-empty loadout here is a withdrawal with no matching deposit: raid 1 spends
+	// the starter kit, raid 2 is 409 insufficient_items, and the client degrades
+	// offline for the rest of the install's life. The online loop working exactly
+	// once is what this guards against.
+	const TArray<FSarkoItemStack> Loadout = SarkoBackend::WireLoadout();
+	TestEqual(TEXT("the raid takes nothing in until the result can credit it back"), Loadout.Num(), 0);
 
-	// Every item must be in the catalog, or /v1/raid/start answers 400
-	// implausible_items and no raid ever begins.
+	// And it must serialise as an empty array rather than a null: domain.
+	// ValidateStacks accepts an empty list, but a `"loadout":null` would be a 400.
+	const FString Start = SarkoBackend::MakeRaidStartBody(TEXT("bridge"), Loadout);
+	TestTrue(TEXT("an empty loadout is an empty JSON array"), Start.Contains(TEXT("\"loadout\":[]")));
+
+	// When it is refilled — once weapons and ammo are real in-raid items — every
+	// entry still has to be a catalog item with a positive quantity, or /v1/raid/
+	// start answers 400 implausible_items and no raid ever begins. Kept live so the
+	// rule is already enforced on the day somebody adds the first stack back.
 	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
 	for (const FSarkoItemStack& Stack : Loadout)
 	{
@@ -269,19 +298,158 @@ bool FSarkoStarterLoadoutIsAffordable::RunTest(const FString& Parameters)
 			Catalog.Find(Stack.Item));
 		TestTrue(TEXT("quantities are positive"), Stack.Quantity > 0);
 	}
+	return true;
+}
 
-	// It must be exactly what the backend's starter kit grants, or the very first
-	// /v1/raid/start fails with 409 insufficient_items: the loadout is debited at
-	// entry, and a new player owns nothing else.
-	TestTrue(TEXT("the loadout is one pistol"),
-		Loadout.FindByPredicate([](const FSarkoItemStack& S) { return S.Item == FName(TEXT("pistol")); }) != nullptr);
-	const FSarkoItemStack* Ammo = Loadout.FindByPredicate(
-		[](const FSarkoItemStack& S) { return S.Item == FName(TEXT("ammo_9mm")); });
-	TestNotNull(TEXT("the loadout carries ammo"), Ammo);
-	if (Ammo)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoRaidClockDistrustsASkewedLocalClock,
+	"Sarko.Backend.RaidClockDistrustsASkewedLocalClock",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoRaidClockDistrustsASkewedLocalClock::RunTest(const FString& Parameters)
+{
+	// SecondsUntilDeadline is computed from this machine's UtcNow, so a local clock
+	// running fast shrinks it with nothing wrong on the server. Before the bound
+	// below, a laptop ten minutes ahead floored a 15-minute raid to the 30-second
+	// minimum while the log blamed RAID_TTL for it.
+	TestTrue(TEXT("a wildly short deadline is treated as skew, not as the raid's length"),
+		FMath::IsNearlyEqual(SarkoBackend::ClockSecondsFromDeadline(900.f, 30.0, 120.f), 900.f, 0.5f));
+	TestTrue(TEXT("and so is a deadline already in the past"),
+		FMath::IsNearlyEqual(SarkoBackend::ClockSecondsFromDeadline(900.f, -600.0, 120.f), 900.f, 0.5f));
+
+	// The honest clamp survives: a genuinely short session (the RAID_TTL=12m shape)
+	// still wins over the map, because deadline − margin is a believable raid length.
+	TestTrue(TEXT("a believable short deadline is still obeyed"),
+		FMath::IsNearlyEqual(SarkoBackend::ClockSecondsFromDeadline(900.f, 840.0, 120.f), 720.f, 0.5f));
+	TestTrue(TEXT("a deadline just above the sane bound is still obeyed, not overridden"),
+		SarkoBackend::ClockSecondsFromDeadline(900.f, 320.0, 120.f) < 900.f);
+
+	// A short *map* is not skew: a 60-second test map asking for 60 seconds must not
+	// be inflated, so the bound only fires when the two numbers disagree wildly.
+	TestTrue(TEXT("a genuinely short map is not mistaken for skew"),
+		SarkoBackend::ClockSecondsFromDeadline(60.f, 90.0, 30.f) <= 60.f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBackendBodiesEscapeTheirStrings,
+	"Sarko.Backend.BodiesEscapeTheirStrings",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBackendBodiesEscapeTheirStrings::RunTest(const FString& Parameters)
+{
+	// The bodies are assembled by hand, so every interpolated value has to be
+	// escaped by hand too. A hand-edited BackendMapId with a quote in it would
+	// otherwise produce malformed JSON and a 400 that nothing in the log explains —
+	// the request would look correct and be rejected anyway.
+	//
+	// Round-tripped through the JSON reader rather than string-matched: the only
+	// thing worth asserting is that the backend's parser can read what was built.
+	const FString Start = SarkoBackend::MakeRaidStartBody(TEXT("bri\"dge\\x"), TArray<FSarkoItemStack>());
+	TSharedPtr<FJsonObject> Root;
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Start);
+	TestTrue(TEXT("a map id with a quote still produces parseable JSON"),
+		FJsonSerializer::Deserialize(Reader, Root) && Root.IsValid());
+	if (Root.IsValid())
 	{
-		TestTrue(TEXT("no more ammo than the starter kit grants"), Ammo->Quantity <= 60);
+		FString MapId;
+		TestTrue(TEXT("and map_id survives the escaping unchanged"),
+			Root->TryGetStringField(TEXT("map_id"), MapId));
+		TestEqual(TEXT("byte for byte"), MapId, FString(TEXT("bri\"dge\\x")));
 	}
+
+	// The session token is the one string that cannot be re-fetched (the backend
+	// keeps only its hash), so a body that mangles it loses the raid's result.
+	const FString Session = SarkoBackend::MakeSessionBody(TEXT("sid\"1"), TEXT("tok\\en\nnewline"));
+	TSharedPtr<FJsonObject> SessionRoot;
+	const TSharedRef<TJsonReader<>> SessionReader = TJsonReaderFactory<>::Create(Session);
+	TestTrue(TEXT("awkward session strings still produce parseable JSON"),
+		FJsonSerializer::Deserialize(SessionReader, SessionRoot) && SessionRoot.IsValid());
+	if (SessionRoot.IsValid())
+	{
+		FString Token;
+		SessionRoot->TryGetStringField(TEXT("session_token"), Token);
+		TestEqual(TEXT("and the token round-trips byte for byte"), Token, FString(TEXT("tok\\en\nnewline")));
+	}
+
+	// A raw control character is escaped rather than emitted, which JSON forbids.
+	const FString WithControl = SarkoBackend::MakeAnonymousBody(FString(TEXT("dev")) + FString::Chr(0x01) + TEXT("ice"));
+	TSharedPtr<FJsonObject> ControlRoot;
+	const TSharedRef<TJsonReader<>> ControlReader = TJsonReaderFactory<>::Create(WithControl);
+	TestTrue(TEXT("a control character does not break the body"),
+		FJsonSerializer::Deserialize(ControlReader, ControlRoot) && ControlRoot.IsValid());
+
+	// And the ordinary case is untouched — no stray backslashes in a normal body.
+	const FString Clean = SarkoBackend::MakeSessionBody(TEXT("sid"), TEXT("stok"));
+	TestEqual(TEXT("a clean body is byte-identical to the hand-written shape"), Clean,
+		FString(TEXT("{\"session_id\":\"sid\",\"session_token\":\"stok\"}")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoRaidActivatesOnceAndNeverAfterItIsSettled,
+	"Sarko.Backend.RaidActivatesOnceAndNeverAfterItIsSettled",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoRaidActivatesOnceAndNeverAfterItIsSettled::RunTest(const FString& Parameters)
+{
+	using ESarkoOutcome = ESarkoRaidOutcome;
+
+	// The only state a raid may be activated from.
+	TestTrue(TEXT("an unstarted, undecided raid can be activated"),
+		SarkoRaid::CanActivateRaid(/*bSessionReady*/ false, ESarkoOutcome::InProgress));
+
+	// Already live: the ordinary double activation, e.g. the offline fallback firing
+	// after a confirm has already landed.
+	TestFalse(TEXT("a live raid is not activated a second time"),
+		SarkoRaid::CanActivateRaid(/*bSessionReady*/ true, ESarkoOutcome::InProgress));
+
+	// Already decided: the case the old guard missed entirely. The damage gate opens
+	// on IsRaidFinished() alone, so a player *can* be killed during the
+	// auth→start→confirm round trip; the confirm landing afterwards must not hand a
+	// corpse a fresh seed (re-rolling every container) and a fresh full clock under
+	// its own KIA summary.
+	for (const ESarkoOutcome Settled : { ESarkoOutcome::Extracted, ESarkoOutcome::Died, ESarkoOutcome::MIA })
+	{
+		TestFalse(TEXT("a settled raid is never re-activated, session ready or not"),
+			SarkoRaid::CanActivateRaid(/*bSessionReady*/ false, Settled));
+		TestFalse(TEXT("nor when the session had already been marked ready"),
+			SarkoRaid::CanActivateRaid(/*bSessionReady*/ true, Settled));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoSeedFromTheUrlSurvivesTheFullUint32Range,
+	"Sarko.Backend.SeedFromTheUrlSurvivesTheFullUint32Range",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoSeedFromTheUrlSurvivesTheFullUint32Range::RunTest(const FString& Parameters)
+{
+	// `?Seed=` exists to reproduce a raid whose seed was copied out of a sarko-api
+	// log line, and those come from int64(rand.Uint32()) — so roughly half of them
+	// exceed INT32_MAX. FCString::Atoi saturates at 2147483647, which quietly rolls
+	// a different set of crates than the server logged, so InitGame parses with
+	// Atoi64 and wraps through the same SeedToInt32 the online path uses.
+	//
+	// The parse itself is what is tested here; InitGame needs a world, this does not.
+	const TCHAR* Copied = TEXT("3402905197");
+	TestEqual(TEXT("a URL seed above INT32_MAX wraps rather than saturating"),
+		SarkoBackend::SeedToInt32(FCString::Atoi64(Copied)),
+		SarkoBackend::SeedToInt32(3402905197LL));
+	// The portable half of the claim: Atoi64 actually holds the value, which an
+	// int32-returning Atoi cannot represent at all — its result for this input is
+	// platform-dependent (Mac happens to wrap, other platforms clamp), and depending
+	// on which is exactly the bug.
+	TestEqual(TEXT("Atoi64 holds the whole value instead of narrowing it"),
+		FCString::Atoi64(Copied), 3402905197LL);
+	TestEqual(TEXT("the URL path and the raid/start path agree bit for bit"),
+		SarkoBackend::SeedToInt32(FCString::Atoi64(Copied)),
+		static_cast<int32>(static_cast<uint32>(3402905197u)));
+
+	// The ordinary small seed a developer types by hand is untouched.
+	TestEqual(TEXT("a small URL seed is unchanged"),
+		SarkoBackend::SeedToInt32(FCString::Atoi64(TEXT("12345"))), 12345);
 	return true;
 }
 

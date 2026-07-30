@@ -60,6 +60,21 @@ namespace SarkoRaid
 	 * backpack before the outcome was set" a fact rather than a hope.
 	 */
 	bool OutcomeLosesHaul(ESarkoRaidOutcome Outcome);
+
+	/**
+	 * Whether a raid may still be made live. Pure, so the guard is unit tested
+	 * with no world and no HTTP.
+	 *
+	 * Two refusals, not one. `bSessionReady` catches the ordinary double
+	 * activation (the offline fallback firing after a confirm already landed).
+	 * A settled outcome catches the nastier one: the damage gate opens on
+	 * IsRaidFinished() alone, so a player *can* be killed during the
+	 * auth→start→confirm round trip, and the completion landing afterwards would
+	 * otherwise hand a corpse a fresh seed and a fresh full clock under its own
+	 * KIA summary — re-rolling every container against a seed the result was
+	 * never submitted with.
+	 */
+	bool CanActivateRaid(bool bSessionReady, ESarkoRaidOutcome Outcome);
 }
 
 /**
@@ -99,6 +114,13 @@ public:
 	 * raid/start response. It does not shape the map — geometry comes from the
 	 * map file — so changing it changes what is in the crates, not where they
 	 * are.
+	 *
+	 * Known gap, pre-existing and out of this slice (which is single-player
+	 * listen-server, so nothing joins): an authoritative seed that happens to be
+	 * 0 equals this default, so replication sends no change and OnRep_Seed never
+	 * fires — a joining client would never spawn its geometry. `bSessionReady` is
+	 * the safer future trigger: it is false until the raid is live and is what
+	 * actually means "the raid has begun".
 	 */
 	UPROPERTY(ReplicatedUsing = OnRep_Seed, BlueprintReadOnly, Category = "Raid")
 	int32 Seed = 0;
