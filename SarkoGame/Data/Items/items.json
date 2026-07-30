@@ -1,0 +1,20 @@
+{
+  "_readme": "Item ids are the wire contract with sarko-api (stash_items.item_id). Never rename an id that a player's stash may already hold. bike_frame / wheel_small / chain are copied verbatim from sarko-api/internal/domain/garage.go's bicycle recipe. Task 2 mirrors this list into internal/domain/loot.go, and a Go test reads this file to catch drift.",
+  "items": [
+    { "id": "pistol",       "name": "Пістолет ПМ",          "stackSize": 1,  "category": "weapon" },
+    { "id": "ammo_9mm",     "name": "Патрони 9×18",         "stackSize": 60, "category": "ammo" },
+    { "id": "medkit",       "name": "Аптечка",              "stackSize": 3,  "category": "med" },
+    { "id": "bandage",      "name": "Бинт",                 "stackSize": 5,  "category": "med" },
+    { "id": "painkillers",  "name": "Обезболювальне",       "stackSize": 5,  "category": "med" },
+    { "id": "scrap_metal",  "name": "Металолом",            "stackSize": 10, "category": "junk" },
+    { "id": "copper_wire",  "name": "Мідний дріт",          "stackSize": 10, "category": "junk" },
+    { "id": "duct_tape",    "name": "Армований скотч",      "stackSize": 5,  "category": "junk" },
+    { "id": "canned_food",  "name": "Консерви",             "stackSize": 5,  "category": "valuable" },
+    { "id": "vodka",        "name": "Горілка",              "stackSize": 3,  "category": "valuable" },
+    { "id": "cigarettes",   "name": "Цигарки",              "stackSize": 5,  "category": "valuable" },
+    { "id": "toolbox",      "name": "Ящик з інструментами", "stackSize": 1,  "category": "valuable" },
+    { "id": "bike_frame",   "name": "Рама велосипеда",      "stackSize": 1,  "category": "vehicle_part" },
+    { "id": "wheel_small",  "name": "Мале колесо",          "stackSize": 2,  "category": "vehicle_part" },
+    { "id": "chain",        "name": "Ланцюг",               "stackSize": 1,  "category": "vehicle_part" }
+  ]
+}
