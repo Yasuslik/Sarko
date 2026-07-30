@@ -133,9 +133,10 @@ void ASarkoAIController::SteerToward(const FVector& TargetLocation, const USarko
 		return;
 	}
 
-	// There is no navmesh in this project — the map is spawned procedurally
-	// at runtime, so nothing is baked, and nothing configures runtime
-	// generation either — so MoveToLocation/MoveToActor always fail and would
+	// There is no navmesh in this project — the map's actors are spawned from a
+	// data file at runtime rather than authored into a level, so nothing is
+	// baked, and nothing configures runtime generation either — so
+	// MoveToLocation/MoveToActor always fail and would
 	// leave the enemy standing still forever. Steer straight at the target
 	// instead, and probe ahead with a swept capsule rather than a line from
 	// the capsule centre — a line reports "clear" even when geometry clips

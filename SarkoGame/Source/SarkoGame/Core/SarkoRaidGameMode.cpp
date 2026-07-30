@@ -22,8 +22,9 @@ void ASarkoRaidGameMode::InitGame(const FString& MapName, const FString& Options
 {
 	Super::InitGame(MapName, Options, ErrorMessage);
 
-	// ?Seed=12345 on the travel URL. Defaults to 1 so a bare PIE session is
-	// still deterministic rather than accidentally random.
+	// ?Seed=12345 on the travel URL. Defaults to 1 so a bare PIE session rolls
+	// the same way every launch rather than being accidentally random. It does
+	// not affect the map — that comes from the file loaded below.
 	const FString SeedOption = UGameplayStatics::ParseOption(Options, TEXT("Seed"));
 	if (!SeedOption.IsEmpty())
 	{
@@ -61,12 +62,12 @@ void ASarkoRaidGameMode::StartPlay()
 {
 	Super::StartPlay();
 
-	// The map itself never crosses the network. Only Seed (four bytes)
-	// replicates, through ASarkoRaidGameState; every machine — server
-	// included — ends up with the identical geometry, because BuildLayout is
-	// a pure function of (Seed, Settings): the layouts cannot disagree, and
-	// the server never pays to replicate or simulate forty-plus static cover
-	// actors.
+	// The map itself never crosses the network. Every machine — server
+	// included — ends up with identical geometry because every machine reduces
+	// the same shipped data file with the same pure ToLayout, so the layouts
+	// cannot disagree, and the server never pays to replicate or simulate
+	// hundreds of static scenery actors. Seed replicates through
+	// ASarkoRaidGameState for loot rolls, not for geometry.
 	if (HasAuthority())
 	{
 		if (ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>())

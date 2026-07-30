@@ -40,11 +40,11 @@ void ASarkoRaidGameState::BuildAndSpawnLayout()
 		UE_LOG(LogTemp, Error, TEXT("SarkoRaidGameState: %s"), *Error);
 	}
 
-	// ToLayout, not BuildLayout(Seed): the server derives its layout from the
-	// definition too (SarkoRaidGameMode::InitGame), and both sides must run the
-	// same pure function over the same file or the client walks into cover the
-	// server does not have. The seed no longer shapes geometry at all — it is
-	// replicated so loot rolls agree, and to signal that the raid has begun.
+	// ToLayout over the file, and nothing derived from Seed: the server reduces
+	// the same definition the same way (SarkoRaidGameMode::InitGame), and both
+	// sides must run the same pure function over the same file or the client
+	// walks into cover the server does not have. Seed is replicated so loot
+	// rolls agree and to signal that the raid has begun; it shapes no geometry.
 	SpawnPrebuiltLayout(SarkoMap::ToLayout(Definition), Definition);
 }
 
