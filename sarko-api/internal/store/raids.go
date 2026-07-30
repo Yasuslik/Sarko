@@ -282,12 +282,20 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 		storedHash  []byte
 		storedRaw   []byte
 		outcomeText *string
+		loadoutRaw  []byte
+		expired     bool
 	)
 	// Enum columns are read as text — see the note in sweepPlayerTx.
+	//
+	// Expiry is evaluated by Postgres (expires_at <= now()) rather than
+	// compared against the Go clock, so this call and the sweeper agree on
+	// what "late" means even if the app server's clock has drifted. now() is
+	// the transaction's start time, which is also what the sweeper uses.
 	err = tx.QueryRow(ctx,
-		`SELECT player_id, state::text, session_token_hash, result_items, outcome::text
+		`SELECT player_id, state::text, session_token_hash, result_items, outcome::text,
+		        loadout, expires_at <= now()
 		 FROM raid_sessions WHERE id = $1 FOR UPDATE`, p.SessionID,
-	).Scan(&playerID, &stateText, &storedHash, &storedRaw, &outcomeText)
+	).Scan(&playerID, &stateText, &storedHash, &storedRaw, &outcomeText, &loadoutRaw, &expired)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RaidResult{}, ErrNotFound
 	}
@@ -320,6 +328,51 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 
 	if state != domain.StatePending && state != domain.StateActive {
 		return RaidResult{}, ErrSessionNotOpen
+	}
+
+	// Expiry is enforced here, not only by the sweeper.
+	//
+	// Before this, "leaving the app counts as death" (§11) held only while the
+	// sweeper goroutine was making progress: if it stalled, an expired session
+	// stayed extractable indefinitely and abandoned loadouts were never
+	// returned. The sweeper is now a garbage collector whose failure costs
+	// storage, not correctness.
+	//
+	// Note the interaction with the grace buffer: expires_at already includes
+	// it, so a result that arrives inside the buffer is *not* expired and is
+	// credited normally. Only a result past the buffer lands here.
+	if expired {
+		var loadout []domain.ItemStack
+		if err := json.Unmarshal(loadoutRaw, &loadout); err != nil {
+			return RaidResult{}, fmt.Errorf("unmarshal loadout: %w", err)
+		}
+		e := expiredSession{id: p.SessionID, playerID: playerID, state: state, loadout: loadout}
+		if err := closeExpiredSessionTx(ctx, tx, e); err != nil {
+			return RaidResult{}, err
+		}
+
+		// The transaction is committed on both branches below, including the
+		// one that returns an error: the close is the point of this block, and
+		// the deferred rollback would otherwise throw it away and leave the
+		// session open for the next attempt.
+		if err := tx.Commit(ctx); err != nil {
+			return RaidResult{}, fmt.Errorf("commit: %w", err)
+		}
+
+		if state == domain.StatePending {
+			// Voided, loadout returned. Same answer the caller would get had
+			// the sweeper voided it a moment earlier.
+			return RaidResult{}, ErrSessionNotOpen
+		}
+		// Closed as died, nothing credited. Deliberately byte-identical to the
+		// replay a caller gets when the sweeper closed the session first, so
+		// the outcome does not depend on which side won the race.
+		return RaidResult{
+			SessionID:     p.SessionID,
+			Outcome:       domain.OutcomeDied,
+			CreditedItems: []domain.ItemStack{},
+			AlreadyClosed: true,
+		}, nil
 	}
 
 	if err := addItemsTx(ctx, tx, playerID, items); err != nil {

@@ -299,6 +299,210 @@ func TestConfirmRaidReturnsStoredDeadline(t *testing.T) {
 	}
 }
 
+// The four tests below pin the boundary that decides whether a player keeps a
+// raid's worth of loot. They deliberately never run the sweeper: expiry must
+// be enforced by SubmitResult itself, so that a stalled sweeper goroutine
+// costs storage rather than correctness.
+
+// TestSubmitResultCreditsAResultInsideTheDeadline is the on-time side of the
+// boundary — and the side that matters most, because this is where the grace
+// buffer does its job. A result arriving before expires_at (which already
+// includes the buffer) must be credited in full.
+func TestSubmitResultCreditsAResultInsideTheDeadline(t *testing.T) {
+	s := store.New(testutil.Pool(t))
+	ctx := context.Background()
+	playerID := seedPlayer(t, s, "dev-inside-deadline", []domain.ItemStack{{ItemID: "rifle", Quantity: 1}})
+
+	started, err := s.StartRaid(ctx, startParams(playerID, []domain.ItemStack{{ItemID: "rifle", Quantity: 1}}))
+	if err != nil {
+		t.Fatalf("StartRaid: %v", err)
+	}
+	// A deadline a comfortable distance in the future stands in for "the raid
+	// duration plus the grace buffer, and the result got here in time".
+	if _, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute); err != nil {
+		t.Fatalf("ConfirmRaid: %v", err)
+	}
+
+	res, err := s.SubmitResult(ctx, store.SubmitResultParams{
+		SessionID:    started.SessionID,
+		SessionToken: started.SessionToken,
+		Outcome:      domain.OutcomeExtracted,
+		Items:        []domain.ItemStack{{ItemID: "turbine", Quantity: 3}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitResult: %v", err)
+	}
+	if res.Outcome != domain.OutcomeExtracted {
+		t.Errorf("outcome = %q, want extracted", res.Outcome)
+	}
+	if res.AlreadyClosed {
+		t.Error("an on-time result must not be reported as already closed")
+	}
+
+	profile, err := s.Profile(ctx, playerID)
+	if err != nil {
+		t.Fatalf("Profile: %v", err)
+	}
+	got := map[string]int{}
+	for _, item := range profile.Stash {
+		got[item.ItemID] = item.Quantity
+	}
+	if got["turbine"] != 3 {
+		t.Errorf("extracted loot was not credited: %v", profile.Stash)
+	}
+}
+
+// TestSubmitResultOnExpiredActiveSessionRecordsDeath is the late side. The
+// sweeper is never called, so if SubmitResult did not check expires_at itself
+// the player would be credited for a raid they had already lost.
+func TestSubmitResultOnExpiredActiveSessionRecordsDeath(t *testing.T) {
+	pool := testutil.Pool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	playerID := seedPlayer(t, s, "dev-late-result", []domain.ItemStack{{ItemID: "rifle", Quantity: 1}})
+
+	started, err := s.StartRaid(ctx, startParams(playerID, []domain.ItemStack{{ItemID: "rifle", Quantity: 1}}))
+	if err != nil {
+		t.Fatalf("StartRaid: %v", err)
+	}
+	// Confirm with a deadline already in the past: past the grace buffer too.
+	if _, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, -time.Second); err != nil {
+		t.Fatalf("ConfirmRaid: %v", err)
+	}
+
+	res, err := s.SubmitResult(ctx, store.SubmitResultParams{
+		SessionID:    started.SessionID,
+		SessionToken: started.SessionToken,
+		Outcome:      domain.OutcomeExtracted,
+		Items:        []domain.ItemStack{{ItemID: "turbine", Quantity: 99}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitResult: %v", err)
+	}
+	if res.Outcome != domain.OutcomeDied {
+		t.Errorf("outcome = %q, want died — an expired active raid is a death", res.Outcome)
+	}
+	if len(res.CreditedItems) != 0 {
+		t.Errorf("credited %v, want nothing", res.CreditedItems)
+	}
+
+	state, _ := sessionState(t, pool, started.SessionID)
+	if state != "closed" {
+		t.Errorf("state = %q, want closed", state)
+	}
+
+	profile, err := s.Profile(ctx, playerID)
+	if err != nil {
+		t.Fatalf("Profile: %v", err)
+	}
+	if len(profile.Stash) != 0 {
+		t.Errorf("nothing may be credited for an expired raid, got %v", profile.Stash)
+	}
+}
+
+// TestSubmitResultOnExpiredPendingSessionReturnsLoadout covers the other
+// expiry outcome: a session that never entered the map gives the loadout back,
+// exactly as the sweeper would, and the result is refused.
+func TestSubmitResultOnExpiredPendingSessionReturnsLoadout(t *testing.T) {
+	pool := testutil.Pool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	playerID := seedPlayer(t, s, "dev-late-pending", []domain.ItemStack{{ItemID: "ammo", Quantity: 30}})
+
+	p := startParams(playerID, []domain.ItemStack{{ItemID: "ammo", Quantity: 30}})
+	p.PendingTTL = -time.Second // never confirmed, already past the deadline
+	started, err := s.StartRaid(ctx, p)
+	if err != nil {
+		t.Fatalf("StartRaid: %v", err)
+	}
+
+	_, err = s.SubmitResult(ctx, store.SubmitResultParams{
+		SessionID:    started.SessionID,
+		SessionToken: started.SessionToken,
+		Outcome:      domain.OutcomeExtracted,
+		Items:        []domain.ItemStack{{ItemID: "turbine", Quantity: 5}},
+	})
+	if !errors.Is(err, store.ErrSessionNotOpen) {
+		t.Fatalf("err = %v, want ErrSessionNotOpen", err)
+	}
+
+	state, _ := sessionState(t, pool, started.SessionID)
+	if state != "voided" {
+		t.Errorf("state = %q, want voided", state)
+	}
+
+	profile, err := s.Profile(ctx, playerID)
+	if err != nil {
+		t.Fatalf("Profile: %v", err)
+	}
+	got := map[string]int{}
+	for _, item := range profile.Stash {
+		got[item.ItemID] = item.Quantity
+	}
+	if got["ammo"] != 30 {
+		t.Errorf("loadout was not returned: %v", profile.Stash)
+	}
+	if _, ok := got["turbine"]; ok {
+		t.Error("a refused result must credit nothing")
+	}
+}
+
+// TestSubmitResultExpiryMatchesTheSweeper checks the two paths cannot drift:
+// whether the sweeper or the request itself notices the expiry, the caller
+// sees the same answer and the stash ends up the same. Without this, closing
+// an expired session in SubmitResult could quietly diverge from §11.
+func TestSubmitResultExpiryMatchesTheSweeper(t *testing.T) {
+	s := store.New(testutil.Pool(t))
+	ctx := context.Background()
+
+	submitLate := func(device string, sweepFirst bool) (store.RaidResult, error, []domain.ItemStack) {
+		t.Helper()
+		playerID := seedPlayer(t, s, device, []domain.ItemStack{{ItemID: "rifle", Quantity: 1}})
+		started, err := s.StartRaid(ctx, startParams(playerID, []domain.ItemStack{{ItemID: "rifle", Quantity: 1}}))
+		if err != nil {
+			t.Fatalf("StartRaid: %v", err)
+		}
+		if _, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, -time.Second); err != nil {
+			t.Fatalf("ConfirmRaid: %v", err)
+		}
+		if sweepFirst {
+			if _, _, err := s.SweepExpired(ctx); err != nil {
+				t.Fatalf("SweepExpired: %v", err)
+			}
+		}
+		res, err := s.SubmitResult(ctx, store.SubmitResultParams{
+			SessionID:    started.SessionID,
+			SessionToken: started.SessionToken,
+			Outcome:      domain.OutcomeExtracted,
+			Items:        []domain.ItemStack{{ItemID: "turbine", Quantity: 7}},
+		})
+		profile, perr := s.Profile(ctx, playerID)
+		if perr != nil {
+			t.Fatalf("Profile: %v", perr)
+		}
+		return res, err, profile.Stash
+	}
+
+	swept, sweptErr, sweptStash := submitLate("dev-race-sweeper", true)
+	self, selfErr, selfStash := submitLate("dev-race-self", false)
+
+	if sweptErr != nil || selfErr != nil {
+		t.Fatalf("errors differ or are unexpected: sweeper-first=%v, self=%v", sweptErr, selfErr)
+	}
+	if swept.Outcome != self.Outcome {
+		t.Errorf("outcome differs: sweeper-first=%q, self=%q", swept.Outcome, self.Outcome)
+	}
+	if swept.AlreadyClosed != self.AlreadyClosed {
+		t.Errorf("AlreadyClosed differs: sweeper-first=%v, self=%v", swept.AlreadyClosed, self.AlreadyClosed)
+	}
+	if len(swept.CreditedItems) != 0 || len(self.CreditedItems) != 0 {
+		t.Errorf("credited items must be empty on both paths: %v / %v", swept.CreditedItems, self.CreditedItems)
+	}
+	if len(sweptStash) != 0 || len(selfStash) != 0 {
+		t.Errorf("stash must be empty on both paths: %v / %v", sweptStash, selfStash)
+	}
+}
+
 func TestPendingRaidExpiryReturnsLoadout(t *testing.T) {
 	s := store.New(testutil.Pool(t))
 	ctx := context.Background()

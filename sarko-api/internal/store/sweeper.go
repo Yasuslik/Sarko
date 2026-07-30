@@ -63,29 +63,53 @@ func closeExpiredTx(ctx context.Context, tx pgx.Tx, query string, args ...any) (
 	}
 
 	for _, e := range batch {
+		if err := closeExpiredSessionTx(ctx, tx, e); err != nil {
+			return voided, died, err
+		}
 		if e.state == domain.StatePending {
-			if err := addItemsTx(ctx, tx, e.playerID, e.loadout); err != nil {
-				return voided, died, err
-			}
-			if _, err := tx.Exec(ctx,
-				`UPDATE raid_sessions SET state = 'voided', closed_at = now() WHERE id = $1`,
-				e.id); err != nil {
-				return voided, died, fmt.Errorf("void session %s: %w", e.id, err)
-			}
 			voided++
-			continue
+		} else {
+			died++
 		}
-
-		if _, err := tx.Exec(ctx,
-			`UPDATE raid_sessions
-			 SET state = 'closed', outcome = 'died', closed_at = now(), result_items = '[]'::jsonb
-			 WHERE id = $1`, e.id); err != nil {
-			return voided, died, fmt.Errorf("close session %s: %w", e.id, err)
-		}
-		died++
 	}
 
 	return voided, died, nil
+}
+
+// closeExpiredSessionTx applies the expiry rule to one session row that the
+// caller has already loaded and locked FOR UPDATE.
+//
+// This is the whole of "what expiry means", and it is deliberately the only
+// copy: a pending session never entered the map, so its loadout goes back and
+// it becomes voided; an active session ran out of time, which counts as death
+// (§11), so it closes with outcome died and nothing is credited. Two callers
+// share it — the sweeper, which finds expired rows by scanning, and
+// SubmitResult, which finds one because it happens to be holding it. If they
+// drifted apart, whether an abandoned loadout came back would depend on which
+// code path noticed the expiry first.
+//
+// The caller owns the transaction and must hold the row lock; nothing here
+// re-checks expires_at.
+func closeExpiredSessionTx(ctx context.Context, tx pgx.Tx, e expiredSession) error {
+	if e.state == domain.StatePending {
+		if err := addItemsTx(ctx, tx, e.playerID, e.loadout); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE raid_sessions SET state = 'voided', closed_at = now() WHERE id = $1`,
+			e.id); err != nil {
+			return fmt.Errorf("void session %s: %w", e.id, err)
+		}
+		return nil
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE raid_sessions
+		 SET state = 'closed', outcome = 'died', closed_at = now(), result_items = '[]'::jsonb
+		 WHERE id = $1`, e.id); err != nil {
+		return fmt.Errorf("close session %s: %w", e.id, err)
+	}
+	return nil
 }
 
 // SweepExpired closes every raid past its deadline, across all players.
