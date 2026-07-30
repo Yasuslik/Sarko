@@ -7,7 +7,7 @@ stash, garage progression and raid session accounting.
 
     make test-db                       # postgres on :5455
     export DATABASE_URL="postgres://sarko:sarko@localhost:5455/sarko_test?sslmode=disable"
-    export JWT_SECRET="dev-secret-change-me"
+    export JWT_SECRET="$(openssl rand -base64 48)"   # must be >= 32 bytes
     make run
 
 ## Test
@@ -25,10 +25,15 @@ themselves when `TEST_DATABASE_URL` is unset.
 |---|---|---|
 | `PORT` | `8080` | listen port |
 | `DATABASE_URL` | — | required |
-| `JWT_SECRET` | — | required |
+| `JWT_SECRET` | — | required, **at least 32 bytes** |
 | `RAID_TTL` | `12m` | how long a confirmed raid may run |
 | `PENDING_TTL` | `60s` | how long an unconfirmed raid holds its loadout |
 | `GRACE_BUFFER` | `2m` | added to `RAID_TTL` at confirm time |
+
+`JWT_SECRET` must be at least 32 bytes or the process refuses to start. It signs
+30-day HS256 player tokens, so a short secret can be brute-forced offline from any
+single issued token, after which every player id is forgeable. Generate it
+(`openssl rand -base64 48`), do not type it.
 
 ### Raid timing: the client timer must be shorter than `RAID_TTL`
 

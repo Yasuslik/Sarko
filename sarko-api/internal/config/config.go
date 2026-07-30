@@ -8,6 +8,13 @@ import (
 	"time"
 )
 
+// MinJWTSecretBytes is the floor for JWT_SECRET. HS256 tokens here live for 30
+// days, so anyone holding one token can brute-force a short secret offline at
+// their leisure and then mint a token for any player id. 32 bytes matches the
+// HMAC-SHA256 block security level; below it, Load refuses to start rather
+// than signing with a value like "x".
+const MinJWTSecretBytes = 32
+
 // Config holds every runtime setting. Load fails rather than guessing secrets.
 type Config struct {
 	Port        string
@@ -47,6 +54,12 @@ func Load() (Config, error) {
 	}
 	if len(c.JWTSecret) == 0 {
 		return Config{}, errors.New("JWT_SECRET is required")
+	}
+	if len(c.JWTSecret) < MinJWTSecretBytes {
+		return Config{}, fmt.Errorf(
+			"JWT_SECRET must be at least %d bytes, got %d: it signs 30-day player tokens, "+
+				"and a short secret is brute-forceable offline from any single issued token",
+			MinJWTSecretBytes, len(c.JWTSecret))
 	}
 	return c, nil
 }
