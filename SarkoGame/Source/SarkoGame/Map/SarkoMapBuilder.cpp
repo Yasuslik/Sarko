@@ -16,27 +16,80 @@ namespace
 	constexpr int32 ClearPointAttempts = 64;
 
 	/**
-	 * Positive when Candidate clears every block's footprint plus the safety
-	 * margin; the more positive, the further from the nearest cover.
+	 * Extra push past the required clearance distance so the result is
+	 * strictly clear (> 0), not merely touching the boundary (== 0).
 	 */
+	constexpr float ClearanceEpsilonUU = 1.f;
+
+	/** Bounds the displacement loop below. Pure geometry, no sampling, so this is cheap. */
+	constexpr int32 MaxDisplacementSteps = 64;
+
+	/**
+	 * Index of the cover block nearest to violating Candidate's clearance
+	 * (the most negative value), plus that clearance. INDEX_NONE if Cover is
+	 * empty. Positive when Candidate clears every block's footprint plus the
+	 * safety margin; the more positive, the further from the nearest cover.
+	 */
+	int32 NearestBlockIndex(const FVector& Candidate, const TArray<FSarkoCoverBlock>& Cover, float& OutClearance)
+	{
+		int32 BestIndex = INDEX_NONE;
+		OutClearance = TNumericLimits<float>::Max();
+		for (int32 Index = 0; Index < Cover.Num(); ++Index)
+		{
+			const float Clearance = FVector::Dist2D(Candidate, Cover[Index].Location) - (Cover[Index].Extent.GetMax() + SpawnClearanceUU);
+			if (Clearance < OutClearance)
+			{
+				OutClearance = Clearance;
+				BestIndex = Index;
+			}
+		}
+		return BestIndex;
+	}
+
 	float NearestCoverClearance(const FVector& Candidate, const TArray<FSarkoCoverBlock>& Cover)
 	{
-		float MinClearance = TNumericLimits<float>::Max();
-		for (const FSarkoCoverBlock& Block : Cover)
+		float Clearance = TNumericLimits<float>::Max();
+		NearestBlockIndex(Candidate, Cover, Clearance);
+		return Clearance;
+	}
+
+	/**
+	 * Pushes Candidate directly away from Block's center, along the 2D
+	 * separating axis, to exactly the distance that clears Block's footprint
+	 * plus the safety margin (with a small epsilon so it is strictly clear).
+	 * Deterministic: pure geometry derived from Candidate and Block, no
+	 * randomness. If Candidate sits exactly on Block's center the direction is
+	 * undefined, so it pushes along +X — as good as any other axis when the
+	 * starting distance is zero.
+	 */
+	FVector DisplaceClearOfBlock(const FVector& Candidate, const FSarkoCoverBlock& Block)
+	{
+		FVector Direction = Candidate - Block.Location;
+		Direction.Z = 0.f;
+		if (Direction.IsNearlyZero())
 		{
-			const float Clearance = FVector::Dist2D(Candidate, Block.Location) - (Block.Extent.GetMax() + SpawnClearanceUU);
-			MinClearance = FMath::Min(MinClearance, Clearance);
+			Direction = FVector(1.f, 0.f, 0.f);
 		}
-		return MinClearance;
+		Direction.Normalize();
+
+		const float RequiredDistance = Block.Extent.GetMax() + SpawnClearanceUU + ClearanceEpsilonUU;
+		FVector Result = Block.Location + Direction * RequiredDistance;
+		Result.Z = Candidate.Z;
+		return Result;
 	}
 
 	/**
 	 * Rejection-samples a point clear of cover. If every attempt lands inside a
-	 * block's safety margin, falls back to the least-bad candidate seen instead
-	 * of a fixed point — a fixed fallback could itself land inside a cover box,
-	 * which is exactly the "spawn inside a wall" bug this generator must avoid.
+	 * block's safety margin, this must still return a point that clears every
+	 * block — a fallback that only "improves the odds" (e.g. the least-bad
+	 * candidate seen) can still sit inside a cover box, which is exactly the
+	 * "spawn inside a wall" bug this generator must avoid. So instead it takes
+	 * the least-bad candidate and deterministically displaces it away from
+	 * whichever block it is currently violating, repeating against the next
+	 * violator (if the push moved it into another block's margin) until it is
+	 * clear of all of them or the step budget runs out.
 	 */
-	FVector PickClearPoint(FRandomStream& Stream, float Extent, const TArray<FSarkoCoverBlock>& Cover)
+	FVector PickClearPoint(FRandomStream& Stream, float Extent, const TArray<FSarkoCoverBlock>& Cover, int32 Seed)
 	{
 		FVector BestCandidate(0.f, 0.f, 100.f);
 		float BestClearance = -TNumericLimits<float>::Max();
@@ -59,7 +112,26 @@ namespace
 				BestCandidate = Candidate;
 			}
 		}
-		return BestCandidate;
+
+		// Exhausted every attempt. A map dense enough to hit this path is
+		// something the designer tuning CoverCount needs told about, not a
+		// silent statistical near-miss.
+		UE_LOG(LogTemp, Warning,
+			TEXT("SarkoMap: PickClearPoint exhausted all %d attempts for seed %d; displacing the fallback point clear of cover"),
+			ClearPointAttempts, Seed);
+
+		FVector Candidate = BestCandidate;
+		for (int32 Step = 0; Step < MaxDisplacementSteps; ++Step)
+		{
+			float Clearance = TNumericLimits<float>::Max();
+			const int32 BlockIndex = NearestBlockIndex(Candidate, Cover, Clearance);
+			if (BlockIndex == INDEX_NONE || Clearance > 0.f)
+			{
+				break;
+			}
+			Candidate = DisplaceClearOfBlock(Candidate, Cover[BlockIndex]);
+		}
+		return Candidate;
 	}
 }
 
@@ -90,11 +162,11 @@ FSarkoMapLayout SarkoMap::BuildLayout(int32 Seed, const USarkoRaidSettings& Sett
 
 	for (int32 Index = 0; Index < PlayerStartCount; ++Index)
 	{
-		Layout.PlayerStarts.Add(PickClearPoint(Stream, Settings.MapExtent * 0.8f, Layout.Cover));
+		Layout.PlayerStarts.Add(PickClearPoint(Stream, Settings.MapExtent * 0.8f, Layout.Cover, Seed));
 	}
 	for (int32 Index = 0; Index < EnemySpawnCount; ++Index)
 	{
-		Layout.EnemySpawns.Add(PickClearPoint(Stream, Settings.MapExtent * 0.9f, Layout.Cover));
+		Layout.EnemySpawns.Add(PickClearPoint(Stream, Settings.MapExtent * 0.9f, Layout.Cover, Seed));
 	}
 
 	return Layout;

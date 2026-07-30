@@ -28,15 +28,23 @@ void ASarkoRaidGameMode::StartPlay()
 {
 	Super::StartPlay();
 
-	// Server builds the geometry. Clients get it through actor replication, so
-	// the layout is generated exactly once and never disagrees between machines.
+	// The map itself never crosses the network. Only Seed (four bytes)
+	// replicates, through ASarkoRaidGameState; every machine — server
+	// included — calls BuildLayout then SpawnLayout locally from that value.
+	// BuildLayout is a pure function of (Seed, Settings), so the geometry it
+	// produces is bit-for-bit identical everywhere it runs: the layouts
+	// cannot disagree, and the server never pays to replicate or simulate
+	// forty-plus static cover actors.
 	if (HasAuthority())
 	{
-		if (UWorld* World = GetWorld())
+		if (ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>())
 		{
-			const FSarkoMapLayout Layout = SarkoMap::BuildLayout(Seed, *GetDefault<USarkoRaidSettings>());
-			SarkoMap::SpawnLayout(*World, Layout);
-			CachedLayout = Layout;
+			RaidState->Seed = Seed;
+			// The server never receives its own OnRep notify, so it must
+			// trigger the build explicitly; clients build via OnRep_Seed
+			// once the replicated value arrives.
+			RaidState->BuildAndSpawnLayout();
+			CachedLayout = RaidState->GetLayout();
 		}
 	}
 

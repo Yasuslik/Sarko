@@ -1,5 +1,6 @@
 #include "Core/SarkoRaidGameState.h"
 
+#include "Core/SarkoRaidSettings.h"
 #include "Net/UnrealNetwork.h"
 
 ASarkoRaidGameState::ASarkoRaidGameState()
@@ -11,6 +12,33 @@ void ASarkoRaidGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(ASarkoRaidGameState, RemainingSeconds);
+	// A replicated UPROPERTY that is never registered here silently never
+	// replicates — nothing in a single-player test would catch that, since
+	// the server is also the only client and always sees its own value.
+	DOREPLIFETIME(ASarkoRaidGameState, Seed);
+}
+
+void ASarkoRaidGameState::OnRep_Seed()
+{
+	BuildAndSpawnLayout();
+}
+
+void ASarkoRaidGameState::BuildAndSpawnLayout()
+{
+	if (bLayoutBuilt)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	Layout = SarkoMap::BuildLayout(Seed, *GetDefault<USarkoRaidSettings>());
+	SarkoMap::SpawnLayout(*World, Layout);
+	bLayoutBuilt = true;
 }
 
 void ASarkoRaidGameState::StartRaidClock(float DurationSeconds)
