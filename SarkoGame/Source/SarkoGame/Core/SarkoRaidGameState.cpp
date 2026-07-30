@@ -32,8 +32,7 @@ void ASarkoRaidGameState::BuildAndSpawnLayout()
 	// already loaded this in InitGame and hands it over directly through
 	// SpawnPrebuiltLayout), this machine loads its own copy of the map
 	// definition from disk — the same file, addressed by the same MapId
-	// setting — mirroring how BuildLayout(Seed) below is independently
-	// recomputed here rather than replicated.
+	// setting — rather than receiving geometry by replication.
 	FSarkoMapDefinition Definition;
 	FString Error;
 	if (!SarkoMap::LoadDefinitionFromDisk(Settings->MapId.ToString(), Definition, Error))
@@ -41,7 +40,12 @@ void ASarkoRaidGameState::BuildAndSpawnLayout()
 		UE_LOG(LogTemp, Error, TEXT("SarkoRaidGameState: %s"), *Error);
 	}
 
-	SpawnPrebuiltLayout(SarkoMap::BuildLayout(Seed, *Settings), Definition);
+	// ToLayout, not BuildLayout(Seed): the server derives its layout from the
+	// definition too (SarkoRaidGameMode::InitGame), and both sides must run the
+	// same pure function over the same file or the client walks into cover the
+	// server does not have. The seed no longer shapes geometry at all — it is
+	// replicated so loot rolls agree, and to signal that the raid has begun.
+	SpawnPrebuiltLayout(SarkoMap::ToLayout(Definition), Definition);
 }
 
 void ASarkoRaidGameState::SpawnPrebuiltLayout(const FSarkoMapLayout& InLayout, const FSarkoMapDefinition& InDefinition)
