@@ -80,6 +80,18 @@ public:
 private:
 	void UpdateSticks();
 
+#if !UE_BUILD_SHIPPING
+	/**
+	 * Keyboard fallback so the game can be tested on a desktop, where a mouse
+	 * emulates a single finger and cannot move and aim at the same time.
+	 * WASD moves, space fires. Compiled out of shipping builds: the real game
+	 * is touch-only and must never gain a second input path by accident.
+	 *
+	 * @return true if the keyboard supplied a movement intent this frame
+	 */
+	bool ApplyDesktopTestInput(class ASarkoCharacter& Pawn, float CameraYaw);
+#endif
+
 	FSarkoTouchStick MoveStick;
 	FSarkoTouchStick AimStick;
 

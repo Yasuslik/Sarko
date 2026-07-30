@@ -26,6 +26,7 @@ void ASarkoHUD::DrawHUD()
 	DrawStick(PC->GetAimStick(), FLinearColor(1.f, 0.85f, 0.2f, 0.45f));
 	DrawAimCone();
 	DrawTopBar();
+	DrawHealth();
 	DrawAmmo();
 }
 
@@ -97,6 +98,49 @@ void ASarkoHUD::DrawTopBar()
 	float OutHeight = 0.f;
 	GetTextSize(Clock, OutWidth, OutHeight, GEngine->GetLargeFont(), 1.f);
 	DrawText(Clock, FLinearColor::White, (Canvas->SizeX - OutWidth) * 0.5f, 24.f, GEngine->GetLargeFont(), 1.f);
+}
+
+void ASarkoHUD::DrawHealth()
+{
+	// Health was missing entirely, and its absence produced the worst kind of
+	// bug report: "the character walks, then stops walking when enemies show
+	// up". The character had died — death disables movement — and nothing on
+	// screen said so. A player must always be able to see that they are dying,
+	// and that they are dead.
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	if (!Pawn || !Pawn->HealthComponent)
+	{
+		return;
+	}
+
+	const USarkoHealthComponent* Health = Pawn->HealthComponent;
+	const float Fraction = Health->GetMaxHealth() > 0.f
+		? FMath::Clamp(Health->GetHealth() / Health->GetMaxHealth(), 0.f, 1.f)
+		: 0.f;
+
+	constexpr float BarWidth = 260.f;
+	constexpr float BarHeight = 14.f;
+	const float BarX = Canvas->SizeX - BarWidth - 24.f;
+	constexpr float BarY = 28.f;
+
+	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f), BarX - 2.f, BarY - 2.f, BarWidth + 4.f, BarHeight + 4.f);
+
+	// Green through red, so falling health is readable without reading a number.
+	const FLinearColor Fill = FMath::Lerp(FLinearColor(0.85f, 0.15f, 0.1f), FLinearColor(0.3f, 0.85f, 0.25f), Fraction);
+	DrawRect(Fill, BarX, BarY, BarWidth * Fraction, BarHeight);
+
+	if (!Health->IsDead())
+	{
+		return;
+	}
+
+	// Unmissable, centred: this is the state the tester could not previously see.
+	const FString DeadText = TEXT("YOU DIED");
+	float TextWidth = 0.f;
+	float TextHeight = 0.f;
+	GetTextSize(DeadText, TextWidth, TextHeight, GEngine->GetLargeFont(), 2.f);
+	DrawText(DeadText, FLinearColor(1.f, 0.2f, 0.15f),
+		(Canvas->SizeX - TextWidth) * 0.5f, Canvas->SizeY * 0.42f, GEngine->GetLargeFont(), 2.f);
 }
 
 void ASarkoHUD::DrawAmmo()

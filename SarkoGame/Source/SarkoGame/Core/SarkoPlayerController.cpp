@@ -39,9 +39,17 @@ void ASarkoPlayerController::PlayerTick(float DeltaTime)
 	// as the analog deflection (dead zone + speed scale, see Task 3). Scale
 	// the world-space direction back up by the stick's own deflection so the
 	// magnitude survives the rotation instead of being thrown away.
-	const FVector2D MoveValue = MoveStick.Value();
-	const FVector2D MoveDirection = SarkoAim::StickToWorldDirection(MoveValue, CameraYaw);
-	Pawn->SetMoveIntent(MoveDirection * MoveValue.Size());
+	bool bKeyboardMoved = false;
+#if !UE_BUILD_SHIPPING
+	bKeyboardMoved = ApplyDesktopTestInput(*Pawn, CameraYaw);
+#endif
+
+	if (!bKeyboardMoved)
+	{
+		const FVector2D MoveValue = MoveStick.Value();
+		const FVector2D MoveDirection = SarkoAim::StickToWorldDirection(MoveValue, CameraYaw);
+		Pawn->SetMoveIntent(MoveDirection * MoveValue.Size());
+	}
 
 	const FVector2D AimValue = AimStick.Value();
 	Pawn->SetAimIntent(SarkoAim::StickToWorldDirection(AimValue, CameraYaw), AimStick.bActive);
@@ -175,3 +183,35 @@ void ASarkoPlayerController::UpdateSticks()
 	// Release of the aim thumb is the fire signal — never auto-fire (spec §9).
 	bAimReleasedThisFrame = bWasAiming && !AimStick.bActive;
 }
+
+#if !UE_BUILD_SHIPPING
+bool ASarkoPlayerController::ApplyDesktopTestInput(ASarkoCharacter& Pawn, float CameraYaw)
+{
+	// WASD, read straight off the key state — no Enhanced Input action needed,
+	// which matters because input actions are binary assets this project cannot
+	// author.
+	FVector2D Stick = FVector2D::ZeroVector;
+	if (IsInputKeyDown(EKeys::W) || IsInputKeyDown(EKeys::Up))    { Stick.Y += 1.f; }
+	if (IsInputKeyDown(EKeys::S) || IsInputKeyDown(EKeys::Down))  { Stick.Y -= 1.f; }
+	if (IsInputKeyDown(EKeys::D) || IsInputKeyDown(EKeys::Right)) { Stick.X += 1.f; }
+	if (IsInputKeyDown(EKeys::A) || IsInputKeyDown(EKeys::Left))  { Stick.X -= 1.f; }
+
+	const bool bMoved = !Stick.IsNearlyZero();
+	if (bMoved)
+	{
+		// Digital keys are full deflection; normalise so diagonals are not faster.
+		Stick.Normalize();
+		Pawn.SetMoveIntent(SarkoAim::StickToWorldDirection(Stick, CameraYaw));
+	}
+
+	// WasInputKeyJustPressed is a one-frame edge, which keeps the no-auto-fire
+	// rule intact: holding space does not stream shots, exactly as holding the
+	// aim thumb does not.
+	if (WasInputKeyJustPressed(EKeys::SpaceBar))
+	{
+		Pawn.RequestFire();
+	}
+
+	return bMoved;
+}
+#endif
