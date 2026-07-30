@@ -10,7 +10,7 @@ public class SarkoGame : ModuleRules
 		// explicitly so quoted includes like "Core/SarkoRaidSettings.h" resolve.
 		// With DefaultBuildSettings = V7, bLegacyPublicIncludePaths defaults to
 		// false, so UBT no longer adds the module root to the include path itself.
-		PublicIncludePaths.Add(ModuleDirectory);
+		PrivateIncludePaths.Add(ModuleDirectory);
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
