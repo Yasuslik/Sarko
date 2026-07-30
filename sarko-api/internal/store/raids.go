@@ -188,6 +188,10 @@ var (
 
 // SubmitResultParams is the input to SubmitResult.
 type SubmitResultParams struct {
+	// PlayerID is the authenticated caller. The session's owner must match it:
+	// holding a session token is not by itself authorisation to close
+	// somebody else's raid.
+	PlayerID     string
 	SessionID    string
 	SessionToken string
 	Outcome      domain.RaidOutcome
@@ -211,7 +215,11 @@ type RaidResult struct {
 // now() + deadline. The confirmed expires_at is returned so the client can
 // align its own in-raid timer to the server's authoritative deadline instead
 // of guessing it from its own configuration.
-func (s *Store) ConfirmRaid(ctx context.Context, sessionID, sessionToken string, deadline time.Duration) (time.Time, error) {
+//
+// playerID is the authenticated caller. A session token alone is not
+// authorisation: possession of one must not let a caller drive somebody else's
+// raid, so the session's owner has to match.
+func (s *Store) ConfirmRaid(ctx context.Context, playerID, sessionID, sessionToken string, deadline time.Duration) (time.Time, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("begin: %w", err)
@@ -221,12 +229,14 @@ func (s *Store) ConfirmRaid(ctx context.Context, sessionID, sessionToken string,
 	var (
 		stateText  string
 		storedHash []byte
+		ownerID    string
 	)
 	// Enum columns are read as text — see the note in sweepPlayerTx.
 	err = tx.QueryRow(ctx,
-		`SELECT state::text, session_token_hash FROM raid_sessions WHERE id = $1 FOR UPDATE`,
+		`SELECT state::text, session_token_hash, player_id
+		 FROM raid_sessions WHERE id = $1 FOR UPDATE`,
 		sessionID,
-	).Scan(&stateText, &storedHash)
+	).Scan(&stateText, &storedHash, &ownerID)
 	notFound := errors.Is(err, pgx.ErrNoRows)
 	if err != nil && !notFound {
 		return time.Time{}, fmt.Errorf("load session: %w", err)
@@ -234,10 +244,13 @@ func (s *Store) ConfirmRaid(ctx context.Context, sessionID, sessionToken string,
 
 	// Anti-oracle: unlike SubmitResult (which reports ErrNotFound,
 	// ErrBadSessionToken and ErrSessionNotOpen as distinct errors), a caller
-	// here must not be able to tell an unknown session id, a wrong token, and
-	// a non-pending session apart — all three collapse to ErrSessionNotOpen.
+	// here must not be able to tell an unknown session id, a wrong token, a
+	// non-pending session and somebody else's session apart — all four
+	// collapse to ErrSessionNotOpen. Wrong-owner deliberately gets no error of
+	// its own: a distinct one would confirm that a guessed session id exists.
 	badToken := !notFound && subtle.ConstantTimeCompare(storedHash, auth.HashToken(sessionToken)) != 1
-	if notFound || badToken || stateText != string(domain.StatePending) {
+	wrongOwner := !notFound && ownerID != playerID
+	if notFound || badToken || wrongOwner || stateText != string(domain.StatePending) {
 		return time.Time{}, ErrSessionNotOpen
 	}
 
@@ -305,7 +318,14 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 	state := domain.RaidState(stateText)
 
 	// The token is checked before anything else, and for every state.
-	if subtle.ConstantTimeCompare(storedHash, auth.HashToken(p.SessionToken)) != 1 {
+	//
+	// A caller who is not the session's owner is treated exactly like a caller
+	// with a bad token. That is the point: it leaks nothing this endpoint did
+	// not already leak, so someone who guesses a session id learns only what
+	// they would have learnt by guessing a token too. Both branches are folded
+	// into one return so the two cases stay indistinguishable.
+	tokenOK := subtle.ConstantTimeCompare(storedHash, auth.HashToken(p.SessionToken)) == 1
+	if !tokenOK || playerID != p.PlayerID {
 		return RaidResult{}, ErrBadSessionToken
 	}
 

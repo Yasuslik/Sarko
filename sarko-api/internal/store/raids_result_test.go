@@ -36,11 +36,12 @@ func TestSubmitResultCreditsExtractedLoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRaid: %v", err)
 	}
-	if _, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 
 	res, err := s.SubmitResult(ctx, store.SubmitResultParams{
+		PlayerID:     playerID,
 		SessionID:    started.SessionID,
 		SessionToken: started.SessionToken,
 		Outcome:      domain.OutcomeExtracted,
@@ -71,11 +72,12 @@ func TestSubmitResultIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRaid: %v", err)
 	}
-	if _, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 
 	params := store.SubmitResultParams{
+		PlayerID:     playerID,
 		SessionID:    started.SessionID,
 		SessionToken: started.SessionToken,
 		Outcome:      domain.OutcomeExtracted,
@@ -113,6 +115,7 @@ func TestSubmitResultRejectsWrongToken(t *testing.T) {
 	}
 
 	_, err = s.SubmitResult(ctx, store.SubmitResultParams{
+		PlayerID:     playerID,
 		SessionID:    started.SessionID,
 		SessionToken: "forged-token",
 		Outcome:      domain.OutcomeExtracted,
@@ -120,6 +123,73 @@ func TestSubmitResultRejectsWrongToken(t *testing.T) {
 	})
 	if !errors.Is(err, store.ErrBadSessionToken) {
 		t.Fatalf("err = %v, want ErrBadSessionToken", err)
+	}
+}
+
+// TestSubmitResultRejectsAnotherPlayersSession is the same hardening on the
+// endpoint that actually moves items. A wrong owner must look exactly like a
+// wrong token — ErrBadSessionToken, not a distinct error — so the check adds
+// no new way to probe which session ids exist. And crucially: nothing may be
+// credited to either player, and the session must stay open for its owner.
+func TestSubmitResultRejectsAnotherPlayersSession(t *testing.T) {
+	pool := testutil.Pool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	owner := seedPlayer(t, s, "dev-result-owner", []domain.ItemStack{{ItemID: "rifle", Quantity: 1}})
+	intruder := seedPlayer(t, s, "dev-result-intruder", nil)
+
+	started, err := s.StartRaid(ctx, startParams(owner, []domain.ItemStack{{ItemID: "rifle", Quantity: 1}}))
+	if err != nil {
+		t.Fatalf("StartRaid: %v", err)
+	}
+	if _, err := s.ConfirmRaid(ctx, owner, started.SessionID, started.SessionToken, time.Minute); err != nil {
+		t.Fatalf("ConfirmRaid: %v", err)
+	}
+
+	// Correct session id, correct token, wrong caller.
+	_, err = s.SubmitResult(ctx, store.SubmitResultParams{
+		PlayerID:     intruder,
+		SessionID:    started.SessionID,
+		SessionToken: started.SessionToken,
+		Outcome:      domain.OutcomeExtracted,
+		Items:        []domain.ItemStack{{ItemID: "turbine", Quantity: 10}},
+	})
+	if !errors.Is(err, store.ErrBadSessionToken) {
+		t.Fatalf("err = %v, want ErrBadSessionToken (indistinguishable from a forged token)", err)
+	}
+
+	for _, c := range []struct {
+		name     string
+		playerID string
+	}{{"intruder", intruder}, {"owner", owner}} {
+		profile, err := s.Profile(ctx, c.playerID)
+		if err != nil {
+			t.Fatalf("Profile(%s): %v", c.name, err)
+		}
+		if len(profile.Stash) != 0 {
+			t.Errorf("%s stash = %v, want empty — a refused result must credit nobody", c.name, profile.Stash)
+		}
+	}
+
+	state, _ := sessionState(t, pool, started.SessionID)
+	if state != "active" {
+		t.Errorf("state = %q, want active — a refused result must not close the raid", state)
+	}
+
+	// The owner's own result still works, and closes the raid normally.
+	res, err := s.SubmitResult(ctx, store.SubmitResultParams{
+		PlayerID:     owner,
+		SessionID:    started.SessionID,
+		SessionToken: started.SessionToken,
+		Outcome:      domain.OutcomeExtracted,
+		Items:        []domain.ItemStack{{ItemID: "turbine", Quantity: 10}},
+	})
+	if err != nil {
+		t.Fatalf("the owner must still be able to submit: %v", err)
+	}
+	if res.AlreadyClosed {
+		t.Error("the owner's submit must be the first close, not a replay")
 	}
 }
 
@@ -132,12 +202,13 @@ func TestDeathCreditsOnlyWhatWasSubmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRaid: %v", err)
 	}
-	if _, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 
 	// Died carrying one safe-pocket item; the rifle taken into the raid is gone.
 	if _, err := s.SubmitResult(ctx, store.SubmitResultParams{
+		PlayerID:     playerID,
 		SessionID:    started.SessionID,
 		SessionToken: started.SessionToken,
 		Outcome:      domain.OutcomeDied,
@@ -162,13 +233,15 @@ func TestDeathCreditsOnlyWhatWasSubmitted(t *testing.T) {
 	}
 }
 
-// TestConfirmRaidRejectsWrongToken, TestConfirmRaidRejectsUnknownSessionID and
-// TestConfirmRaidRejectsAlreadyActiveSession together prove ConfirmRaid's
-// anti-oracle property: a wrong token, an unknown session id, and a
-// non-pending session are indistinguishable to the caller — all three return
-// ErrSessionNotOpen and leave the session's state and confirmed_at untouched.
-// This is deliberately different from SubmitResult, which does report
-// ErrBadSessionToken / ErrNotFound / ErrSessionNotOpen separately.
+// TestConfirmRaidRejectsWrongToken, TestConfirmRaidRejectsUnknownSessionID,
+// TestConfirmRaidRejectsAlreadyActiveSession and
+// TestConfirmRaidRejectsAnotherPlayersSession together prove ConfirmRaid's
+// anti-oracle property: a wrong token, an unknown session id, a non-pending
+// session and somebody else's session are indistinguishable to the caller —
+// all four return ErrSessionNotOpen and leave the session's state and
+// confirmed_at untouched. This is deliberately different from SubmitResult,
+// which does report ErrBadSessionToken / ErrNotFound / ErrSessionNotOpen
+// separately.
 
 func TestConfirmRaidRejectsWrongToken(t *testing.T) {
 	pool := testutil.Pool(t)
@@ -181,7 +254,7 @@ func TestConfirmRaidRejectsWrongToken(t *testing.T) {
 		t.Fatalf("StartRaid: %v", err)
 	}
 
-	_, err = s.ConfirmRaid(ctx, started.SessionID, "forged-token", time.Minute)
+	_, err = s.ConfirmRaid(ctx, playerID, started.SessionID, "forged-token", time.Minute)
 	if !errors.Is(err, store.ErrSessionNotOpen) {
 		t.Fatalf("err = %v, want ErrSessionNotOpen", err)
 	}
@@ -208,7 +281,7 @@ func TestConfirmRaidRejectsUnknownSessionID(t *testing.T) {
 		t.Fatalf("StartRaid: %v", err)
 	}
 
-	_, err = s.ConfirmRaid(ctx, "00000000-0000-0000-0000-000000000000", started.SessionToken, time.Minute)
+	_, err = s.ConfirmRaid(ctx, playerID, "00000000-0000-0000-0000-000000000000", started.SessionToken, time.Minute)
 	if !errors.Is(err, store.ErrSessionNotOpen) {
 		t.Fatalf("err = %v, want ErrSessionNotOpen", err)
 	}
@@ -222,6 +295,45 @@ func TestConfirmRaidRejectsUnknownSessionID(t *testing.T) {
 	}
 }
 
+// TestConfirmRaidRejectsAnotherPlayersSession: a session token is not by
+// itself authorisation. Before this check, anyone holding a leaked or
+// intercepted token could drive another player's raid — start its clock, and
+// (via SubmitResult) decide whether they lived or died. The rejection must be
+// the same uniform ErrSessionNotOpen as every other refusal, so it does not
+// become an oracle for "this session id exists".
+func TestConfirmRaidRejectsAnotherPlayersSession(t *testing.T) {
+	pool := testutil.Pool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	owner := seedPlayer(t, s, "dev-confirm-owner", nil)
+	intruder := seedPlayer(t, s, "dev-confirm-intruder", nil)
+
+	started, err := s.StartRaid(ctx, startParams(owner, nil))
+	if err != nil {
+		t.Fatalf("StartRaid: %v", err)
+	}
+
+	// The correct session id and the correct token — only the caller is wrong.
+	_, err = s.ConfirmRaid(ctx, intruder, started.SessionID, started.SessionToken, time.Minute)
+	if !errors.Is(err, store.ErrSessionNotOpen) {
+		t.Fatalf("err = %v, want ErrSessionNotOpen (the same error every other refusal gives)", err)
+	}
+
+	state, confirmedAt := sessionState(t, pool, started.SessionID)
+	if state != "pending" {
+		t.Errorf("state = %q, want pending — an intruder must not start the raid clock", state)
+	}
+	if confirmedAt != nil {
+		t.Errorf("confirmed_at = %v, want nil", confirmedAt)
+	}
+
+	// The owner is unaffected and can still confirm.
+	if _, err := s.ConfirmRaid(ctx, owner, started.SessionID, started.SessionToken, time.Minute); err != nil {
+		t.Fatalf("the owner must still be able to confirm: %v", err)
+	}
+}
+
 func TestConfirmRaidRejectsAlreadyActiveSession(t *testing.T) {
 	pool := testutil.Pool(t)
 	s := store.New(pool)
@@ -232,7 +344,7 @@ func TestConfirmRaidRejectsAlreadyActiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRaid: %v", err)
 	}
-	if _, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute); err != nil {
 		t.Fatalf("first ConfirmRaid: %v", err)
 	}
 	_, firstConfirmedAt := sessionState(t, pool, started.SessionID)
@@ -240,7 +352,7 @@ func TestConfirmRaidRejectsAlreadyActiveSession(t *testing.T) {
 		t.Fatal("confirmed_at must be set after the first confirm")
 	}
 
-	_, err = s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute)
+	_, err = s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute)
 	if !errors.Is(err, store.ErrSessionNotOpen) {
 		t.Fatalf("err = %v, want ErrSessionNotOpen", err)
 	}
@@ -272,7 +384,7 @@ func TestConfirmRaidReturnsStoredDeadline(t *testing.T) {
 
 	const deadline = 14 * time.Minute
 	before := time.Now()
-	expiresAt, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, deadline)
+	expiresAt, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, deadline)
 	if err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
@@ -319,11 +431,12 @@ func TestSubmitResultCreditsAResultInsideTheDeadline(t *testing.T) {
 	}
 	// A deadline a comfortable distance in the future stands in for "the raid
 	// duration plus the grace buffer, and the result got here in time".
-	if _, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 
 	res, err := s.SubmitResult(ctx, store.SubmitResultParams{
+		PlayerID:     playerID,
 		SessionID:    started.SessionID,
 		SessionToken: started.SessionToken,
 		Outcome:      domain.OutcomeExtracted,
@@ -366,11 +479,12 @@ func TestSubmitResultOnExpiredActiveSessionRecordsDeath(t *testing.T) {
 		t.Fatalf("StartRaid: %v", err)
 	}
 	// Confirm with a deadline already in the past: past the grace buffer too.
-	if _, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, -time.Second); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, -time.Second); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 
 	res, err := s.SubmitResult(ctx, store.SubmitResultParams{
+		PlayerID:     playerID,
 		SessionID:    started.SessionID,
 		SessionToken: started.SessionToken,
 		Outcome:      domain.OutcomeExtracted,
@@ -417,6 +531,7 @@ func TestSubmitResultOnExpiredPendingSessionReturnsLoadout(t *testing.T) {
 	}
 
 	_, err = s.SubmitResult(ctx, store.SubmitResultParams{
+		PlayerID:     playerID,
 		SessionID:    started.SessionID,
 		SessionToken: started.SessionToken,
 		Outcome:      domain.OutcomeExtracted,
@@ -462,7 +577,7 @@ func TestSubmitResultExpiryMatchesTheSweeper(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StartRaid: %v", err)
 		}
-		if _, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, -time.Second); err != nil {
+		if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, -time.Second); err != nil {
 			t.Fatalf("ConfirmRaid: %v", err)
 		}
 		if sweepFirst {
@@ -471,6 +586,7 @@ func TestSubmitResultExpiryMatchesTheSweeper(t *testing.T) {
 			}
 		}
 		res, err := s.SubmitResult(ctx, store.SubmitResultParams{
+			PlayerID:     playerID,
 			SessionID:    started.SessionID,
 			SessionToken: started.SessionToken,
 			Outcome:      domain.OutcomeExtracted,

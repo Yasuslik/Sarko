@@ -82,6 +82,12 @@ func handleRaidStart(deps Deps) http.HandlerFunc {
 
 func handleRaidConfirm(deps Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		playerID, ok := auth.PlayerID(r.Context())
+		if !ok {
+			WriteError(w, http.StatusUnauthorized, "unauthorized", "no player in context")
+			return
+		}
+
 		var req sessionRequest
 		if !decodeJSON(w, r, &req) {
 			return
@@ -94,7 +100,7 @@ func handleRaidConfirm(deps Deps) http.HandlerFunc {
 		// The store records one already-computed deadline: the raid duration
 		// plus the grace buffer that covers a slow result submission.
 		expiresAt, err := deps.Store.ConfirmRaid(r.Context(),
-			req.SessionID, req.SessionToken, deps.RaidTTL+deps.GraceBuffer)
+			playerID, req.SessionID, req.SessionToken, deps.RaidTTL+deps.GraceBuffer)
 		switch {
 		case errors.Is(err, store.ErrSessionNotOpen):
 			WriteError(w, http.StatusConflict, "session_not_open", "session is not pending")
@@ -111,6 +117,12 @@ func handleRaidConfirm(deps Deps) http.HandlerFunc {
 
 func handleRaidResult(deps Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		playerID, ok := auth.PlayerID(r.Context())
+		if !ok {
+			WriteError(w, http.StatusUnauthorized, "unauthorized", "no player in context")
+			return
+		}
+
 		var req resultRequest
 		if !decodeJSON(w, r, &req) {
 			return
@@ -135,6 +147,7 @@ func handleRaidResult(deps Deps) http.HandlerFunc {
 		}
 
 		result, err := deps.Store.SubmitResult(r.Context(), store.SubmitResultParams{
+			PlayerID:     playerID,
 			SessionID:    req.SessionID,
 			SessionToken: req.SessionToken,
 			Outcome:      domain.RaidOutcome(req.Outcome),

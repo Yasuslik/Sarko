@@ -332,6 +332,53 @@ func TestAnonymousAuthRejectsOversizedDeviceID(t *testing.T) {
 	}
 }
 
+// TestAnotherPlayersSessionIsRefusedOverHTTP is the end-to-end version of the
+// ownership check: one logged-in player holding another's session id and token
+// (leaked, intercepted, or shared) must not be able to drive that raid. Both
+// endpoints authorised on token possession alone before this.
+func TestAnotherPlayersSessionIsRefusedOverHTTP(t *testing.T) {
+	c := newTestServer(t)
+
+	c.login("device-owner")
+	var started store.StartedRaid
+	if code := c.do(http.MethodPost, "/v1/raid/start",
+		map[string]any{"map_id": "forest", "loadout": []any{}}, &started); code != http.StatusOK {
+		t.Fatalf("raid/start status = %d, want 200", code)
+	}
+
+	// Same server, different authenticated player, same session credentials.
+	c.login("device-intruder")
+
+	if code := c.do(http.MethodPost, "/v1/raid/confirm", map[string]string{
+		"session_id":    started.SessionID,
+		"session_token": started.SessionToken,
+	}, nil); code != http.StatusConflict {
+		t.Errorf("intruder confirm = %d, want 409 (the uniform session_not_open)", code)
+	}
+
+	if code := c.do(http.MethodPost, "/v1/raid/result", map[string]any{
+		"session_id":    started.SessionID,
+		"session_token": started.SessionToken,
+		"outcome":       "extracted",
+		"items":         []map[string]any{{"item_id": "turbine", "quantity": 5}},
+	}, nil); code != http.StatusUnauthorized {
+		t.Errorf("intruder result = %d, want 401 (indistinguishable from a bad token)", code)
+	}
+
+	// The intruder gained nothing.
+	var profile store.Profile
+	if code := c.do(http.MethodGet, "/v1/profile", nil, &profile); code != http.StatusOK {
+		t.Fatalf("profile status = %d, want 200", code)
+	}
+	if len(profile.Stash) != 0 {
+		t.Errorf("intruder stash = %v, want empty", profile.Stash)
+	}
+
+	// And the owner's raid is untouched: still confirmable, still theirs.
+	c.login("device-owner")
+	c.confirm(started)
+}
+
 func TestRaidStartRejectsLockedMapWith403(t *testing.T) {
 	c := newTestServer(t)
 	c.login("device-locked-http")
