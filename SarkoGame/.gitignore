@@ -1,0 +1,24 @@
+# Unreal Engine generated output. All of it is rebuildable from source, and all
+# of it is large — DerivedDataCache alone reaches tens of gigabytes.
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+Build/
+
+# Generated IDE projects
+*.xcodeproj/
+*.xcworkspace/
+.vscode/
+*.sln
+*.VC.db
+*.opensdf
+*.sdf
+
+# Compiled assets and packages
+*.ipa
+*.app/
+Packaged/
+
+# macOS
+.DS_Store
