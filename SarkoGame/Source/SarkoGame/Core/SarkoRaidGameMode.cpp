@@ -1,15 +1,19 @@
 #include "Core/SarkoRaidGameMode.h"
 
+#include "Core/SarkoPlayerController.h"
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Kismet/GameplayStatics.h"
 #include "Map/SarkoMapBuilder.h"
 #include "Pawn/SarkoCharacter.h"
+#include "UI/SarkoHUD.h"
 
 ASarkoRaidGameMode::ASarkoRaidGameMode()
 {
 	GameStateClass = ASarkoRaidGameState::StaticClass();
 	DefaultPawnClass = ASarkoCharacter::StaticClass();
+	PlayerControllerClass = ASarkoPlayerController::StaticClass();
+	HUDClass = ASarkoHUD::StaticClass();
 	bStartPlayersAsSpectators = false;
 }
 
