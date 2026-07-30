@@ -49,6 +49,43 @@ func (s *Store) UpsertPlayer(ctx context.Context, deviceID string) (string, erro
 	return playerID, nil
 }
 
+// GrantStarterKit credits domain.StarterKit() to a player exactly once, ever.
+// It reports whether this call was the one that granted it.
+//
+// The flag flip and the credit are one transaction, and the flip is the
+// conditional statement: an UPDATE with `AND NOT starter_kit_granted` either
+// affects one row or none, so two concurrent logins cannot both credit. Doing
+// it the other way round — read the flag, then credit — is a race that hands
+// out two pistols to a client that fires two auth calls at once.
+func (s *Store) GrantStarterKit(ctx context.Context, playerID string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE players SET starter_kit_granted = true
+		 WHERE id = $1 AND NOT starter_kit_granted`, playerID)
+	if err != nil {
+		return false, fmt.Errorf("claim starter kit: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Already granted, or no such player. Either way nothing to credit, and
+		// "no such player" is not this call's error to report: the caller just
+		// created the row.
+		return false, nil
+	}
+
+	if err := addItemsTx(ctx, tx, playerID, domain.StarterKit()); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit: %w", err)
+	}
+	return true, nil
+}
+
 // Profile reads stash, garage tier and derived map access.
 func (s *Store) Profile(ctx context.Context, playerID string) (Profile, error) {
 	p := Profile{PlayerID: playerID, Stash: []domain.ItemStack{}}

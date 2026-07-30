@@ -43,6 +43,18 @@ func handleAnonymousAuth(deps Deps) http.HandlerFunc {
 			WriteError(w, http.StatusInternalServerError, "internal", "could not create player")
 			return
 		}
+		// A new device gets its free kit here, not at first raid: /v1/raid/start
+		// debits the loadout, so a player with an empty stash cannot legally
+		// take anything in. Failure is logged and swallowed — a missing kit is a
+		// bad first raid, but refusing the token would lock the player out
+		// entirely, and the next launch retries because the grant is one-time by
+		// flag rather than by attempt.
+		if granted, err := deps.Store.GrantStarterKit(r.Context(), playerID); err != nil {
+			slog.Error("grant starter kit", "err", err, "player_id", playerID)
+		} else if granted {
+			slog.Info("granted starter kit", "player_id", playerID)
+		}
+
 		token, err := deps.Issuer.Issue(playerID)
 		if err != nil {
 			slog.Error("issue token", "err", err)

@@ -211,19 +211,41 @@ func TestConcurrentMigrateOnVirginDatabase(t *testing.T) {
 	}
 	defer scratch.Close()
 
-	// Exactly one row per migration: a double-apply would show up here.
+	// Exactly one row per migration: a double-apply would show up here. The
+	// expected count is counted off the embedded FS rather than hard-coded, so
+	// adding a migration does not turn this into a false failure.
+	wantVersions := countMigrations(t)
 	var versions int
 	if err := scratch.QueryRowContext(ctx,
 		`SELECT count(*) FROM goose_db_version WHERE version_id > 0`).Scan(&versions); err != nil {
 		t.Fatalf("count goose_db_version: %v", err)
 	}
-	if versions != 1 {
-		t.Errorf("goose_db_version has %d applied rows, want 1", versions)
+	if versions != wantVersions {
+		t.Errorf("goose_db_version has %d applied rows, want %d", versions, wantVersions)
 	}
 
 	if !tableExists(t, scratchURL, "raid_sessions") {
 		t.Error("raid_sessions was not created on the scratch database")
 	}
+}
+
+// countMigrations reports how many .sql files Migrate would apply.
+func countMigrations(t *testing.T) int {
+	t.Helper()
+	entries, err := migrations.ReadDir("migrations")
+	if err != nil {
+		t.Fatalf("read embedded migrations: %v", err)
+	}
+	n := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+			n++
+		}
+	}
+	if n == 0 {
+		t.Fatal("no embedded migrations found")
+	}
+	return n
 }
 
 func tableExists(t *testing.T, url, table string) bool {

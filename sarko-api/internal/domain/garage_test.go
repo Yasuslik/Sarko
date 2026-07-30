@@ -4,8 +4,8 @@ import "testing"
 
 func TestUnlockedMapsGrowWithTier(t *testing.T) {
 	none := UnlockedMaps(TierNone)
-	if len(none) != 1 || none[0] != "forest" {
-		t.Fatalf("TierNone = %v, want [forest]", none)
+	if len(none) != 1 || none[0] != "bridge" {
+		t.Fatalf("TierNone = %v, want [bridge]", none)
 	}
 
 	heli := UnlockedMaps(TierHelicopter)
@@ -13,16 +13,16 @@ func TestUnlockedMapsGrowWithTier(t *testing.T) {
 		t.Errorf("TierHelicopter unlocks %d maps, want 5", len(heli))
 	}
 
-	// Progression must be cumulative: a car keeps the forest.
+	// Progression must be cumulative: a car keeps the bridge.
 	car := UnlockedMaps(TierCar)
 	found := false
 	for _, m := range car {
-		if m == "forest" {
+		if m == "bridge" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("TierCar must still include forest")
+		t.Error("TierCar must still include bridge")
 	}
 }
 
