@@ -201,10 +201,16 @@ void ASarkoHUD::DrawBackpack()
 	// rather than guessed: "RELOADING" in the large font is far wider than the
 	// two digits of a magazine count, and a fixed offset that clears "30"
 	// overlaps it the moment the player reloads.
-	float AmmoWidth = 0.f;
-	float AmmoHeight = 0.f;
-	GetTextSize(TEXT("RELOADING"), AmmoWidth, AmmoHeight, GEngine->GetLargeFont(), 1.f);
-	const float X = 24.f + AmmoWidth + 24.f;
+	//
+	// Measured once and kept. DrawHUD is a tick path and GetTextSize takes an
+	// FString, so doing this inline allocated and freed a string every frame to
+	// re-derive a constant.
+	if (CachedReloadingWidth < 0.f)
+	{
+		float AmmoHeight = 0.f;
+		GetTextSize(TEXT("RELOADING"), CachedReloadingWidth, AmmoHeight, GEngine->GetLargeFont(), 1.f);
+	}
+	const float X = 24.f + CachedReloadingWidth + 24.f;
 
 	// Amber when full, so "the crate had more in it" is legible at a glance
 	// rather than being discovered by counting.
@@ -242,14 +248,24 @@ void ASarkoHUD::DrawInteract()
 	}
 
 	// Prompt: top-centre, under the clock. Never a bottom corner (spec §9).
-	const FString Prompt = FString::Printf(TEXT("ОБШУКАТИ (%s)"), *Target->Tier.ToString());
-	float PromptWidth = 0.f;
-	float PromptHeight = 0.f;
-	GetTextSize(Prompt, PromptWidth, PromptHeight, GEngine->GetLargeFont(), 1.f);
+	//
+	// Built and measured only when the tier changes, which is the only thing the
+	// text depends on. Doing it inline cost a Printf, an FName::ToString and a
+	// GetTextSize every frame the player stood near a crate.
+	if (!bPromptCached || Target->Tier != CachedPromptTier)
+	{
+		bPromptCached = true;
+		CachedPromptTier = Target->Tier;
+		CachedPrompt = FString::Printf(TEXT("ОБШУКАТИ (%s)"), *CachedPromptTier.ToString());
+		GetTextSize(CachedPrompt, CachedPromptWidth, CachedPromptHeight, GEngine->GetLargeFont(), 1.f);
+	}
+
+	const float PromptWidth = CachedPromptWidth;
+	const float PromptHeight = CachedPromptHeight;
 	const float PromptX = (Canvas->SizeX - PromptWidth) * 0.5f;
 	constexpr float PromptY = 76.f;
 	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f), PromptX - 10.f, PromptY - 4.f, PromptWidth + 20.f, PromptHeight + 8.f);
-	DrawText(Prompt, FLinearColor::White, PromptX, PromptY, GEngine->GetLargeFont(), 1.f);
+	DrawText(CachedPrompt, FLinearColor::White, PromptX, PromptY, GEngine->GetLargeFont(), 1.f);
 
 	if (!PC->IsInteractHeld())
 	{

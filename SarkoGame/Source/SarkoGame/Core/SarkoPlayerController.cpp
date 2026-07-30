@@ -4,7 +4,6 @@
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Debug/SarkoOverviewShot.h"
-#include "EngineUtils.h"
 #include "Loot/SarkoLootContainer.h"
 #include "Pawn/SarkoCharacter.h"
 #include "Pawn/SarkoHealthComponent.h"
@@ -253,9 +252,14 @@ void ASarkoPlayerController::UpdateInteract()
 	// UpdateInteract runs ahead of PlayerTick's freeze check, so the same
 	// condition is applied here: without it a finished raid would keep drawing a
 	// loot prompt and re-issuing channel requests the server now refuses.
+	//
+	// A missing game state is treated the same as a finished raid rather than
+	// waved through: it owns both the container registry read below and the looted
+	// bits, so without it there is nothing to interact with and no way to know
+	// whether it has been emptied already.
 	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
 	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
-	if (!Pawn || (RaidState && RaidState->IsRaidFinished()))
+	if (!Pawn || !RaidState || RaidState->IsRaidFinished())
 	{
 		bInteractHeld = false;
 		HeldContainerIndex = INDEX_NONE;
@@ -263,30 +267,24 @@ void ASarkoPlayerController::UpdateInteract()
 		return;
 	}
 
-	// One-time gather. Containers are spawned from the map file at level start,
-	// never added or removed, so re-running an actor iterator every frame would
-	// be pure waste on a phone. The cache is not sealed until it has actually
-	// found something, because on a client the containers spawn when Seed
-	// replicates, which can be several frames after the first PlayerTick.
-	if (!bContainersCached)
-	{
-		CachedContainers.Reset();
-		for (TActorIterator<ASarkoLootContainer> It(GetWorld()); It; ++It)
-		{
-			CachedContainers.Add(*It);
-		}
-		bContainersCached = CachedContainers.Num() > 0;
-	}
-
 	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
 	const FVector PawnLocation = Pawn->GetActorLocation();
 	const bool bAlive = Pawn->HealthComponent && !Pawn->HealthComponent->IsDead();
 
-	// Nearest openable container. No allocation: this walks a cached array and
-	// keeps one pointer and one float.
+	// Nearest openable container. No allocation and no world scan: the containers
+	// register themselves with the game state at BeginPlay (which is also what
+	// lets a replicated looted bit recolour them), so this walks a list that is
+	// already maintained. That registry replaces a cached TActorIterator scan
+	// which, on a map with no containers at all — a bridge.json that failed to
+	// load, say — could never seal itself and re-ran a heap-allocating iterator
+	// over the whole world every single frame, forever.
+	//
+	// ASarkoLootContainer::IsLooted() would resolve the world and the game state
+	// per container per frame; RaidState is already in hand, so the looted bit is
+	// read straight off it with one lookup for the whole loop.
 	ASarkoLootContainer* Best = nullptr;
 	float BestDistanceSquared = TNumericLimits<float>::Max();
-	for (const TWeakObjectPtr<ASarkoLootContainer>& Weak : CachedContainers)
+	for (const TWeakObjectPtr<ASarkoLootContainer>& Weak : RaidState->GetContainers())
 	{
 		ASarkoLootContainer* Container = Weak.Get();
 		if (!Container)
@@ -294,7 +292,7 @@ void ASarkoPlayerController::UpdateInteract()
 			continue;
 		}
 		if (!SarkoLoot::CanInteract(PawnLocation, Container->GetActorLocation(),
-				Settings.InteractRadiusUU, bAlive, Container->IsLooted()))
+				Settings.InteractRadiusUU, bAlive, RaidState->IsContainerLooted(Container->ContainerIndex)))
 		{
 			continue;
 		}

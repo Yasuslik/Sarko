@@ -181,7 +181,9 @@ void ASarkoCharacter::RequestBeginLoot(int32 ContainerIndex)
 
 	// Local copy first, so the progress bar starts moving this frame rather than
 	// after a round trip — the same reason a shot is drawn before the server
-	// confirms it (spec §10).
+	// confirms it (spec §10). Optimistic, so the server has to be able to take it
+	// back: ClientLootRejected clears it on every refusal, or a refused begin
+	// leaves the bar full for as long as the button is held.
 	LocalChannelIndex = ContainerIndex;
 	LocalChannelStartSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
 
@@ -225,6 +227,7 @@ void ASarkoCharacter::ServerBeginLoot_Implementation(int32 ContainerIndex)
 	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
 	if (!GameMode || !RaidState || RaidState->IsRaidFinished())
 	{
+		ClientLootRejected(ContainerIndex);
 		return;
 	}
 
@@ -234,6 +237,7 @@ void ASarkoCharacter::ServerBeginLoot_Implementation(int32 ContainerIndex)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("SarkoCharacter: loot request for out-of-range container %d (have %d)"),
 			ContainerIndex, Spots.Num());
+		ClientLootRejected(ContainerIndex);
 		return;
 	}
 
@@ -241,11 +245,26 @@ void ASarkoCharacter::ServerBeginLoot_Implementation(int32 ContainerIndex)
 	if (!SarkoLoot::CanInteract(GetActorLocation(), Spots[ContainerIndex].Location,
 			GetDefault<USarkoRaidSettings>()->InteractRadiusUU, bAlive, RaidState->IsContainerLooted(ContainerIndex)))
 	{
+		// Every refusal tells the client, so the optimistic bar RequestBeginLoot
+		// started does not stay pinned at full for the rest of the hold.
+		ClientLootRejected(ContainerIndex);
 		return;
 	}
 
 	LootChannelIndex = ContainerIndex;
 	LootChannelStartSeconds = GetWorld()->GetTimeSeconds();
+}
+
+void ASarkoCharacter::ClientLootRejected_Implementation(int32 ContainerIndex)
+{
+	// Only the request that was actually refused. A player standing between two
+	// crates can have moved on to a second index before this lands (the controller
+	// re-requests when the nearest container changes mid-hold), and clearing that
+	// newer channel would stall a begin the server did accept.
+	if (LocalChannelIndex == ContainerIndex)
+	{
+		LocalChannelIndex = INDEX_NONE;
+	}
 }
 
 void ASarkoCharacter::ServerCancelLoot_Implementation()
@@ -292,9 +311,11 @@ void ASarkoCharacter::TickLootChannel()
 		return;
 	}
 
-	// Channel complete. Roll here and now — never ahead of time: pre-rolled
-	// contents replicate and can be read out of memory, which is a loot map
-	// (slice-1 spec §6.1).
+	// Channel complete. Roll here and now, never ahead of time: nothing on this
+	// machine should ever hold a map of the whole raid's contents, so a later
+	// decision to replicate or log rolled loot can only ever leak one opened crate
+	// (slice-1 spec §6.1). What keeps the *client* from knowing is a different
+	// thing — the server-only salt mixed into the stream seed below.
 	const int32 Index = LootChannelIndex;
 	LootChannelIndex = INDEX_NONE;
 
@@ -307,25 +328,38 @@ void ASarkoCharacter::TickLootChannel()
 		return;
 	}
 
-	FRandomStream Stream(SarkoLoot::ContainerSeed(RaidState->Seed, Index));
+	// GameMode->LootSalt is the reason a client cannot precompute this: Seed is
+	// replicated and the tables ship in the build, so without the salt the two
+	// remaining inputs are both already in the client's hands.
+	FRandomStream Stream(SarkoLoot::ContainerSeed(RaidState->Seed, Index, GameMode->LootSalt));
 	const TArray<FSarkoItemStack> Rolled = SarkoLoot::RollContainer(*Table, Stream);
 
-	int32 Taken = 0;
-	int32 LeftBehind = 0;
-	for (const FSarkoItemStack& Stack : Rolled)
+	// CompleteLootChannel owns the order and the double-credit gate: credit, then
+	// mark, and never credit an index that is already marked. Spec §4.3's partial
+	// loot is the "mark unconditionally" half of that rule. Pure and unit tested
+	// (Sarko.Loot.CompletedChannelCreditsThenMarksOnce), which is the only way the
+	// rule gets checked at all — everything around it needs a world and a network.
+	const SarkoLoot::FSarkoLootPayout Payout = SarkoLoot::CompleteLootChannel(
+		Rolled,
+		RaidState->IsContainerLooted(Index),
+		[this](FName Item, int32 Quantity)
+		{
+			return BackpackComponent ? BackpackComponent->AddItem(Item, Quantity) : Quantity;
+		},
+		[RaidState, Index]() { RaidState->MarkContainerLooted(Index); });
+
+	if (!Payout.bCredited)
 	{
-		const int32 Leftover = BackpackComponent ? BackpackComponent->AddItem(Stack.Item, Stack.Quantity) : Stack.Quantity;
-		Taken += Stack.Quantity - Leftover;
-		LeftBehind += Leftover;
+		// Only reachable if the per-tick CanInteract gate above and the looted bit
+		// ever disagree. That would be a bug worth seeing rather than a silent
+		// no-op, so it is logged instead of ignored.
+		UE_LOG(LogTemp, Warning, TEXT("SarkoCharacter: channel completed on container %d, which was already emptied"),
+			Index);
+		return;
 	}
 
-	// Marked looted either way. Spec §4.3 allows partial loot, and re-opening a
-	// container to fish out the remainder would re-run the roll and duplicate
-	// the part already taken — the same roll, credited twice.
-	RaidState->MarkContainerLooted(Index);
-
 	UE_LOG(LogTemp, Display, TEXT("SarkoCharacter: looted container %d (tier %s): took %d units, left %d behind"),
-		Index, *Spots[Index].Tier.ToString(), Taken, LeftBehind);
+		Index, *Spots[Index].Tier.ToString(), Payout.Taken, Payout.LeftBehind);
 }
 
 void ASarkoCharacter::SetMoveIntent(FVector2D Intent)

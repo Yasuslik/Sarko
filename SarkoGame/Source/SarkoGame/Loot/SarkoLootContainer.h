@@ -39,9 +39,11 @@ namespace SarkoLoot
  * game state as ASarkoRaidGameState::LootedContainers and replicates from there.
  *
  * ContainerIndex is the index into FSarkoMapDefinition::Containers. It is the
- * name of this container on the wire, the loot roll's stream salt, and the only
- * thing a client sends when it asks to open something — so every use of it is
- * bounds-checked.
+ * name of this container on the wire, one of the three inputs to its loot roll's
+ * stream seed (the others being the raid seed and the server-only
+ * ASarkoRaidGameMode::LootSalt — index and seed alone are both client-knowable,
+ * which is exactly why the salt exists), and the only thing a client sends when
+ * it asks to open something — so every use of it is bounds-checked.
  */
 UCLASS()
 class ASarkoLootContainer : public AActor

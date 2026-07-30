@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Templates/Function.h"
 
 #include "Loot/SarkoItemCatalog.h"
 
@@ -93,23 +94,81 @@ namespace SarkoLoot
 	const FSarkoLootTables& GetLootTables();
 
 	/**
-	 * The stream seed for one container: `RaidSeed ^ ContainerIndex` (spec §4.2).
+	 * The stream seed for one container: the raid seed, the container index and a
+	 * **server-only** salt, avalanche-mixed together (spec §4.2).
 	 *
-	 * XOR is done in uint32 and reinterpreted, because the backend's seed is
-	 * `int64(rand.Uint32())` and therefore routinely has the sign bit set —
-	 * signed arithmetic on that is undefined behaviour, and "undefined" here
+	 * The salt is why this takes three arguments instead of the two spec §4.2
+	 * asks for. `RaidSeed ^ ContainerIndex` alone is client-derivable: RaidSeed is
+	 * replicated (it is what tells a client the raid has begun), the tables ship
+	 * inside the build, and RollContainer is pure — so any client could enumerate
+	 * every container's contents before opening one, which is a loot map handed
+	 * out for free. ASarkoRaidGameMode::LootSalt is generated on the authority at
+	 * raid start and never replicated, so a client has no way to run this
+	 * function over the right input.
+	 *
+	 * All arithmetic is done in uint32 and reinterpreted at the end, because the
+	 * backend's seed is `int64(rand.Uint32())` and therefore routinely has the
+	 * sign bit set — signed overflow is undefined behaviour, and "undefined" here
 	 * means two machines can disagree about what is in a crate.
+	 *
+	 * Deterministic: a fixed (RaidSeed, ContainerIndex, LootSalt) is always the
+	 * same stream, which is what lets the server re-derive a roll instead of
+	 * storing it. Tests pass a fixed salt for exactly that reason.
 	 */
-	int32 ContainerSeed(int32 RaidSeed, int32 ContainerIndex);
+	int32 ContainerSeed(int32 RaidSeed, int32 ContainerIndex, int32 LootSalt);
 
 	/**
 	 * Rolls one container's contents. Called **only on the server, only at the
-	 * moment the container is opened** (spec §4.2, §6.1): contents generated
-	 * ahead of time would replicate to clients and be readable out of memory,
-	 * which is a loot map.
+	 * moment the container is opened** (spec §4.2, §6.1).
 	 *
-	 * Deterministic in Stream, so the same raid seed and container index always
-	 * produce the same haul and a retried transfer cannot duplicate loot.
+	 * Rolling lazily is not by itself what keeps a client from knowing what is in
+	 * a crate — ContainerSeed's server-only salt is. What lazy rolling buys is
+	 * that nothing ever holds a full map of the raid's contents in the first
+	 * place, on either side: contents rolled up front would sit in server memory,
+	 * and any later decision to replicate or log them would leak the whole map at
+	 * once rather than one opened crate at a time.
+	 *
+	 * Deterministic in Stream, so the same stream seed always produces the same
+	 * haul and a retried transfer cannot duplicate loot.
 	 */
 	TArray<FSarkoItemStack> RollContainer(const FSarkoLootTable& Table, FRandomStream& Stream);
+
+	/** What one completed loot channel actually moved. */
+	struct FSarkoLootPayout
+	{
+		/** Units that made it into the backpack. */
+		int32 Taken = 0;
+
+		/** Units that did not fit and stay in the container, unrecoverable (spec §4.3). */
+		int32 LeftBehind = 0;
+
+		/** False when the container was already emptied: nothing was credited and nothing was marked. */
+		bool bCredited = false;
+	};
+
+	/**
+	 * The completion half of one loot channel: the rule that decides whether a
+	 * finished channel pays out at all, and the order in which it does.
+	 *
+	 * Pure and world-free — it is handed its two effects rather than reaching for
+	 * a backpack component or a game state — so the invariant that protects the
+	 * economy is unit tested with no world, no actor and no network:
+	 *
+	 *  - an already-emptied container credits **nothing**, so one roll can never
+	 *    be credited twice (the roll is deterministic, so a second payout would
+	 *    be the same items again, out of thin air);
+	 *  - Credit runs before Mark, because Mark is what makes the container
+	 *    ineligible — marking first would make the credit unreachable;
+	 *  - Mark runs **unconditionally** once credit has been attempted, including
+	 *    when part or all of the roll did not fit. Spec §4.3 allows partial loot,
+	 *    and leaving a partly-emptied container openable would re-run the same
+	 *    deterministic roll and duplicate the part already taken.
+	 *
+	 * @param Rolled         this container's contents, from RollContainer
+	 * @param bAlreadyLooted the authority's own looted bit for this index
+	 * @param Credit         moves one stack into the backpack; returns the quantity that did not fit
+	 * @param Mark           records the container as emptied
+	 */
+	FSarkoLootPayout CompleteLootChannel(const TArray<FSarkoItemStack>& Rolled, bool bAlreadyLooted,
+		TFunctionRef<int32(FName /*Item*/, int32 /*Quantity*/)> Credit, TFunctionRef<void()> Mark);
 }

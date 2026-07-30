@@ -39,6 +39,14 @@ void ASarkoRaidGameMode::InitGame(const FString& MapName, const FString& Options
 		Seed = FCString::Atoi(*SeedOption);
 	}
 
+	// The salt, generated here on the authority and never replicated. Unlike Seed
+	// this is deliberately *not* readable from the travel URL: a URL option is
+	// visible to a joining client, which would hand back exactly the loot map this
+	// salt exists to withhold. It is also not derived from Seed or from the clock,
+	// because a client knows both. A raid GUID's hash rather than FMath::Rand(),
+	// which is seeded per process and would repeat across raids in one session.
+	LootSalt = static_cast<int32>(GetTypeHash(FGuid::NewGuid()));
+
 	// Load the layout here, not in StartPlay: UEngine::LoadMap spawns every
 	// local player's pawn (which calls RestartPlayer) before it calls
 	// UWorld::BeginPlay, which is what invokes StartPlay. Waiting for

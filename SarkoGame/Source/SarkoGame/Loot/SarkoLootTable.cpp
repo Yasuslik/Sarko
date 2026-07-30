@@ -192,11 +192,24 @@ const FSarkoLootTables& SarkoLoot::GetLootTables()
 	return Tables;
 }
 
-int32 SarkoLoot::ContainerSeed(int32 RaidSeed, int32 ContainerIndex)
+int32 SarkoLoot::ContainerSeed(int32 RaidSeed, int32 ContainerIndex, int32 LootSalt)
 {
-	// Unsigned XOR then reinterpret: the backend's seed is int64(rand.Uint32()),
-	// so the sign bit is set about half the time, and signed overflow is UB.
-	const uint32 Mixed = static_cast<uint32>(RaidSeed) ^ static_cast<uint32>(ContainerIndex);
+	// Unsigned throughout, reinterpreted once at the end: the backend's seed is
+	// int64(rand.Uint32()), so the sign bit is set about half the time, and signed
+	// overflow is UB — "undefined" here means two machines disagreeing about what
+	// is in a crate.
+	uint32 Mixed = static_cast<uint32>(RaidSeed) ^ static_cast<uint32>(ContainerIndex);
+
+	// The salt is folded in through a multiply-and-shift avalanche rather than a
+	// bare XOR. A bare XOR would make the salt trivially recoverable from a single
+	// observed roll — open one crate, subtract the known RaidSeed and index, and
+	// every other crate in the raid is readable again. This way each container's
+	// stream is a different function of the salt.
+	Mixed *= 2654435761u;
+	Mixed ^= static_cast<uint32>(LootSalt);
+	Mixed ^= Mixed >> 15;
+	Mixed *= 2246822519u;
+	Mixed ^= Mixed >> 13;
 	return static_cast<int32>(Mixed);
 }
 
@@ -248,4 +261,39 @@ TArray<FSarkoItemStack> SarkoLoot::RollContainer(const FSarkoLootTable& Table, F
 	}
 
 	return Out;
+}
+
+SarkoLoot::FSarkoLootPayout SarkoLoot::CompleteLootChannel(const TArray<FSarkoItemStack>& Rolled,
+	bool bAlreadyLooted, TFunctionRef<int32(FName, int32)> Credit, TFunctionRef<void()> Mark)
+{
+	FSarkoLootPayout Payout;
+
+	// The last line of defence against crediting one roll twice, checked here
+	// rather than only by the caller's earlier CanInteract gate: the roll is
+	// deterministic, so a second payout on the same index would conjure the same
+	// items out of nothing. Nothing is marked either — the container is already
+	// marked, and re-marking would hide a double completion instead of it simply
+	// having no effect.
+	if (bAlreadyLooted)
+	{
+		return Payout;
+	}
+
+	for (const FSarkoItemStack& Stack : Rolled)
+	{
+		// Clamped, because Credit is supplied by the caller: a leftover outside
+		// [0, Quantity] would otherwise turn into a negative Taken and a haul that
+		// reads as smaller than it is.
+		const int32 Leftover = FMath::Clamp(Credit(Stack.Item, Stack.Quantity), 0, Stack.Quantity);
+		Payout.Taken += Stack.Quantity - Leftover;
+		Payout.LeftBehind += Leftover;
+	}
+
+	// After the credit, and unconditionally. Before it, the container would
+	// already be ineligible and the credit above would be unreachable;
+	// conditionally, a full backpack would leave the crate openable and the same
+	// deterministic roll could be credited a second time.
+	Mark();
+	Payout.bCredited = true;
+	return Payout;
 }

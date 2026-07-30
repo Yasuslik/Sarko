@@ -237,12 +237,18 @@ bool FSarkoLootRollIsDeterministicPerContainer::RunTest(const FString& Parameter
 	}
 	const FSarkoLootTable& Military = *Tables.Find(TEXT("military"));
 
-	// Same raid seed and same container index must give the same contents,
-	// forever: the whole reason the seed is replicated is that the server can
-	// re-derive a roll without storing it, and a raid that re-rolls on retry is
+	// A fixed salt, because determinism is only claimed for a fixed one: the real
+	// salt is generated per raid on the authority (ASarkoRaidGameMode::LootSalt) and
+	// never leaves it, which is what stops a client precomputing the loot map from
+	// the replicated seed and the tables shipped in its own build.
+	constexpr int32 Salt = 0x5A17C0DE;
+
+	// Same raid seed, same container index and same salt must give the same
+	// contents, forever: the whole reason the seed is replicated is that the server
+	// can re-derive a roll without storing it, and a raid that re-rolls on retry is
 	// a duplication bug.
-	FRandomStream A(SarkoLoot::ContainerSeed(12345, 7));
-	FRandomStream B(SarkoLoot::ContainerSeed(12345, 7));
+	FRandomStream A(SarkoLoot::ContainerSeed(12345, 7, Salt));
+	FRandomStream B(SarkoLoot::ContainerSeed(12345, 7, Salt));
 	const TArray<FSarkoItemStack> First = SarkoLoot::RollContainer(Military, A);
 	const TArray<FSarkoItemStack> Second = SarkoLoot::RollContainer(Military, B);
 
@@ -253,11 +259,31 @@ bool FSarkoLootRollIsDeterministicPerContainer::RunTest(const FString& Parameter
 		TestEqual(TEXT("the same quantity"), First[i].Quantity, Second[i].Quantity);
 	}
 
+	// The salt has to actually participate, or it is decoration and the loot map is
+	// still free: the same raid and container under a different salt must land on a
+	// different stream. Checked across many indices rather than one, because any
+	// single pair can collide by chance.
+	int32 SaltChanged = 0;
+	for (int32 Index = 0; Index < 64; ++Index)
+	{
+		if (SarkoLoot::ContainerSeed(12345, Index, Salt) != SarkoLoot::ContainerSeed(12345, Index, Salt + 1))
+		{
+			++SaltChanged;
+		}
+	}
+	TestEqual(TEXT("changing the salt changes every container's stream seed"), SaltChanged, 64);
+
+	// And the unsalted relationship must be gone: with a salt of zero the old
+	// `Seed ^ Index` would still be recoverable, so this pins that the mix is not
+	// a bare XOR a client could invert.
+	TestNotEqual(TEXT("the stream seed is not the plain seed-xor-index a client could compute"),
+		SarkoLoot::ContainerSeed(12345, 7, 0), 12345 ^ 7);
+
 	// Different containers in the same raid must not all hold the same thing.
 	int32 Distinct = 0;
 	for (int32 Index = 0; Index < 42; ++Index)
 	{
-		FRandomStream Stream(SarkoLoot::ContainerSeed(12345, Index));
+		FRandomStream Stream(SarkoLoot::ContainerSeed(12345, Index, Salt));
 		const TArray<FSarkoItemStack> Roll = SarkoLoot::RollContainer(Military, Stream);
 		if (Roll.Num() != First.Num() || (Roll.Num() > 0 && Roll[0].Quantity != First[0].Quantity))
 		{
@@ -268,9 +294,10 @@ bool FSarkoLootRollIsDeterministicPerContainer::RunTest(const FString& Parameter
 
 	// ContainerSeed must not overflow-trap on the largest seeds the backend
 	// sends: StartRaid returns int64(rand.Uint32()), so about half of all real
-	// seeds arrive with the sign bit set.
-	FRandomStream Wrapped(SarkoLoot::ContainerSeed(MIN_int32, 41));
-	TestTrue(TEXT("a negative seed still produces a usable stream"),
+	// seeds arrive with the sign bit set. The salt is unsigned-hostile in the same
+	// way, so it gets the extreme too.
+	FRandomStream Wrapped(SarkoLoot::ContainerSeed(MIN_int32, 41, MIN_int32));
+	TestTrue(TEXT("a negative seed and salt still produce a usable stream"),
 		SarkoLoot::RollContainer(Military, Wrapped).Num() >= Military.MinRolls);
 	return true;
 }
@@ -298,7 +325,7 @@ bool FSarkoRollObeysTheTableBounds::RunTest(const FString& Parameters)
 	int32 Empties = 0;
 	for (int32 Index = 0; Index < 1000; ++Index)
 	{
-		FRandomStream Stream(SarkoLoot::ContainerSeed(999, Index));
+		FRandomStream Stream(SarkoLoot::ContainerSeed(999, Index, /*LootSalt*/ 0x1234));
 		const TArray<FSarkoItemStack> Roll = SarkoLoot::RollContainer(Good, Stream);
 		if (Roll.Num() == 0)
 		{
@@ -327,7 +354,7 @@ bool FSarkoRollObeysTheTableBounds::RunTest(const FString& Parameters)
 	int32 JunkEmpties = 0;
 	for (int32 Index = 0; Index < 2000; ++Index)
 	{
-		FRandomStream Stream(SarkoLoot::ContainerSeed(7, Index));
+		FRandomStream Stream(SarkoLoot::ContainerSeed(7, Index, /*LootSalt*/ 0x1234));
 		if (SarkoLoot::RollContainer(Junk, Stream).Num() == 0)
 		{
 			++JunkEmpties;

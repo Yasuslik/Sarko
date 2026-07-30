@@ -113,18 +113,6 @@ private:
 	/** Finds the nearest openable container and turns held input into channel start/stop. */
 	void UpdateInteract();
 
-	/**
-	 * Cached once the containers exist; they never move and never change count
-	 * during a raid.
-	 *
-	 * The cache is only sealed once at least one container has been found: on a
-	 * client the containers spawn from OnRep_Seed, which can land after the
-	 * first PlayerTick, and a cache sealed empty on frame one would leave that
-	 * client unable to loot anything for the whole raid.
-	 */
-	TArray<TWeakObjectPtr<class ASarkoLootContainer>> CachedContainers;
-	bool bContainersCached = false;
-
 	TWeakObjectPtr<class ASarkoLootContainer> InteractTarget;
 	bool bInteractHeld = false;
 

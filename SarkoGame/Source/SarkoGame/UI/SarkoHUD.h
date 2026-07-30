@@ -49,4 +49,27 @@ private:
 
 	/** The zone's name for the HUD, or a generic label when the file cannot supply one. */
 	const FString& ZoneNameFor(int32 ZoneIndex);
+
+	/**
+	 * Width of "RELOADING" in the large font, measured once.
+	 *
+	 * DrawBackpack offsets itself past the widest string DrawAmmo can produce, and
+	 * GetTextSize takes an FString — so measuring it inline built and destroyed a
+	 * string every frame for a number that cannot change. Negative until measured.
+	 */
+	float CachedReloadingWidth = -1.f;
+
+	/**
+	 * The loot prompt, built only when the target container's tier changes.
+	 *
+	 * Printf plus FName::ToString plus GetTextSize is three allocations per frame
+	 * for a string that changes when the player walks up to a different kind of
+	 * crate — a few times a raid. The tier is the cache key because it is the only
+	 * thing the text depends on.
+	 */
+	FName CachedPromptTier;
+	FString CachedPrompt;
+	float CachedPromptWidth = 0.f;
+	float CachedPromptHeight = 0.f;
+	bool bPromptCached = false;
 };

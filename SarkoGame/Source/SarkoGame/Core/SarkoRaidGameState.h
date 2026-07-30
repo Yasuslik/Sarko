@@ -161,6 +161,23 @@ public:
 	/** Containers register at BeginPlay so a replicated change can recolour them without anything ticking. */
 	void RegisterContainer(ASarkoLootContainer* Container);
 
+	/**
+	 * Every container that has spawned on this machine, in registration order.
+	 *
+	 * This registry is the machine's container list, so nothing else needs to run
+	 * a TActorIterator to find them — and in particular the player controller's
+	 * per-frame proximity check does not (an iterator heap-allocates, and it had no
+	 * way to tell "the containers have not spawned yet" from "this map has none",
+	 * so on a container-less map it rescanned the whole world every frame forever).
+	 * Late-spawning is handled for free: a container added after the first
+	 * PlayerTick — which is the normal case on a client, where containers spawn
+	 * from OnRep_Seed — appears here the moment it registers.
+	 *
+	 * Weak entries can be stale; callers must null-check. Stale ones are dropped
+	 * by OnRep_LootedContainers rather than eagerly.
+	 */
+	const TArray<TWeakObjectPtr<ASarkoLootContainer>>& GetContainers() const { return RegisteredContainers; }
+
 private:
 	bool bClockStarted = false;
 	bool bLayoutBuilt = false;

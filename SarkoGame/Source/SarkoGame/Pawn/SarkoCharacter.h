@@ -160,6 +160,24 @@ private:
 	UFUNCTION(Server, Reliable)
 	void ServerCancelLoot();
 
+	/**
+	 * The server refused a begin request, so the client must drop the optimistic
+	 * channel it started (see RequestBeginLoot).
+	 *
+	 * Without this the bar sits at 100% for as long as the button is held on any
+	 * refused request — out of range on the server's copy of the pawn, an index
+	 * that is already emptied, a raid that finished mid-flight — and reads as "the
+	 * container is broken" rather than "that did not work".
+	 *
+	 * A client notify rather than a replicated rejection counter: the refusal
+	 * concerns exactly one client and carries which request it refused, so nothing
+	 * about it belongs in per-pawn replicated state that then also has to be
+	 * conditioned to the owner. Reliable, because a dropped refusal is the pinned
+	 * bar this exists to prevent.
+	 */
+	UFUNCTION(Client, Reliable)
+	void ClientLootRejected(int32 ContainerIndex);
+
 	/** Server: completes the channel, rolls and transfers. Called from Tick. */
 	void TickLootChannel();
 

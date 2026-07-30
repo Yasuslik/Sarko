@@ -2,8 +2,11 @@
 
 #include "Core/SarkoPlayerController.h"
 #include "Core/SarkoRaidGameState.h"
+#include "Loot/SarkoBackpack.h"
 #include "Loot/SarkoExtractionZone.h"
+#include "Loot/SarkoItemCatalog.h"
 #include "Loot/SarkoLootContainer.h"
+#include "Loot/SarkoLootTable.h"
 #include "Map/SarkoMapDefinition.h"
 
 #if WITH_AUTOMATION_TESTS
@@ -29,14 +32,10 @@ bool FSarkoInteractGateIsServerSide::RunTest(const FString& Parameters)
 	TestFalse(TEXT("a looted container cannot be looted twice"),
 		SarkoLoot::CanInteract(Pawn, Near, Radius, true, true));
 
-	// This is also the partial-loot rule, and it is the reason a full backpack
-	// costs the player something real. A container is marked looted the moment
-	// its channel completes, whether or not the whole roll fitted: whatever did
-	// not fit stays behind and is gone, because the alternative — re-opening it
-	// for the remainder — re-runs the same deterministic roll and would credit
-	// the part already taken a second time.
-	TestFalse(TEXT("a partly-emptied container is still looted, so the remainder is unrecoverable"),
-		SarkoLoot::CanInteract(Pawn, Near, Radius, /*bAlive*/ true, /*bLooted*/ true));
+	// The looted bit is where the partial-loot rule lands, but CanInteract only
+	// consumes it — what sets it, and in what order, is the loot path's own
+	// invariant. It is pinned by Sarko.Loot.CompletedChannelCreditsThenMarksOnce
+	// below, not by repeating the assertion above with a different message.
 	TestFalse(TEXT("a corpse cannot loot"),
 		SarkoLoot::CanInteract(Pawn, Near, Radius, false, false));
 
@@ -53,6 +52,124 @@ bool FSarkoInteractGateIsServerSide::RunTest(const FString& Parameters)
 	const FVector Exactly(Radius, 0.f, 35.f);
 	TestTrue(TEXT("the radius boundary is inclusive"),
 		SarkoLoot::CanInteract(Pawn, Exactly, Radius, true, false));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoCompletedChannelCreditsThenMarksOnce,
+	"Sarko.Loot.CompletedChannelCreditsThenMarksOnce",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoCompletedChannelCreditsThenMarksOnce::RunTest(const FString& Parameters)
+{
+	// The rule this pins is the one that protects the economy: a completed channel
+	// credits the haul, *then* marks the container, marks it whether or not the
+	// roll fitted, and never credits an index that is already marked. The full path
+	// through ASarkoCharacter::TickLootChannel needs a world, a game mode, a game
+	// state and a replicated component, so the rule itself lives in the pure
+	// SarkoLoot::CompleteLootChannel that path calls — this exercises that.
+	FSarkoItemCatalog Catalog;
+	FString Error;
+	const FString CatalogJson = TEXT(R"({
+		"items": [
+			{ "id": "pistol", "name": "Пістолет", "stackSize": 1, "category": "weapon" },
+			{ "id": "medkit", "name": "Аптечка",  "stackSize": 3, "category": "med" }
+		]
+	})");
+	if (!SarkoLoot::ParseItemCatalog(CatalogJson, Catalog, Error))
+	{
+		AddError(FString::Printf(TEXT("the fixture catalog failed to parse: %s"), *Error));
+		return false;
+	}
+
+	// The same shape the game state replicates: one byte per container index.
+	TArray<uint8> Looted;
+	Looted.SetNumZeroed(3);
+
+	// Deliberately more than fits: five pistols (stackSize 1) into two slots. This
+	// is the partial-loot case, and the one where marking is easiest to get wrong.
+	const TArray<FSarkoItemStack> Roll = { FSarkoItemStack{ TEXT("pistol"), 5 } };
+	constexpr int32 SlotLimit = 2;
+	constexpr int32 Index = 1;
+
+	TArray<FSarkoItemStack> Slots;
+	TArray<FName> Steps;
+
+	// The two effects, recorded as they happen: the order is half the invariant, so
+	// it has to be observed rather than assumed.
+	auto Credit = [&Steps, &Slots, &Catalog](FName Item, int32 Quantity)
+	{
+		Steps.Add(TEXT("credit"));
+		return SarkoLoot::AddToBackpack(Slots, Catalog, SlotLimit, Item, Quantity);
+	};
+	auto Mark = [&Steps, &Looted]()
+	{
+		Steps.Add(TEXT("mark"));
+		Looted[Index] = 1;
+	};
+
+	const SarkoLoot::FSarkoLootPayout First =
+		SarkoLoot::CompleteLootChannel(Roll, Looted[Index] != 0, Credit, Mark);
+
+	TestTrue(TEXT("an unlooted container pays out"), First.bCredited);
+	TestEqual(TEXT("only what fitted is credited"), First.Taken, 2);
+	TestEqual(TEXT("the overflow is reported, not silently dropped"), First.LeftBehind, 3);
+	TestEqual(TEXT("what was taken plus what was left equals what was rolled"),
+		First.Taken + First.LeftBehind, 5);
+
+	// Credit strictly before mark. The other order is not a style preference: the
+	// mark is what makes a container ineligible, so marking first would make the
+	// credit unreachable and every crate would open onto nothing.
+	if (Steps.Num() != 2)
+	{
+		AddError(FString::Printf(TEXT("expected exactly one credit and one mark, saw %d steps"), Steps.Num()));
+		return false;
+	}
+	TestEqual(TEXT("the haul is credited first"), Steps[0], FName(TEXT("credit")));
+	TestEqual(TEXT("and the container is marked after"), Steps[1], FName(TEXT("mark")));
+
+	// Marked even though three of the five pistols never made it into the backpack.
+	// This is spec §4.3's partial loot, and it is what makes a full backpack cost
+	// the player something real.
+	TestTrue(TEXT("a partly-emptied container is marked looted anyway"), Looted[Index] != 0);
+	TestTrue(TEXT("and no other container was touched"), Looted[0] == 0 && Looted[2] == 0);
+
+	// The no-double-credit rule. A second completion on an accepted index must do
+	// nothing at all: the roll is deterministic, so paying out again would credit
+	// the very same items a second time out of thin air.
+	Steps.Reset();
+	const SarkoLoot::FSarkoLootPayout Second =
+		SarkoLoot::CompleteLootChannel(Roll, Looted[Index] != 0, Credit, Mark);
+
+	TestFalse(TEXT("an already-emptied container does not pay out again"), Second.bCredited);
+	TestEqual(TEXT("nothing is credited the second time"), Second.Taken, 0);
+	TestEqual(TEXT("and nothing is reported as left behind either"), Second.LeftBehind, 0);
+	TestEqual(TEXT("neither effect ran at all"), Steps.Num(), 0);
+	TestEqual(TEXT("the backpack was not topped up a second time"), Slots.Num(), 2);
+
+	// An empty roll still marks. An empty crate that stayed openable would let a
+	// player re-channel it forever, and on a tier with an emptyChance that is a
+	// real outcome rather than a hypothetical.
+	Steps.Reset();
+	constexpr int32 EmptyIndex = 2;
+	TArray<FSarkoItemStack> UntouchedSlots;
+	auto CreditNothing = [&Steps, &UntouchedSlots, &Catalog](FName Item, int32 Quantity)
+	{
+		Steps.Add(TEXT("credit"));
+		return SarkoLoot::AddToBackpack(UntouchedSlots, Catalog, SlotLimit, Item, Quantity);
+	};
+	auto MarkEmpty = [&Steps, &Looted]()
+	{
+		Steps.Add(TEXT("mark"));
+		Looted[EmptyIndex] = 1;
+	};
+	const SarkoLoot::FSarkoLootPayout Empty = SarkoLoot::CompleteLootChannel(
+		TArray<FSarkoItemStack>(), Looted[EmptyIndex] != 0, CreditNothing, MarkEmpty);
+
+	TestTrue(TEXT("an empty container still counts as completed"), Empty.bCredited);
+	TestEqual(TEXT("with nothing taken"), Empty.Taken, 0);
+	TestTrue(TEXT("an empty container is marked looted, so it cannot be re-channelled"), Looted[EmptyIndex] != 0);
+	TestEqual(TEXT("and the mark was the only effect"), Steps.Num(), 1);
 	return true;
 }
 

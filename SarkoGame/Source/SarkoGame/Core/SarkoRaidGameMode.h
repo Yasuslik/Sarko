@@ -63,6 +63,29 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "Raid")
 	int32 Seed = 1;
 
+	/**
+	 * The server's half of every loot roll. Generated in InitGame, **never
+	 * replicated, never sent anywhere.**
+	 *
+	 * Without it the loot map is free: `Seed` is replicated (it is what tells a
+	 * client the raid has begun), the loot tables ship inside the build, and
+	 * SarkoLoot::RollContainer is a pure function — so `Seed ^ ContainerIndex`
+	 * lets any client enumerate all 42 containers' contents before walking to one.
+	 * With it, a container's stream seed is unknowable off the authority, and the
+	 * only way contents reach a client is the owner-only backpack it just filled.
+	 *
+	 * A deliberately plain member and not a UPROPERTY: a game mode instance exists
+	 * only on the server (AGameModeBase never replicates and is never spawned on a
+	 * client), so there is no replication path to forget to exclude, and being a
+	 * non-UPROPERTY means it also stays out of anything that walks reflected
+	 * properties — a save game, a network dump, a `DumpAllProperties`.
+	 *
+	 * Not derived from Seed, and not seeded from the raid clock: both are things a
+	 * client knows. Regenerated per raid, so nothing learned from one raid carries
+	 * into the next.
+	 */
+	int32 LootSalt = 0;
+
 	/** The layout this raid was loaded from; pawns spawn against it. */
 	FSarkoMapLayout CachedLayout;
 
