@@ -3,6 +3,7 @@
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Kismet/GameplayStatics.h"
+#include "Map/SarkoMapBuilder.h"
 
 ASarkoRaidGameMode::ASarkoRaidGameMode()
 {
@@ -26,6 +27,18 @@ void ASarkoRaidGameMode::InitGame(const FString& MapName, const FString& Options
 void ASarkoRaidGameMode::StartPlay()
 {
 	Super::StartPlay();
+
+	// Server builds the geometry. Clients get it through actor replication, so
+	// the layout is generated exactly once and never disagrees between machines.
+	if (HasAuthority())
+	{
+		if (UWorld* World = GetWorld())
+		{
+			const FSarkoMapLayout Layout = SarkoMap::BuildLayout(Seed, *GetDefault<USarkoRaidSettings>());
+			SarkoMap::SpawnLayout(*World, Layout);
+			CachedLayout = Layout;
+		}
+	}
 
 	if (ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>())
 	{

@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
+#include "Map/SarkoMapBuilder.h"
 
 #include "SarkoRaidGameMode.generated.h"
 
@@ -24,4 +25,7 @@ public:
 	/** Seed for the procedural layout. Read from the `Seed` URL option when present. */
 	UPROPERTY(BlueprintReadOnly, Category = "Raid")
 	int32 Seed = 1;
+
+	/** The layout this raid was built from; pawns spawn against it. */
+	FSarkoMapLayout CachedLayout;
 };
