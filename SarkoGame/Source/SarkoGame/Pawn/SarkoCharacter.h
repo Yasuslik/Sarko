@@ -99,8 +99,14 @@ private:
 	UFUNCTION(Server, Reliable)
 	void ServerSetAimState(bool bInIsAiming);
 
+	/**
+	 * The server re-derives the muzzle origin from its own copy of the pawn,
+	 * so a client-supplied origin would be pointless to send and pointless
+	 * to trust; only Direction carries information the server doesn't
+	 * already have.
+	 */
 	UFUNCTION(Server, Reliable)
-	void ServerRequestFire(FVector Origin, FVector Direction);
+	void ServerRequestFire(FVector Direction);
 
 	FVector2D MoveIntent = FVector2D::ZeroVector;
 	float MoveScale = 0.f;

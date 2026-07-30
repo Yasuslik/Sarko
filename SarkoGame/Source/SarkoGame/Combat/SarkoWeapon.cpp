@@ -47,6 +47,17 @@ FVector SarkoCombat::ApplyAimAssist(FVector Origin, FVector Direction, float Con
 	return Best ? (*Best - Origin).GetSafeNormal() : Direction;
 }
 
+FVector SarkoCombat::NormalizeFireDirection(FVector Direction)
+{
+	FVector Normalized = Direction;
+	const float Size = Normalized.Size();
+	if (Size < KINDA_SMALL_NUMBER)
+	{
+		return FVector::ZeroVector;
+	}
+	return Normalized / Size;
+}
+
 USarkoWeaponComponent::USarkoWeaponComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
@@ -92,6 +103,32 @@ void USarkoWeaponComponent::ServerFire(FVector Origin, FVector Direction)
 		return;
 	}
 
+	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+
+	const float Now = World->GetTimeSeconds();
+	if (Now - LastFireTimeSeconds < Settings.MinFireIntervalSeconds)
+	{
+		// Rate limited: unlike the enemy's own EnemyFireIntervalSeconds
+		// cooldown, nothing else stops a client from sending fire requests
+		// faster than a human can pull the trigger and emptying the
+		// magazine in a single frame. No ammo is spent and no reload starts
+		// — the request is simply dropped.
+		return;
+	}
+
+	// The direction is client-supplied (RequestFire's own copy, or the RPC
+	// argument on the server-to-client path) and carries no guarantee of
+	// unit length or even non-zero length. Tracing WeaponRangeUU along an
+	// un-normalized (1000,0,0) would reach 200x the intended range, so this
+	// is normalized here — the only place ServerFire ever traces from — and
+	// a degenerate result bails out entirely rather than tracing anywhere.
+	const FVector NormalizedDirection = SarkoCombat::NormalizeFireDirection(Direction);
+	if (NormalizedDirection.IsNearlyZero())
+	{
+		return;
+	}
+
+	LastFireTimeSeconds = Now;
 	--AmmoInMagazine;
 	if (AmmoInMagazine == 0)
 	{
@@ -100,8 +137,6 @@ void USarkoWeaponComponent::ServerFire(FVector Origin, FVector Direction)
 		// weapon is already coming back online while the player notices.
 		StartReload();
 	}
-
-	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
 
 	// Collect plausible targets, then let the pure helper decide the nudge.
 	TArray<FVector> Candidates;
@@ -121,7 +156,11 @@ void USarkoWeaponComponent::ServerFire(FVector Origin, FVector Direction)
 		}
 	}
 
-	const FVector Adjusted = SarkoCombat::ApplyAimAssist(Origin, Direction, Settings.AimConeHalfAngleDegrees, Candidates);
+	// ApplyAimAssist echoes its input back unchanged when nothing qualifies,
+	// so passing the already-normalized direction in guarantees Adjusted is
+	// unit length either way — this is what makes tracing only
+	// Settings.WeaponRangeUU along it safe.
+	const FVector Adjusted = SarkoCombat::ApplyAimAssist(Origin, NormalizedDirection, Settings.AimConeHalfAngleDegrees, Candidates);
 	const FVector End = Origin + Adjusted * Settings.WeaponRangeUU;
 
 	// Cover must stop bullets, so this is a real trace against world geometry

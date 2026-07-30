@@ -78,6 +78,71 @@ bool FSarkoAimAssistIsANudgeNotAnAimbot::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoAimAssistEdgeCases,
+	"Sarko.Combat.AimAssistEdgeCases",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoAimAssistEdgeCases::RunTest(const FString& Parameters)
+{
+	const FVector Origin(0.f, 0.f, 0.f);
+	const FVector Forward(1.f, 0.f, 0.f);
+
+	// A candidate exactly at the origin has no direction to it at all — this
+	// must be skipped, not crash or produce a NaN direction.
+	const TArray<FVector> Coincident = { Origin };
+	const FVector CoincidentResult = SarkoCombat::ApplyAimAssist(Origin, Forward, 6.f, Coincident);
+	TestTrue(TEXT("a coincident candidate is skipped, not chosen"), CoincidentResult.Equals(Forward, 0.001f));
+	TestFalse(TEXT("a coincident candidate never produces NaN"), CoincidentResult.ContainsNaN());
+
+	// A zero input direction is degenerate on the caller's side (this is
+	// exactly what ServerFire must bail on before ever reaching this
+	// function) but ApplyAimAssist itself must still handle it without
+	// crashing, returning it unchanged.
+	const TArray<FVector> SomeTarget = { FVector(500.f, 10.f, 0.f) };
+	const FVector ZeroDirResult = SarkoCombat::ApplyAimAssist(Origin, FVector::ZeroVector, 6.f, SomeTarget);
+	TestTrue(TEXT("a zero input direction is returned unchanged, not assisted"), ZeroDirResult.IsNearlyZero());
+
+	// A near candidate outside the cone must not beat a far candidate inside
+	// it — being in-cone at all is the gate; raw distance only ranks among
+	// candidates that already passed it. This is the mixed case the
+	// existing "two targets" test (both in-cone) never exercised.
+	const TArray<FVector> Mixed = { FVector(500.f, 500.f, 0.f) /*near, 45 deg, out of cone*/, FVector(3000.f, 50.f, 0.f) /*far, ~1 deg, in cone*/ };
+	const FVector MixedResult = SarkoCombat::ApplyAimAssist(Origin, Forward, 6.f, Mixed);
+	// The far in-cone candidate is nearly straight ahead (~1 deg off axis, Y
+	// component ~0.017 once normalized); the near out-of-cone one is 45 deg
+	// off axis (Y component ~0.707). A generous 0.1 cutoff cleanly separates
+	// "won by the in-cone candidate" from "won by the out-of-cone one".
+	TestTrue(TEXT("the far in-cone candidate wins over the near out-of-cone one"), MixedResult.Y > 0.f && MixedResult.Y < 0.1f);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoNormalizeFireDirection,
+	"Sarko.Combat.NormalizeFireDirection",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoNormalizeFireDirection::RunTest(const FString& Parameters)
+{
+	// The guard ServerFire relies on to stop a modified client from sending
+	// an oversized Direction and getting a trace far beyond WeaponRangeUU: a
+	// non-unit input must come back unit length, and a degenerate input must
+	// come back as an unambiguous zero rather than something a careless
+	// caller might trace with anyway.
+	const FVector Oversized = SarkoCombat::NormalizeFireDirection(FVector(1000.f, 0.f, 0.f));
+	TestTrue(TEXT("an oversized direction is normalized to unit length"), FMath::IsNearlyEqual(Oversized.Size(), 1.f, KINDA_SMALL_NUMBER));
+	TestTrue(TEXT("normalizing preserves the direction"), Oversized.Equals(FVector(1.f, 0.f, 0.f), KINDA_SMALL_NUMBER));
+
+	const FVector Zero = SarkoCombat::NormalizeFireDirection(FVector::ZeroVector);
+	TestTrue(TEXT("a zero direction stays zero"), Zero.IsNearlyZero());
+
+	const FVector TinyNonZero = SarkoCombat::NormalizeFireDirection(FVector(KINDA_SMALL_NUMBER * 0.01f, 0.f, 0.f));
+	TestTrue(TEXT("a degenerate near-zero direction is treated as zero, not amplified"), TinyNonZero.IsNearlyZero());
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FSarkoMagazineGatesFiring,
 	"Sarko.Combat.MagazineGatesFiring",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

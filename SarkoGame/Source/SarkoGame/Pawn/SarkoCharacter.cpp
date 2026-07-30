@@ -167,20 +167,28 @@ void ASarkoCharacter::RequestFire()
 		return;
 	}
 
-	const FVector Origin = GetMuzzleLocation();
 	const FVector Direction = FVector(AimDirection);
 
 	if (HasAuthority())
 	{
-		WeaponComponent->ServerFire(Origin, Direction);
+		WeaponComponent->ServerFire(GetMuzzleLocation(), Direction);
 		return;
 	}
 	// Effects can be drawn locally right away; only the server decides the hit.
-	ServerRequestFire(Origin, Direction);
+	ServerRequestFire(Direction);
 }
 
-void ASarkoCharacter::ServerRequestFire_Implementation(FVector Origin, FVector Direction)
+void ASarkoCharacter::ServerRequestFire_Implementation(FVector Direction)
 {
+	// Re-check death on the server: RequestFire's client-side check can be
+	// stale during the round trip before bDead replicates back down, and a
+	// modified client could skip that check entirely. The server's own
+	// HealthComponent is the only copy that can be trusted here.
+	if (HealthComponent && HealthComponent->IsDead())
+	{
+		return;
+	}
+
 	// The server re-derives the origin from its own copy of the pawn so a
 	// client cannot shoot from an arbitrary position.
 	WeaponComponent->ServerFire(GetMuzzleLocation(), Direction);

@@ -59,6 +59,17 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "Combat")
 	float ReloadSeconds = 2.2f;
 
+	/**
+	 * Minimum server-enforced time between shots from the same weapon,
+	 * regardless of how fast fire requests arrive. The enemy already has its
+	 * own EnemyFireIntervalSeconds cooldown; this is the equivalent backstop
+	 * for the player, since nothing else stops a client from sending fire
+	 * requests faster than a human could pull the trigger and emptying the
+	 * magazine in one frame.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Combat")
+	float MinFireIntervalSeconds = 0.15f;
+
 	UPROPERTY(EditAnywhere, config, Category = "AI")
 	float EnemyHearingRadiusUU = 2500.f;
 
