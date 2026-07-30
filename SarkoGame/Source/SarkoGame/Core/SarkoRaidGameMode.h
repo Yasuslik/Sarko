@@ -82,9 +82,11 @@ public:
 	 *
 	 * Not derived from Seed, and not seeded from the raid clock: both are things a
 	 * client knows. Regenerated per raid, so nothing learned from one raid carries
-	 * into the next.
+	 * into the next — which is also the bound on how strong this is, since 64 bits
+	 * of salt raise the cost of an offline sweep from one observed roll to a few
+	 * rather than making it impossible (see SarkoLoot::ContainerSeed).
 	 */
-	int32 LootSalt = 0;
+	int64 LootSalt = 0;
 
 	/** The layout this raid was loaded from; pawns spawn against it. */
 	FSarkoMapLayout CachedLayout;

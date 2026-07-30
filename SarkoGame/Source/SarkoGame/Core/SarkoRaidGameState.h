@@ -46,6 +46,20 @@ namespace SarkoRaid
 	 * (Task 8), and the backend's idempotency is a safety net, not a licence.
 	 */
 	bool CanFinishRaid(ESarkoRaidOutcome Current, ESarkoRaidOutcome Requested);
+
+	/**
+	 * Whether an outcome costs the player everything they were carrying. Pure, so
+	 * the other half of spec §4.5 — "MIA is death, loot lost" — is unit tested
+	 * without a world.
+	 *
+	 * Extracted is the only outcome that keeps a haul. Died clears the backpack on
+	 * the pawn's own death path, but MIA has no death path at all, so before this
+	 * existed the clock running out left the haul intact and the MIA summary
+	 * itemised loot the player had just lost. FinishRaid consults this before it
+	 * writes Outcome, which is what makes the HUD's "the server emptied the
+	 * backpack before the outcome was set" a fact rather than a hope.
+	 */
+	bool OutcomeLosesHaul(ESarkoRaidOutcome Outcome);
 }
 
 /**
@@ -162,7 +176,12 @@ public:
 	void RegisterContainer(ASarkoLootContainer* Container);
 
 	/**
-	 * Every container that has spawned on this machine, in registration order.
+	 * Every container that has spawned on this machine, in no particular order —
+	 * registration appends, but OnRep_LootedContainers drops stale entries with
+	 * RemoveAtSwap, so any removal reshuffles the tail. Nothing indexes into this
+	 * (the looted state is keyed by the map file's container index, not by a
+	 * position here), so an unspecified order costs nothing and a swap-remove is
+	 * cheaper than preserving one.
 	 *
 	 * This registry is the machine's container list, so nothing else needs to run
 	 * a TActorIterator to find them — and in particular the player controller's

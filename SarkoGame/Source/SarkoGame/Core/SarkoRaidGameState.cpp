@@ -10,6 +10,14 @@ bool SarkoRaid::CanFinishRaid(ESarkoRaidOutcome Current, ESarkoRaidOutcome Reque
 	return Current == ESarkoRaidOutcome::InProgress && Requested != ESarkoRaidOutcome::InProgress;
 }
 
+bool SarkoRaid::OutcomeLosesHaul(ESarkoRaidOutcome Outcome)
+{
+	// Whitelist, not a blacklist: a fourth outcome added later loses the haul until
+	// somebody decides otherwise, which is the safe default — the failure mode of
+	// the other direction is loot credited for a raid nobody survived.
+	return Outcome != ESarkoRaidOutcome::InProgress && Outcome != ESarkoRaidOutcome::Extracted;
+}
+
 ASarkoRaidGameState::ASarkoRaidGameState()
 {
 	PrimaryActorTick.bCanEverTick = true;

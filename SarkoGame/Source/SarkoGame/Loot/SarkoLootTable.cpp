@@ -192,24 +192,35 @@ const FSarkoLootTables& SarkoLoot::GetLootTables()
 	return Tables;
 }
 
-int32 SarkoLoot::ContainerSeed(int32 RaidSeed, int32 ContainerIndex, int32 LootSalt)
+int32 SarkoLoot::ContainerSeed(int32 RaidSeed, int32 ContainerIndex, int64 LootSalt)
 {
 	// Unsigned throughout, reinterpreted once at the end: the backend's seed is
 	// int64(rand.Uint32()), so the sign bit is set about half the time, and signed
 	// overflow is UB — "undefined" here means two machines disagreeing about what
 	// is in a crate.
 	uint32 Mixed = static_cast<uint32>(RaidSeed) ^ static_cast<uint32>(ContainerIndex);
+	const uint64 Salt = static_cast<uint64>(LootSalt);
 
 	// The salt is folded in through a multiply-and-shift avalanche rather than a
 	// bare XOR. A bare XOR would make the salt trivially recoverable from a single
 	// observed roll — open one crate, subtract the known RaidSeed and index, and
 	// every other crate in the raid is readable again. This way each container's
 	// stream is a different function of the salt.
+	//
+	// Both halves participate, at different stages and with a multiply between
+	// them, which is what buys the salt more keyspace than the 32-bit stream seed
+	// it produces: a sweep over one observed roll recovers a set of ~2^32
+	// candidate salts rather than the one true salt. See ContainerSeed's header
+	// comment for the honest bound on that — it is a per-raid cost to an attacker,
+	// not a guarantee.
 	Mixed *= 2654435761u;
-	Mixed ^= static_cast<uint32>(LootSalt);
+	Mixed ^= static_cast<uint32>(Salt);
 	Mixed ^= Mixed >> 15;
 	Mixed *= 2246822519u;
+	Mixed ^= static_cast<uint32>(Salt >> 32);
 	Mixed ^= Mixed >> 13;
+	Mixed *= 3266489917u;
+	Mixed ^= Mixed >> 16;
 	return static_cast<int32>(Mixed);
 }
 

@@ -102,6 +102,19 @@ void ASarkoCharacter::BeginPlay()
 
 void ASarkoCharacter::HandleDeath(AActor* Killer)
 {
+	// A death after the outcome is settled must be impossible — the raid's own
+	// ApplyDamage gate refuses the hit and the bots stand down — so reaching here
+	// is a bug. It must not be a bug that costs the player their raid: FinishRaid
+	// would correctly refuse the Died outcome, but the side-effects below would
+	// still land, and ClearOnDeath() on an already-EXTRACTED raid empties the very
+	// haul the summary is about to itemise and the backend is about to be told
+	// about. So the settled result wins over the late death, loudly.
+	if (IsRaidFinishedNow())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoCharacter: death arrived after the raid was already settled; the outcome and the haul stand"));
+		return;
+	}
+
 	// Spec §4.4: died means the haul is gone. This runs before the game mode is
 	// told, so by the time a result is submitted there is nothing to credit.
 	if (BackpackComponent)
@@ -170,6 +183,13 @@ void ASarkoCharacter::FreezeForRaidEnd()
 	bIsAiming = false;
 	LootChannelIndex = INDEX_NONE;
 	LocalChannelIndex = INDEX_NONE;
+
+	// Nor is a frozen pawn mid-extraction, for the same reason HandleDeath clears
+	// these: the dwell chip is drawn from them, so leaving them set draws a live
+	// countdown underneath the summary screen for the rest of the session — the
+	// frozen frame's remainder, ticking nowhere.
+	ExtractZoneIndex = INDEX_NONE;
+	ExtractDwellSeconds = 0.f;
 }
 
 void ASarkoCharacter::RequestBeginLoot(int32 ContainerIndex)

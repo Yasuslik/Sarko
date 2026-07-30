@@ -111,11 +111,22 @@ namespace SarkoLoot
 	 * sign bit set — signed overflow is undefined behaviour, and "undefined" here
 	 * means two machines can disagree about what is in a crate.
 	 *
+	 * The salt is 64 bits, and both halves are folded in at different stages of the
+	 * mix. A 32-bit salt was sweepable: the two other inputs are known, so one
+	 * observed roll pins the single salt that produces it, and pinning it hands
+	 * back every other container in the raid. At 64 bits one observed roll
+	 * constrains the salt to roughly 2^32 candidates instead of one, so it cannot
+	 * be resolved from a single crate. The honest bound, stated rather than
+	 * implied: this is obscurity sized to a raid, not a cipher — two or three
+	 * observed rolls in the same raid still pin the salt offline, and what limits
+	 * the damage is that the salt is regenerated per raid, so nothing learned from
+	 * one raid carries into the next.
+	 *
 	 * Deterministic: a fixed (RaidSeed, ContainerIndex, LootSalt) is always the
 	 * same stream, which is what lets the server re-derive a roll instead of
 	 * storing it. Tests pass a fixed salt for exactly that reason.
 	 */
-	int32 ContainerSeed(int32 RaidSeed, int32 ContainerIndex, int32 LootSalt);
+	int32 ContainerSeed(int32 RaidSeed, int32 ContainerIndex, int64 LootSalt);
 
 	/**
 	 * Rolls one container's contents. Called **only on the server, only at the

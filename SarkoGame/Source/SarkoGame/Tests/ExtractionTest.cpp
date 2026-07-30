@@ -8,6 +8,7 @@
 #include "Loot/SarkoLootContainer.h"
 #include "Loot/SarkoLootTable.h"
 #include "Map/SarkoMapDefinition.h"
+#include "Pawn/SarkoHealthComponent.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -370,6 +371,105 @@ bool FSarkoRaidOutcomeIsDecidedOnce::RunTest(const FString& Parameters)
 		SarkoRaid::CanFinishRaid(ESarkoOutcome::InProgress, ESarkoOutcome::InProgress));
 	TestFalse(TEXT("a settled raid cannot be reopened"),
 		SarkoRaid::CanFinishRaid(ESarkoOutcome::Extracted, ESarkoOutcome::InProgress));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoSettledOutcomeTakesNoMoreDamage,
+	"Sarko.Extract.SettledOutcomeTakesNoMoreDamage",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoSettledOutcomeTakesNoMoreDamage::RunTest(const FString& Parameters)
+{
+	// Exclusivity on the enum (FSarkoRaidOutcomeIsDecidedOnce above) is not
+	// exclusivity on the *effects*. An extracted player stands frozen on the pad
+	// with the summary up, and the bots were still shooting at them last frame: a
+	// hit that lands is refused a second outcome by CanFinishRaid, but it still runs
+	// death's side-effects, and one of those clears the backpack. The summary then
+	// reads EXTRACTED over an empty haul and the submitted result credits nothing.
+	//
+	// The gate that stops it is the earliest return in
+	// USarkoHealthComponent::ApplyDamage. The full path — bots, weapon, HandleDeath,
+	// FinishRaid — needs a world and a network, so this exercises the layer that is
+	// headless-testable, through the same NewObject seam
+	// Sarko.Combat.HealthDamageAndDeath uses.
+	USarkoHealthComponent* Health = NewObject<USarkoHealthComponent>();
+	Health->ResetForTest(100.f);
+
+	int32 DeathCount = 0;
+	Health->OnDied.AddLambda([&DeathCount](AActor*) { ++DeathCount; });
+
+	// Baseline: with the raid in progress the same damage lands, so what the
+	// assertions below observe is the gate and not some unrelated refusal.
+	Health->ApplyDamage(10.f, nullptr);
+	TestEqual(TEXT("damage lands while the raid is in progress"), Health->GetHealth(), 90.f);
+
+	// The raid settles. Everything after this must be inert.
+	Health->SetRaidFinishedForTest(true);
+
+	Health->ApplyDamage(40.f, nullptr);
+	TestEqual(TEXT("a hit after the outcome is settled changes nothing"), Health->GetHealth(), 90.f);
+	TestFalse(TEXT("and cannot kill an extracted player"), Health->IsDead());
+
+	// Overkill specifically, because that is the real case: the bot's burst was
+	// already in the air when the dwell completed, and it is more than enough.
+	Health->ApplyDamage(10000.f, nullptr);
+	TestEqual(TEXT("overkill after a settled outcome changes nothing either"), Health->GetHealth(), 90.f);
+	TestFalse(TEXT("still alive"), Health->IsDead());
+	TestEqual(TEXT("and death never fires, so nothing clears the haul"), DeathCount, 0);
+
+	// The gate is the raid's state, not a latch on the component: a component that
+	// stopped taking damage for good would be a different bug.
+	Health->SetRaidFinishedForTest(false);
+	Health->ApplyDamage(10.f, nullptr);
+	TestEqual(TEXT("the gate is the raid's state, not a permanent immunity"), Health->GetHealth(), 80.f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoLosingOutcomesLoseTheHaul,
+	"Sarko.Extract.LosingOutcomesLoseTheHaul",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoLosingOutcomesLoseTheHaul::RunTest(const FString& Parameters)
+{
+	using ESarkoOutcome = ESarkoRaidOutcome;
+
+	// Spec §4.5: MIA is death, so MIA loses the loot. KIA loses it on the pawn's own
+	// death path, but the clock running out has no death path — so before FinishRaid
+	// consulted this rule the MIA summary itemised, line by line, loot the player
+	// had just lost.
+	TestTrue(TEXT("MIA loses the haul"), SarkoRaid::OutcomeLosesHaul(ESarkoOutcome::MIA));
+	TestTrue(TEXT("KIA loses the haul"), SarkoRaid::OutcomeLosesHaul(ESarkoOutcome::Died));
+	TestFalse(TEXT("extraction is the one outcome that keeps it"),
+		SarkoRaid::OutcomeLosesHaul(ESarkoOutcome::Extracted));
+	TestFalse(TEXT("a raid still in progress has lost nothing yet"),
+		SarkoRaid::OutcomeLosesHaul(ESarkoOutcome::InProgress));
+
+	// And the effect, on the real component: what FinishRaid does to each pawn it
+	// finds, in the order it does it — clear first, outcome second, which is what
+	// makes the HUD's "the server emptied the backpack before the outcome was set"
+	// true rather than aspirational.
+	const TArray<FSarkoItemStack> Haul = {
+		FSarkoItemStack{ TEXT("pistol"), 1 },
+		FSarkoItemStack{ TEXT("medkit"), 3 },
+	};
+
+	for (const ESarkoOutcome Outcome : { ESarkoOutcome::MIA, ESarkoOutcome::Died, ESarkoOutcome::Extracted })
+	{
+		USarkoBackpackComponent* Backpack = NewObject<USarkoBackpackComponent>();
+		Backpack->SetSlotsForTest(Haul);
+		TestEqual(TEXT("the fixture haul is in the backpack to begin with"), Backpack->GetUsedSlots(), 2);
+
+		if (SarkoRaid::OutcomeLosesHaul(Outcome))
+		{
+			Backpack->ClearOnDeath();
+		}
+
+		const int32 Expected = Outcome == ESarkoOutcome::Extracted ? 2 : 0;
+		TestEqual(*FString::Printf(TEXT("%s leaves %d slots"), *UEnum::GetValueAsString(Outcome), Expected),
+			Backpack->GetUsedSlots(), Expected);
+	}
 	return true;
 }
 

@@ -43,9 +43,16 @@ void ASarkoRaidGameMode::InitGame(const FString& MapName, const FString& Options
 	// this is deliberately *not* readable from the travel URL: a URL option is
 	// visible to a joining client, which would hand back exactly the loot map this
 	// salt exists to withhold. It is also not derived from Seed or from the clock,
-	// because a client knows both. A raid GUID's hash rather than FMath::Rand(),
-	// which is seeded per process and would repeat across raids in one session.
-	LootSalt = static_cast<int32>(GetTypeHash(FGuid::NewGuid()));
+	// because a client knows both. A raid GUID rather than FMath::Rand(), which is
+	// seeded per process and would repeat across raids in one session.
+	//
+	// Two of the GUID's words rather than one hash of it: 32 bits of salt is
+	// offline-sweepable from a single observed roll (the other two inputs are
+	// known, so one crate pins the one salt that explains it, and that reopens the
+	// whole raid). Assembled in uint64 and reinterpreted once, because shifting a
+	// word with its top bit set into a signed 64-bit value overflows.
+	const FGuid SaltSource = FGuid::NewGuid();
+	LootSalt = static_cast<int64>((static_cast<uint64>(SaltSource.A) << 32) | static_cast<uint64>(SaltSource.B));
 
 	// Load the layout here, not in StartPlay: UEngine::LoadMap spawns every
 	// local player's pawn (which calls RestartPlayer) before it calls
@@ -225,23 +232,45 @@ void ASarkoRaidGameMode::FinishRaid(ESarkoRaidOutcome NewOutcome)
 	{
 		return;
 	}
-	RaidState->Outcome = NewOutcome;
-
-	// Input freeze, on the server. The owning client's controller also stops
-	// sending (ASarkoPlayerController::PlayerTick), but a client that keeps
-	// sending is exactly the case worth defending against: movement is disabled
-	// on the server's own copy of every player pawn, and the aim/fire/loot RPCs
-	// check the outcome for themselves, so ignoring the freeze buys nothing.
+	// Both per-pawn effects run *before* Outcome is written, and on the server's
+	// own copy of every player pawn.
+	//
+	// The order is the point for the haul: the HUD's summary reads the backpack and
+	// says "the server emptied the backpack before the outcome was set", so that
+	// has to be true for every losing outcome rather than only for the one that
+	// happens to run through a death path. Input freeze does not care about the
+	// order, and is here so there is one loop rather than two.
+	const bool bLosesHaul = SarkoRaid::OutcomeLosesHaul(NewOutcome);
 	if (UWorld* World = GetWorld())
 	{
 		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
 		{
-			if (ASarkoCharacter* Pawn = It->IsValid() ? Cast<ASarkoCharacter>((*It)->GetPawn()) : nullptr)
+			ASarkoCharacter* Pawn = It->IsValid() ? Cast<ASarkoCharacter>((*It)->GetPawn()) : nullptr;
+			if (!Pawn)
 			{
-				Pawn->FreezeForRaidEnd();
+				continue;
 			}
+
+			// Spec §4.5: MIA is death, so MIA loses the haul too. KIA already
+			// cleared it on the pawn's own death path (ASarkoCharacter::
+			// HandleDeath) and clearing an empty backpack again is a no-op, so
+			// this is the single place the rule holds for all of them.
+			if (bLosesHaul && Pawn->BackpackComponent)
+			{
+				Pawn->BackpackComponent->ClearOnDeath();
+			}
+
+			// Input freeze, on the server. The owning client's controller also
+			// stops sending (ASarkoPlayerController::PlayerTick), but a client
+			// that keeps sending is exactly the case worth defending against:
+			// movement is disabled on the server's own copy of every player pawn,
+			// and the aim/fire/loot RPCs check the outcome for themselves, so
+			// ignoring the freeze buys nothing.
+			Pawn->FreezeForRaidEnd();
 		}
 	}
+
+	RaidState->Outcome = NewOutcome;
 
 	UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: raid finished as %s, %.1f s left on the clock"),
 		*UEnum::GetValueAsString(NewOutcome), RaidState->RemainingSeconds);

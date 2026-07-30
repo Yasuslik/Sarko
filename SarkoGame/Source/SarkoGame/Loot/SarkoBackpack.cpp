@@ -86,8 +86,14 @@ int32 USarkoBackpackComponent::AddItem(FName Item, int32 Quantity)
 
 void USarkoBackpackComponent::ClearOnDeath()
 {
-	AActor* Owner = GetOwner();
-	if (!Owner || !Owner->HasAuthority())
+	// Only the server may empty a backpack. The null-owner case passes through
+	// rather than refusing, which is the same authority-guard shape
+	// USarkoHealthComponent::ApplyDamage uses and for the same reason: a NewObject
+	// component has no owner, and this is the effect that Sarko.Extract.
+	// LosingOutcomesLoseTheHaul has to be able to observe. Nothing in a running
+	// game reaches a backpack with no owner — the component is a default subobject
+	// of the pawn.
+	if (const AActor* Owner = GetOwner(); Owner && !Owner->HasAuthority())
 	{
 		return;
 	}

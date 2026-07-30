@@ -240,8 +240,10 @@ bool FSarkoLootRollIsDeterministicPerContainer::RunTest(const FString& Parameter
 	// A fixed salt, because determinism is only claimed for a fixed one: the real
 	// salt is generated per raid on the authority (ASarkoRaidGameMode::LootSalt) and
 	// never leaves it, which is what stops a client precomputing the loot map from
-	// the replicated seed and the tables shipped in its own build.
-	constexpr int32 Salt = 0x5A17C0DE;
+	// the replicated seed and the tables shipped in its own build. 64 bits, and both
+	// halves non-zero, so a mix that quietly dropped one half would not pass as
+	// working here.
+	constexpr int64 Salt = 0x5A17C0DE0BADF00Dll;
 
 	// Same raid seed, same container index and same salt must give the same
 	// contents, forever: the whole reason the seed is replicated is that the server
@@ -264,14 +266,24 @@ bool FSarkoLootRollIsDeterministicPerContainer::RunTest(const FString& Parameter
 	// different stream. Checked across many indices rather than one, because any
 	// single pair can collide by chance.
 	int32 SaltChanged = 0;
+	int32 HighHalfChanged = 0;
 	for (int32 Index = 0; Index < 64; ++Index)
 	{
 		if (SarkoLoot::ContainerSeed(12345, Index, Salt) != SarkoLoot::ContainerSeed(12345, Index, Salt + 1))
 		{
 			++SaltChanged;
 		}
+		// And the *high* half has to participate too, separately: the salt is 64
+		// bits precisely so one observed roll cannot pin it, and a mix that only
+		// folded in the low word would be a 32-bit salt wearing a wider type.
+		if (SarkoLoot::ContainerSeed(12345, Index, Salt) !=
+			SarkoLoot::ContainerSeed(12345, Index, Salt ^ (1ll << 40)))
+		{
+			++HighHalfChanged;
+		}
 	}
 	TestEqual(TEXT("changing the salt changes every container's stream seed"), SaltChanged, 64);
+	TestEqual(TEXT("the salt's high 32 bits are not ignored"), HighHalfChanged, 64);
 
 	// And the unsalted relationship must be gone: with a salt of zero the old
 	// `Seed ^ Index` would still be recoverable, so this pins that the mix is not
@@ -296,7 +308,7 @@ bool FSarkoLootRollIsDeterministicPerContainer::RunTest(const FString& Parameter
 	// sends: StartRaid returns int64(rand.Uint32()), so about half of all real
 	// seeds arrive with the sign bit set. The salt is unsigned-hostile in the same
 	// way, so it gets the extreme too.
-	FRandomStream Wrapped(SarkoLoot::ContainerSeed(MIN_int32, 41, MIN_int32));
+	FRandomStream Wrapped(SarkoLoot::ContainerSeed(MIN_int32, 41, MIN_int64));
 	TestTrue(TEXT("a negative seed and salt still produce a usable stream"),
 		SarkoLoot::RollContainer(Military, Wrapped).Num() >= Military.MinRolls);
 	return true;

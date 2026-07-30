@@ -101,13 +101,19 @@ void ASarkoHUD::DrawTopBar()
 		return;
 	}
 
+	// Rebuilt on the second, not on the frame: the string only ever changes when
+	// the integer second does, and DrawHUD is a tick path where a Printf and a
+	// GetTextSize per frame is 59 of every 60 rebuilds discarded.
 	const int32 Total = FMath::CeilToInt(RaidState->RemainingSeconds);
-	const FString Clock = FString::Printf(TEXT("%02d:%02d"), Total / 60, Total % 60);
+	if (Total != CachedClockSeconds)
+	{
+		CachedClockSeconds = Total;
+		CachedClock = FString::Printf(TEXT("%02d:%02d"), Total / 60, Total % 60);
+		float ClockHeight = 0.f;
+		GetTextSize(CachedClock, CachedClockWidth, ClockHeight, GEngine->GetLargeFont(), 1.f);
+	}
 
-	float OutWidth = 0.f;
-	float OutHeight = 0.f;
-	GetTextSize(Clock, OutWidth, OutHeight, GEngine->GetLargeFont(), 1.f);
-	DrawText(Clock, FLinearColor::White, (Canvas->SizeX - OutWidth) * 0.5f, 24.f, GEngine->GetLargeFont(), 1.f);
+	DrawText(CachedClock, FLinearColor::White, (Canvas->SizeX - CachedClockWidth) * 0.5f, 24.f, GEngine->GetLargeFont(), 1.f);
 }
 
 void ASarkoHUD::DrawHealth()
@@ -176,10 +182,21 @@ void ASarkoHUD::DrawAmmo()
 
 	const USarkoWeaponComponent* Weapon = Pawn->WeaponComponent;
 	const bool bReloading = Weapon->IsReloading();
-	const FString AmmoText = bReloading ? TEXT("RELOADING") : FString::FromInt(Weapon->GetAmmoInMagazine());
+
+	// Rebuilt when the readout changes, which is on a shot or a reload rather than
+	// on a frame. FromInt allocates, and so does turning the TEXT("RELOADING")
+	// literal into the FString DrawText takes — both were paid every frame for a
+	// string with two digits' worth of variation.
+	const int32 AmmoKey = bReloading ? INDEX_NONE : Weapon->GetAmmoInMagazine();
+	if (AmmoKey != CachedAmmoKey)
+	{
+		CachedAmmoKey = AmmoKey;
+		CachedAmmoText = bReloading ? FString(TEXT("RELOADING")) : FString::FromInt(AmmoKey);
+	}
+
 	const FLinearColor Colour = bReloading ? FLinearColor(1.f, 0.6f, 0.1f, 1.f) : FLinearColor::White;
 
-	DrawText(AmmoText, Colour, 24.f, 24.f, GEngine->GetLargeFont(), 1.f);
+	DrawText(CachedAmmoText, Colour, 24.f, 24.f, GEngine->GetLargeFont(), 1.f);
 }
 
 void ASarkoHUD::DrawBackpack()
@@ -195,7 +212,16 @@ void ASarkoHUD::DrawBackpack()
 	const USarkoBackpackComponent* Backpack = Pawn->BackpackComponent;
 	const int32 Used = Backpack->GetUsedSlots();
 	const int32 Limit = Backpack->GetSlotLimit();
-	const FString Text = FString::Printf(TEXT("%d/%d"), Used, Limit);
+
+	// Rebuilt when a slot is taken or the limit changes — a few times a raid —
+	// rather than every frame. Both halves are the key because the limit comes from
+	// a setting, not a constant.
+	if (Used != CachedBackpackUsed || Limit != CachedBackpackLimit)
+	{
+		CachedBackpackUsed = Used;
+		CachedBackpackLimit = Limit;
+		CachedBackpackText = FString::Printf(TEXT("%d/%d"), Used, Limit);
+	}
 
 	// The x offset is measured from the widest string DrawAmmo can produce
 	// rather than guessed: "RELOADING" in the large font is far wider than the
@@ -215,7 +241,7 @@ void ASarkoHUD::DrawBackpack()
 	// Amber when full, so "the crate had more in it" is legible at a glance
 	// rather than being discovered by counting.
 	const FLinearColor Colour = Used >= Limit ? FLinearColor(1.f, 0.6f, 0.1f, 1.f) : FLinearColor::White;
-	DrawText(Text, Colour, X, 24.f, GEngine->GetLargeFont(), 1.f);
+	DrawText(CachedBackpackText, Colour, X, 24.f, GEngine->GetLargeFont(), 1.f);
 }
 
 void ASarkoHUD::DrawInteract()
@@ -235,11 +261,17 @@ void ASarkoHUD::DrawInteract()
 		: FLinearColor(1.f, 1.f, 1.f, 0.15f);
 	DrawRect(ButtonColour, Rect.Min.X, Rect.Min.Y, Rect.GetSize().X, Rect.GetSize().Y);
 
-	float LabelWidth = 0.f;
-	float LabelHeight = 0.f;
-	GetTextSize(TEXT("E"), LabelWidth, LabelHeight, GEngine->GetLargeFont(), 1.f);
-	DrawText(TEXT("E"), FLinearColor::White,
-		Rect.GetCenter().X - LabelWidth * 0.5f, Rect.GetCenter().Y - LabelHeight * 0.5f,
+	// One character, but an FString construction and a GetTextSize all the same,
+	// and both were paid every frame for a label that cannot change. Hoisted like
+	// CachedReloadingWidth; the string itself is a static so DrawText below is not
+	// rebuilding it either.
+	static const FString InteractLabel(TEXT("E"));
+	if (CachedInteractLabelWidth < 0.f)
+	{
+		GetTextSize(InteractLabel, CachedInteractLabelWidth, CachedInteractLabelHeight, GEngine->GetLargeFont(), 1.f);
+	}
+	DrawText(InteractLabel, FLinearColor::White,
+		Rect.GetCenter().X - CachedInteractLabelWidth * 0.5f, Rect.GetCenter().Y - CachedInteractLabelHeight * 0.5f,
 		GEngine->GetLargeFont(), 1.f);
 
 	if (!Target)
@@ -379,6 +411,9 @@ void ASarkoHUD::DrawOutcomeSummary()
 	{
 		// Died and MIA both arrive here: the server emptied the backpack before
 		// the outcome was set, so "nothing" is the honest and correct summary.
+		// Enforced rather than assumed — ASarkoRaidGameMode::FinishRaid clears
+		// every losing outcome's haul before it writes Outcome, and
+		// SarkoRaid::OutcomeLosesHaul is the rule it consults.
 		const FString Empty = TEXT("НІЧОГО НЕ ВИНЕСЕНО");
 		float Width = 0.f;
 		float Height = 0.f;
