@@ -50,6 +50,17 @@ public:
 	 */
 	void BuildAndSpawnLayout();
 
+	/**
+	 * Spawns this machine's geometry for a layout that was already computed
+	 * elsewhere (the game mode's InitGame calls SarkoMap::BuildLayout — pure,
+	 * no world needed — before this game state is guaranteed to exist, so it
+	 * cannot spawn anything yet; StartPlay hands the result here once a world
+	 * and this game state both exist). Guarded by the same bLayoutBuilt flag
+	 * as BuildAndSpawnLayout, which calls this internally, so the two paths
+	 * can never double-spawn the geometry between them.
+	 */
+	void SpawnPrebuiltLayout(const FSarkoMapLayout& InLayout);
+
 	/** The layout this machine generated from Seed. Valid once BuildAndSpawnLayout has run. */
 	const FSarkoMapLayout& GetLayout() const { return Layout; }
 

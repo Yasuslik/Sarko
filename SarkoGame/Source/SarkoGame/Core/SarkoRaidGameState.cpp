@@ -25,6 +25,11 @@ void ASarkoRaidGameState::OnRep_Seed()
 
 void ASarkoRaidGameState::BuildAndSpawnLayout()
 {
+	SpawnPrebuiltLayout(SarkoMap::BuildLayout(Seed, *GetDefault<USarkoRaidSettings>()));
+}
+
+void ASarkoRaidGameState::SpawnPrebuiltLayout(const FSarkoMapLayout& InLayout)
+{
 	if (bLayoutBuilt)
 	{
 		return;
@@ -36,7 +41,7 @@ void ASarkoRaidGameState::BuildAndSpawnLayout()
 		return;
 	}
 
-	Layout = SarkoMap::BuildLayout(Seed, *GetDefault<USarkoRaidSettings>());
+	Layout = InLayout;
 	SarkoMap::SpawnLayout(*World, Layout);
 	bLayoutBuilt = true;
 }

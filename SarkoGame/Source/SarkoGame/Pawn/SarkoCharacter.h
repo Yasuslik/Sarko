@@ -17,6 +17,15 @@ namespace SarkoAim
 	 * thing a player feels most immediately — is unit tested.
 	 */
 	FVector2D StickToWorldDirection(FVector2D Stick, float CameraYaw);
+
+	/**
+	 * Maps a raw stick deflection to a movement scale in [0,1]: zero inside
+	 * DeadZone (so a resting thumb does not creep the character), otherwise
+	 * the deflection magnitude clamped to 1 (so an over-dragged stick cannot
+	 * exceed WalkSpeed). Pure so the arithmetic is unit tested without a
+	 * world or an actor.
+	 */
+	float MoveIntentScale(FVector2D Stick, float DeadZone);
 }
 
 /** The player pawn. Top-down camera, server-authoritative aim. */
@@ -57,10 +66,25 @@ protected:
 	TObjectPtr<UCameraComponent> TopDownCamera;
 
 private:
-	/** Server RPC: the client's aim is validated and republished by the server. */
+	/**
+	 * Server RPC: the client's aim is validated and republished by the
+	 * server. Unreliable — this fires every frame the stick is deflected, so
+	 * a dropped packet is corrected by the next one and is not worth the
+	 * cost of guaranteed delivery.
+	 */
 	UFUNCTION(Server, Unreliable)
 	void ServerSetAim(FVector_NetQuantizeNormal NewAim, bool bInIsAiming);
 
+	/**
+	 * Server RPC: tells the server the aiming state changed (most notably,
+	 * that the stick centred and aiming stopped). Reliable — unlike the
+	 * continuous updates above, this fires once per transition, so it must
+	 * not be dropped or the server's bIsAiming can stay pinned forever.
+	 */
+	UFUNCTION(Server, Reliable)
+	void ServerSetAimState(bool bInIsAiming);
+
 	FVector2D MoveIntent = FVector2D::ZeroVector;
+	float MoveScale = 0.f;
 	bool bIsAiming = false;
 };

@@ -20,6 +20,16 @@ FVector2D SarkoAim::StickToWorldDirection(FVector2D Stick, float CameraYaw)
 	return FVector2D(Normalised.X, Normalised.Y);
 }
 
+float SarkoAim::MoveIntentScale(FVector2D Stick, float DeadZone)
+{
+	const float Magnitude = Stick.Size();
+	if (Magnitude < DeadZone)
+	{
+		return 0.f;
+	}
+	return FMath::Min(Magnitude, 1.f);
+}
+
 ASarkoCharacter::ASarkoCharacter()
 {
 	PrimaryActorTick.bCanEverTick = true;
@@ -37,6 +47,15 @@ ASarkoCharacter::ASarkoCharacter()
 	CameraBoom->SetRelativeRotation(FRotator(-70.f, 0.f, 0.f));
 	CameraBoom->bDoCollisionTest = false;
 	CameraBoom->bUsePawnControlRotation = false;
+	// bUsePawnControlRotation only stops the boom following the controller's
+	// view rotation; bInherit{Pitch,Yaw,Roll} default true and make the boom
+	// follow the *actor's* rotation instead, which Tick changes every frame
+	// to face aim or travel. Without turning all three off, the "top-down"
+	// camera would spin with the character instead of holding a fixed world
+	// orientation.
+	CameraBoom->bInheritPitch = false;
+	CameraBoom->bInheritYaw = false;
+	CameraBoom->bInheritRoll = false;
 
 	TopDownCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("TopDownCamera"));
 	TopDownCamera->SetupAttachment(CameraBoom);
@@ -51,32 +70,64 @@ void ASarkoCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
 
 void ASarkoCharacter::SetMoveIntent(FVector2D Intent)
 {
-	MoveIntent = Intent.GetSafeNormal();
+	const float DeadZone = GetDefault<USarkoRaidSettings>()->MoveStickDeadZone;
+	MoveScale = SarkoAim::MoveIntentScale(Intent, DeadZone);
+	// Keep the direction normalised — MoveScale alone carries the deflection
+	// magnitude, so AddMovementInput's scale argument gives partial push
+	// partial speed instead of every non-zero push snapping to WalkSpeed.
+	MoveIntent = MoveScale > 0.f ? Intent.GetSafeNormal() : FVector2D::ZeroVector;
 }
 
 void ASarkoCharacter::SetAimIntent(FVector2D Intent, bool bInIsAiming)
 {
+	const bool bAimingStateChanged = bInIsAiming != bIsAiming;
 	bIsAiming = bInIsAiming;
-	if (Intent.IsNearlyZero())
-	{
-		return;
-	}
 
-	const FVector NewAim = FVector(Intent.X, Intent.Y, 0.f).GetSafeNormal();
-	AimDirection = NewAim;
+	FVector NewAim(AimDirection);
+	const bool bHasDirection = !Intent.IsNearlyZero();
+	if (bHasDirection)
+	{
+		// A centred stick must not overwrite AimDirection with a zero vector —
+		// the pawn should keep facing where it last aimed, not snap to a
+		// default facing.
+		NewAim = FVector(Intent.X, Intent.Y, 0.f).GetSafeNormal();
+		AimDirection = NewAim;
+	}
 
 	// The client applies its aim locally for responsiveness and tells the
 	// server, which republishes it. The server never trusts it for damage —
 	// it re-traces from its own copy when the shot is taken.
-	if (!HasAuthority())
+	if (HasAuthority())
 	{
+		return;
+	}
+
+	if (bHasDirection)
+	{
+		// Continuous, high-frequency while the stick is deflected: an
+		// occasional dropped packet is corrected by the next frame, so this
+		// stays unreliable.
 		ServerSetAim(NewAim, bInIsAiming);
+	}
+	else if (bAimingStateChanged)
+	{
+		// The stick just centred — releasing aim is the normal, every-shot
+		// gesture, and this is the only signal that tells the server it
+		// happened. Unlike the continuous updates above, a dropped packet
+		// here pins the server's bIsAiming forever, so this goes out
+		// reliably instead.
+		ServerSetAimState(bInIsAiming);
 	}
 }
 
 void ASarkoCharacter::ServerSetAim_Implementation(FVector_NetQuantizeNormal NewAim, bool bInIsAiming)
 {
 	AimDirection = NewAim;
+	bIsAiming = bInIsAiming;
+}
+
+void ASarkoCharacter::ServerSetAimState_Implementation(bool bInIsAiming)
+{
 	bIsAiming = bInIsAiming;
 }
 
@@ -90,9 +141,9 @@ void ASarkoCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
-	if (!MoveIntent.IsNearlyZero())
+	if (MoveScale > 0.f)
 	{
-		AddMovementInput(FVector(MoveIntent.X, MoveIntent.Y, 0.f), 1.f);
+		AddMovementInput(FVector(MoveIntent.X, MoveIntent.Y, 0.f), MoveScale);
 	}
 
 	// Face the aim while aiming, otherwise face travel — spec §9.

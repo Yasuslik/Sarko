@@ -24,6 +24,19 @@ void ASarkoRaidGameMode::InitGame(const FString& MapName, const FString& Options
 	{
 		Seed = FCString::Atoi(*SeedOption);
 	}
+
+	// Compute the layout here, not in StartPlay: UEngine::LoadMap spawns
+	// every local player's pawn (which calls RestartPlayer) before it calls
+	// UWorld::BeginPlay, which is what invokes StartPlay. Waiting for
+	// StartPlay to populate CachedLayout means the very first RestartPlayer
+	// of a standalone or PIE launch always finds it empty and falls back to
+	// the world origin. InitGame runs ahead of player spawning in the same
+	// LoadMap sequence, and SarkoMap::BuildLayout is a pure function of
+	// (Seed, Settings) — no world or game state required — so it can safely
+	// run this early. The game state may not exist yet at this point, so
+	// this only computes the layout; StartPlay below hands it to the game
+	// state to spawn once a world and game state both exist.
+	CachedLayout = SarkoMap::BuildLayout(Seed, *GetDefault<USarkoRaidSettings>());
 }
 
 void ASarkoRaidGameMode::StartPlay()
@@ -32,20 +45,22 @@ void ASarkoRaidGameMode::StartPlay()
 
 	// The map itself never crosses the network. Only Seed (four bytes)
 	// replicates, through ASarkoRaidGameState; every machine — server
-	// included — calls BuildLayout then SpawnLayout locally from that value.
-	// BuildLayout is a pure function of (Seed, Settings), so the geometry it
-	// produces is bit-for-bit identical everywhere it runs: the layouts
-	// cannot disagree, and the server never pays to replicate or simulate
-	// forty-plus static cover actors.
+	// included — ends up with the identical geometry, because BuildLayout is
+	// a pure function of (Seed, Settings): the layouts cannot disagree, and
+	// the server never pays to replicate or simulate forty-plus static cover
+	// actors.
 	if (HasAuthority())
 	{
 		if (ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>())
 		{
 			RaidState->Seed = Seed;
-			// The server never receives its own OnRep notify, so it must
-			// trigger the build explicitly; clients build via OnRep_Seed
-			// once the replicated value arrives.
-			RaidState->BuildAndSpawnLayout();
+			// The server already has the layout from InitGame, so it hands
+			// that over directly instead of recomputing it. The server
+			// never receives its own OnRep notify, so it must trigger the
+			// spawn explicitly; clients build and spawn their own copy via
+			// OnRep_Seed once the replicated value arrives, since they have
+			// no game mode instance to hand them a precomputed layout.
+			RaidState->SpawnPrebuiltLayout(CachedLayout);
 			CachedLayout = RaidState->GetLayout();
 		}
 	}

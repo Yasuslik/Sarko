@@ -32,6 +32,14 @@ public:
 	float WalkSpeed = 400.f;
 
 	/**
+	 * Stick deflection below this magnitude counts as centred. Without a
+	 * dead zone, a resting thumb's tiny drift off true-centre would read as
+	 * a non-zero move intent and creep the character.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Movement")
+	float MoveStickDeadZone = 0.15f;
+
+	/**
 	 * Half-angle of the cone inside which a shot snaps to a target. This is a
 	 * nudge that compensates for a thumb, not an aimbot — it is applied on the
 	 * server, identically for everyone, so it never becomes an advantage.

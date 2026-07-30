@@ -31,4 +31,35 @@ bool FSarkoStickMapsToWorldDirection::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoMoveIntentScale,
+	"Sarko.Aim.MoveIntentScale",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoMoveIntentScale::RunTest(const FString& Parameters)
+{
+	const float DeadZone = 0.15f;
+
+	// A resting thumb inside the dead zone must not creep the character.
+	TestEqual(TEXT("inside the dead zone yields zero scale"),
+		SarkoAim::MoveIntentScale(FVector2D(0.05f, 0.05f), DeadZone), 0.f);
+	TestEqual(TEXT("exactly centred yields zero scale"),
+		SarkoAim::MoveIntentScale(FVector2D::ZeroVector, DeadZone), 0.f);
+
+	// A partial push should give partial speed, not full speed — that is what
+	// makes a floating stick feel analog instead of like a d-pad.
+	const float PartialScale = SarkoAim::MoveIntentScale(FVector2D(0.5f, 0.f), DeadZone);
+	TestTrue(TEXT("partial deflection yields partial scale"), PartialScale > 0.4f && PartialScale < 0.6f);
+
+	// Full deflection must reach exactly full speed.
+	TestEqual(TEXT("full deflection yields a scale of 1"),
+		SarkoAim::MoveIntentScale(FVector2D(1.f, 0.f), DeadZone), 1.f);
+
+	// An over-dragged stick must clamp so it can never exceed WalkSpeed.
+	TestEqual(TEXT("an over-dragged stick clamps to 1"),
+		SarkoAim::MoveIntentScale(FVector2D(2.f, 2.f), DeadZone), 1.f);
+
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS
