@@ -97,6 +97,27 @@ bool FSarkoMapDefinitionRejectsBadInput::RunTest(const FString& Parameters)
 		{ TEXT("negative extent"),        TEXT(R"({"id":"x","extentUU":-5,"raidDurationSeconds":900})") },
 		{ TEXT("no player spawn"),        TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[]})") },
 		{ TEXT("position not a triple"),  TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[1,2],"yaw":0}]})") },
+		// A wrong-typed array section must be distinguishable from an absent
+		// one: "blocks":{} is not an array, and must not silently mean zero blocks.
+		{ TEXT("blocks is wrong type, not an array"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],"blocks":{}})") },
+		// GetNumberField defaults a non-numeric yaw to 0.0 with only an internal
+		// log; the caller never sees it, so this must become a named error.
+		{ TEXT("yaw is a string"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":"abc"}]})") },
+		// An empty/missing kind means no mesh is chosen downstream for a prop —
+		// the same silent no-op that already cost a session once.
+		{ TEXT("prop with no kind"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],"props":[{"pos":[100,100,0],"yaw":0}]})") },
+		// A non-number inside a pos triple must not be silently coerced to 0.0.
+		{ TEXT("pos contains a non-number"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[1200,"abc",0],"yaw":0}]})") },
+		// A negative extent component describes geometry that cannot exist.
+		{ TEXT("negative block extent"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],"blocks":[{"pos":[0,0,0],"yaw":0,"extent":[-100,200,150]}]})") },
+		// A zero-radius extraction zone can never trigger.
+		{ TEXT("zero radiusUU"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],"extractions":[{"pos":[0,0,0],"radiusUU":0}]})") },
 	};
 
 	for (const TPair<FString, FString>& Case : BadCases)
@@ -107,6 +128,36 @@ bool FSarkoMapDefinitionRejectsBadInput::RunTest(const FString& Parameters)
 		TestFalse(FString::Printf(TEXT("rejected: %s"), *Case.Key), bParsed);
 		TestFalse(FString::Printf(TEXT("error message is not empty: %s"), *Case.Key), Error.IsEmpty());
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoMapDefinitionOptionalSectionsMayBeAbsent,
+	"Sarko.Map.DefinitionOptionalSectionsMayBeAbsent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoMapDefinitionOptionalSectionsMayBeAbsent::RunTest(const FString& Parameters)
+{
+	// blocks, props, containers, botSpawns and extractions are all optional —
+	// a map that never places any of them must still parse. It would be easy
+	// to fix the five findings above by making every section mandatory, which
+	// would break this schema; pin that it does not.
+	const FString Json = TEXT(R"({
+		"id": "test",
+		"extentUU": 20000,
+		"raidDurationSeconds": 900,
+		"playerSpawns": [ { "pos": [-16000, 17000, 100], "yaw": 135 } ]
+	})");
+
+	FSarkoMapDefinition Definition;
+	FString Error;
+	TestTrue(TEXT("a map with no optional sections still parses"), SarkoMap::ParseDefinition(Json, Definition, Error));
+	TestEqual(TEXT("no error on success"), Error, FString());
+	TestEqual(TEXT("no blocks"), Definition.Blocks.Num(), 0);
+	TestEqual(TEXT("no props"), Definition.Props.Num(), 0);
+	TestEqual(TEXT("no containers"), Definition.Containers.Num(), 0);
+	TestEqual(TEXT("no bot spawns"), Definition.BotSpawns.Num(), 0);
+	TestEqual(TEXT("no extractions"), Definition.Extractions.Num(), 0);
 	return true;
 }
 
