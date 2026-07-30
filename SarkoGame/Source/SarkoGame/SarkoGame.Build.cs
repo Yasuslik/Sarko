@@ -20,7 +20,9 @@ public class SarkoGame : ModuleRules
 			"InputCore",
 			"AIModule",
 			"NavigationSystem",
-			"DeveloperSettings"
+			"DeveloperSettings",
+			"Json",
+			"JsonUtilities"
 		});
 	}
 }

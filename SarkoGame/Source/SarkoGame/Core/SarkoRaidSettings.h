@@ -20,13 +20,19 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "Raid")
 	float RaidDurationSeconds = 480.f;
 
-	/** Half-extent of the square play area, in unreal units (10000 uu = 100 m). */
+	/**
+	 * Half-extent of the square play area, in unreal units (10000 uu = 100 m).
+	 * The authored map carries its own extentUU and the geometry comes from
+	 * there; this is what code with no map definition in hand reasons about —
+	 * the AI's patrol square and the overview camera's framing height — so it
+	 * must be kept in step with the map file it is used alongside.
+	 */
 	UPROPERTY(EditAnywhere, config, Category = "Map")
 	float MapExtent = 10000.f;
 
-	/** How many cover blocks the generator scatters. */
+	/** Which file under Data/Maps to load. */
 	UPROPERTY(EditAnywhere, config, Category = "Map")
-	int32 CoverCount = 40;
+	FName MapId = TEXT("bridge");
 
 	UPROPERTY(EditAnywhere, config, Category = "Movement")
 	float WalkSpeed = 400.f;
@@ -92,9 +98,10 @@ public:
 	float EnemyWalkSpeed = 340.f;
 
 	/**
-	 * There is no navmesh in this project (the map is spawned procedurally at
-	 * runtime, so nothing is baked, and nothing configures runtime generation
-	 * either) — the enemy steers directly at its target instead of pathing.
+	 * There is no navmesh in this project (the map's actors are spawned from a
+	 * data file at runtime rather than authored into a level, so nothing is
+	 * baked, and nothing configures runtime generation either) — the enemy
+	 * steers directly at its target instead of pathing.
 	 * This is how far ahead it casts a single forward trace to decide whether
 	 * the straight line to the target is blocked and it needs to steer around
 	 * something instead of walking into it.

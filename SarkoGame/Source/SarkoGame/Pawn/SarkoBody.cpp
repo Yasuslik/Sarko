@@ -18,11 +18,11 @@ namespace
 
 void SarkoBody::AttachPlaceholderBody(ACharacter& Character, const FLinearColor& Tint)
 {
-	UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+	UStaticMesh* CylinderMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
 	UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	UMaterialInterface* BaseMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
 
-	if (!Cylinder || !Sphere || !BaseMaterial)
+	if (!CylinderMesh || !Sphere || !BaseMaterial)
 	{
 		UE_LOG(LogTemp, Error, TEXT("SarkoBody: engine primitive missing; pawns will be invisible"));
 		return;
@@ -59,7 +59,7 @@ void SarkoBody::AttachPlaceholderBody(ACharacter& Character, const FLinearColor&
 	};
 
 	// Body: a cylinder filling the capsule.
-	AddPiece(Cylinder, TEXT("BodyMesh"),
+	AddPiece(CylinderMesh, TEXT("BodyMesh"),
 		FVector(0.f, 0.f, -HalfHeight),
 		FVector((Radius * 2.f) / EngineCylinderSize, (Radius * 2.f) / EngineCylinderSize, (HalfHeight * 2.f) / EngineCylinderSize),
 		1.f);

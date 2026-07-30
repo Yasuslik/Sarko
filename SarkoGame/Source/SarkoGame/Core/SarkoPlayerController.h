@@ -77,6 +77,20 @@ public:
 	UFUNCTION(Exec)
 	void CheatEmptyMagazine();
 
+	/**
+	 * Frames the whole sector from above and takes a screenshot. This is the
+	 * design loop for a hand-authored map: edit the data file, run offscreen,
+	 * look at the frame, adjust. Without it the layout is written blind.
+	 *
+	 * UFUNCTION(Exec) cannot itself live inside an #if block (UHT rejects any
+	 * UFUNCTION/UPROPERTY inside a preprocessor block other than
+	 * WITH_EDITORONLY_DATA), so the declaration is unconditional here, same as
+	 * CheatEmptyMagazine above; the shipping guard is applied to the body in
+	 * the .cpp instead, so the tool's actual effect compiles out of shipping.
+	 */
+	UFUNCTION(Exec)
+	void SarkoOverview();
+
 private:
 	void UpdateSticks();
 
