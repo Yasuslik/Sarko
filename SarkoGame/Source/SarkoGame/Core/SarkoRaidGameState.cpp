@@ -1,6 +1,7 @@
 #include "Core/SarkoRaidGameState.h"
 
 #include "Core/SarkoRaidSettings.h"
+#include "Loot/SarkoLootContainer.h"
 #include "Map/SarkoMapDefinition.h"
 #include "Net/UnrealNetwork.h"
 
@@ -17,6 +18,7 @@ void ASarkoRaidGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	// replicates — nothing in a single-player test would catch that, since
 	// the server is also the only client and always sees its own value.
 	DOREPLIFETIME(ASarkoRaidGameState, Seed);
+	DOREPLIFETIME(ASarkoRaidGameState, LootedContainers);
 }
 
 void ASarkoRaidGameState::OnRep_Seed()
@@ -66,7 +68,73 @@ void ASarkoRaidGameState::SpawnPrebuiltLayout(const FSarkoMapLayout& InLayout, c
 	// Props spawn wherever geometry does, so they appear on every machine —
 	// server and client alike — exactly as the cover blocks already do.
 	SarkoMap::SpawnProps(*World, InDefinition);
+	// Containers are actors now, not marker boxes, and they spawn here so both
+	// the server and each client build the same set from the same file.
+	SarkoMap::SpawnLootContainers(*World, InDefinition);
+	SizeLootState(InDefinition.Containers.Num());
 	bLayoutBuilt = true;
+}
+
+void ASarkoRaidGameState::SizeLootState(int32 ContainerCount)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	if (LootedContainers.Num() != ContainerCount)
+	{
+		LootedContainers.SetNumZeroed(FMath::Max(0, ContainerCount));
+	}
+}
+
+bool ASarkoRaidGameState::IsContainerLooted(int32 ContainerIndex) const
+{
+	// Out of range reads as "not looted" rather than asserting: on a client the
+	// array can legitimately arrive a frame after the containers spawn.
+	return LootedContainers.IsValidIndex(ContainerIndex) && LootedContainers[ContainerIndex] != 0;
+}
+
+void ASarkoRaidGameState::MarkContainerLooted(int32 ContainerIndex)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	if (!LootedContainers.IsValidIndex(ContainerIndex))
+	{
+		// A client-supplied index that got this far is either a stale map or a
+		// forged RPC. Loud, and nothing happens.
+		UE_LOG(LogTemp, Warning, TEXT("SarkoRaidGameState: container index %d is out of range (%d containers)"),
+			ContainerIndex, LootedContainers.Num());
+		return;
+	}
+	LootedContainers[ContainerIndex] = 1;
+
+	// The server never receives its own OnRep, so it refreshes explicitly.
+	OnRep_LootedContainers();
+}
+
+void ASarkoRaidGameState::OnRep_LootedContainers()
+{
+	for (int32 Index = RegisteredContainers.Num() - 1; Index >= 0; --Index)
+	{
+		if (ASarkoLootContainer* Container = RegisteredContainers[Index].Get())
+		{
+			Container->RefreshVisualState();
+		}
+		else
+		{
+			RegisteredContainers.RemoveAtSwap(Index);
+		}
+	}
+}
+
+void ASarkoRaidGameState::RegisterContainer(ASarkoLootContainer* Container)
+{
+	if (Container)
+	{
+		RegisteredContainers.AddUnique(Container);
+	}
 }
 
 void ASarkoRaidGameState::StartRaidClock(float DurationSeconds)

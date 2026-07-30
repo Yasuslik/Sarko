@@ -72,6 +72,18 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Health")
 	TObjectPtr<USarkoHealthComponent> HealthComponent;
 
+	/** Client intent: begin opening the container at this index. Validated server-side. */
+	void RequestBeginLoot(int32 ContainerIndex);
+
+	/** Client intent: stop opening. Also called automatically when the pawn walks away or dies. */
+	void RequestCancelLoot();
+
+	/** INDEX_NONE when not channelling. Server truth; the client keeps its own cosmetic copy. */
+	int32 GetLootChannelIndex() const { return LootChannelIndex; }
+
+	/** Seconds the channel has been running, or 0. Used by the HUD for the progress bar. */
+	float GetLootChannelElapsed() const;
+
 protected:
 	UFUNCTION()
 	void OnRep_AimDirection() {}
@@ -113,7 +125,32 @@ private:
 	UFUNCTION(Server, Reliable)
 	void ServerRequestFire(FVector Direction);
 
+	/**
+	 * Server RPC. Reliable: a dropped begin would leave a player holding the
+	 * button with nothing happening, which reads as a broken container.
+	 *
+	 * ContainerIndex is hostile input — the server bounds-checks it against its
+	 * own map definition and re-measures the distance from its own copy of this
+	 * pawn, exactly as ServerRequestFire re-derives the muzzle origin.
+	 */
+	UFUNCTION(Server, Reliable)
+	void ServerBeginLoot(int32 ContainerIndex);
+
+	UFUNCTION(Server, Reliable)
+	void ServerCancelLoot();
+
+	/** Server: completes the channel, rolls and transfers. Called from Tick. */
+	void TickLootChannel();
+
 	FVector2D MoveIntent = FVector2D::ZeroVector;
 	float MoveScale = 0.f;
 	bool bIsAiming = false;
+
+	/** Server-side channel state. Not replicated: the HUD's bar is local and cosmetic. */
+	int32 LootChannelIndex = INDEX_NONE;
+	float LootChannelStartSeconds = 0.f;
+
+	/** The client's own copy, so the bar moves without waiting for a round trip. */
+	int32 LocalChannelIndex = INDEX_NONE;
+	float LocalChannelStartSeconds = 0.f;
 };

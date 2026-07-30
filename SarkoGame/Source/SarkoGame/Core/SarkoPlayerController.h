@@ -9,6 +9,16 @@ namespace SarkoInput
 {
 	/** Left half drives movement, right half drives aim. Boundary is inclusive. */
 	bool IsLeftHalf(FVector2D ScreenPosition, FVector2D ViewportSize);
+
+	/**
+	 * Where the on-screen interact button lives, in viewport pixels.
+	 *
+	 * Right-hand side, vertically centred: the bottom corners are covered by
+	 * the thumbs driving the sticks (spec §9), and the very top cannot be
+	 * reached without letting go of one. Computed from the viewport rather than
+	 * fixed, so it stays on screen on a phone and in a small desktop window.
+	 */
+	FBox2D InteractButtonRect(FVector2D ViewportSize);
 }
 
 /** One floating virtual stick, anchored wherever the thumb first touched. */
@@ -64,6 +74,12 @@ public:
 	const FSarkoTouchStick& GetMoveStick() const { return MoveStick; }
 	const FSarkoTouchStick& GetAimStick() const { return AimStick; }
 
+	/** The container the pawn could open right now, or nullptr. The HUD reads this to draw the prompt. */
+	class ASarkoLootContainer* GetInteractTarget() const { return InteractTarget.Get(); }
+
+	/** True while the player is holding interact. The HUD reads this to draw the progress bar. */
+	bool IsInteractHeld() const { return bInteractHeld; }
+
 	/**
 	 * TEMPORARY manual-verification aid for the rc-task-6 fix wave: a
 	 * headless -game run has no touch input, so there is no other way to
@@ -93,6 +109,30 @@ public:
 
 private:
 	void UpdateSticks();
+
+	/** Finds the nearest openable container and turns held input into channel start/stop. */
+	void UpdateInteract();
+
+	/**
+	 * Cached once the containers exist; they never move and never change count
+	 * during a raid.
+	 *
+	 * The cache is only sealed once at least one container has been found: on a
+	 * client the containers spawn from OnRep_Seed, which can land after the
+	 * first PlayerTick, and a cache sealed empty on frame one would leave that
+	 * client unable to loot anything for the whole raid.
+	 */
+	TArray<TWeakObjectPtr<class ASarkoLootContainer>> CachedContainers;
+	bool bContainersCached = false;
+
+	TWeakObjectPtr<class ASarkoLootContainer> InteractTarget;
+	bool bInteractHeld = false;
+
+	/** Which container the held input is currently channelling, or INDEX_NONE. */
+	int32 HeldContainerIndex = INDEX_NONE;
+
+	/** Which touch slot is holding the interact button, or INDEX_NONE. Claimed before stick classification. */
+	int32 InteractTouchIndex = INDEX_NONE;
 
 #if !UE_BUILD_SHIPPING
 	/**

@@ -25,4 +25,7 @@ private:
 	void DrawHealth();
 	void DrawAmmo();
 	void DrawBackpack();
+
+	/** The interact button, the "search this crate" prompt and the channel's progress bar. */
+	void DrawInteract();
 };

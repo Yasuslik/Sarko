@@ -3,11 +3,24 @@
 #include "Combat/SarkoWeapon.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Debug/SarkoOverviewShot.h"
+#include "EngineUtils.h"
+#include "Loot/SarkoLootContainer.h"
 #include "Pawn/SarkoCharacter.h"
+#include "Pawn/SarkoHealthComponent.h"
 
 bool SarkoInput::IsLeftHalf(FVector2D ScreenPosition, FVector2D ViewportSize)
 {
 	return ScreenPosition.X < ViewportSize.X * 0.5f;
+}
+
+FBox2D SarkoInput::InteractButtonRect(FVector2D ViewportSize)
+{
+	// Scaled to the shorter axis so the button is the same physical size on a
+	// phone and in a window, with a floor so it never drops below a thumb.
+	const float Size = FMath::Max(96.f, FMath::Min(ViewportSize.X, ViewportSize.Y) * 0.14f);
+	const float Right = ViewportSize.X - Size - Size * 0.35f;
+	const float Top = ViewportSize.Y * 0.5f - Size * 0.5f;
+	return FBox2D(FVector2D(Right, Top), FVector2D(Right + Size, Top + Size));
 }
 
 ASarkoPlayerController::ASarkoPlayerController()
@@ -22,6 +35,7 @@ void ASarkoPlayerController::PlayerTick(float DeltaTime)
 	Super::PlayerTick(DeltaTime);
 
 	UpdateSticks();
+	UpdateInteract();
 
 	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
 	if (!Pawn)
@@ -105,17 +119,31 @@ void ASarkoPlayerController::UpdateSticks()
 	bool bMoveTouchStillDown = false;
 	bool bAimTouchStillDown = false;
 
-	// Two fingers are enough for this scheme; poll both touch slots. Each
-	// slot is a stable identity for one held finger (UE keeps a finger in the
-	// same slot from press to release), so once a slot is bound to a stick it
-	// keeps driving that stick regardless of which half its finger currently
-	// sits over — classification happens once, at press time.
-	for (int32 Index = 0; Index < 2; ++Index)
+	const FBox2D InteractRect = SarkoInput::InteractButtonRect(Viewport);
+	bool bInteractTouchStillDown = false;
+
+	// Three fingers now, not two: movement, aim and the interact button are
+	// three separate holds, and a player opening a crate while backing away
+	// from a bot is holding all three at once. Each slot is a stable identity
+	// for one held finger (UE keeps a finger in the same slot from press to
+	// release), so once a slot is bound to a stick — or to the button — it keeps
+	// driving that thing regardless of where its finger currently sits;
+	// classification happens once, at press time.
+	for (int32 Index = 0; Index < 3; ++Index)
 	{
 		float TouchX = 0.f;
 		float TouchY = 0.f;
 		bool bPressed = false;
 		GetInputTouchState(static_cast<ETouchIndex::Type>(Index), TouchX, TouchY, bPressed);
+
+		if (Index == InteractTouchIndex)
+		{
+			if (bPressed)
+			{
+				bInteractTouchStillDown = true;
+			}
+			continue;
+		}
 
 		if (Index == MoveTouchIndex)
 		{
@@ -142,11 +170,23 @@ void ASarkoPlayerController::UpdateSticks()
 			continue;
 		}
 
-		// A touch this controller has not seen before: it claims whichever
-		// stick is currently free on its landing half. If that stick is
-		// already claimed by another finger, this touch drives nothing —
-		// only two sticks exist, so a third finger is simply ignored.
+		// A touch this controller has not seen before: it claims the interact
+		// button if it landed on it, otherwise whichever stick is currently free
+		// on its landing half. If that thing is already claimed by another
+		// finger, this touch drives nothing — there are only three consumers, so
+		// a fourth finger is simply ignored.
 		const FVector2D Position(TouchX, TouchY);
+
+		// The interact button wins over the aim stick for a touch that lands on
+		// it. Without this, pressing it would also start an aim drag and fire a
+		// shot on release — the button would shoot.
+		if (InteractTouchIndex == INDEX_NONE && InteractRect.IsInside(Position))
+		{
+			InteractTouchIndex = Index;
+			bInteractTouchStillDown = true;
+			continue;
+		}
+
 		if (SarkoInput::IsLeftHalf(Position, Viewport))
 		{
 			if (MoveTouchIndex == INDEX_NONE)
@@ -181,9 +221,103 @@ void ASarkoPlayerController::UpdateSticks()
 		AimStick = FSarkoTouchStick();
 		AimTouchIndex = INDEX_NONE;
 	}
+	if (!bInteractTouchStillDown)
+	{
+		InteractTouchIndex = INDEX_NONE;
+	}
 
 	// Release of the aim thumb is the fire signal — never auto-fire (spec §9).
 	bAimReleasedThisFrame = bWasAiming && !AimStick.bActive;
+}
+
+void ASarkoPlayerController::UpdateInteract()
+{
+	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	if (!Pawn)
+	{
+		bInteractHeld = false;
+		HeldContainerIndex = INDEX_NONE;
+		InteractTarget = nullptr;
+		return;
+	}
+
+	// One-time gather. Containers are spawned from the map file at level start,
+	// never added or removed, so re-running an actor iterator every frame would
+	// be pure waste on a phone. The cache is not sealed until it has actually
+	// found something, because on a client the containers spawn when Seed
+	// replicates, which can be several frames after the first PlayerTick.
+	if (!bContainersCached)
+	{
+		CachedContainers.Reset();
+		for (TActorIterator<ASarkoLootContainer> It(GetWorld()); It; ++It)
+		{
+			CachedContainers.Add(*It);
+		}
+		bContainersCached = CachedContainers.Num() > 0;
+	}
+
+	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+	const FVector PawnLocation = Pawn->GetActorLocation();
+	const bool bAlive = Pawn->HealthComponent && !Pawn->HealthComponent->IsDead();
+
+	// Nearest openable container. No allocation: this walks a cached array and
+	// keeps one pointer and one float.
+	ASarkoLootContainer* Best = nullptr;
+	float BestDistanceSquared = TNumericLimits<float>::Max();
+	for (const TWeakObjectPtr<ASarkoLootContainer>& Weak : CachedContainers)
+	{
+		ASarkoLootContainer* Container = Weak.Get();
+		if (!Container)
+		{
+			continue;
+		}
+		if (!SarkoLoot::CanInteract(PawnLocation, Container->GetActorLocation(),
+				Settings.InteractRadiusUU, bAlive, Container->IsLooted()))
+		{
+			continue;
+		}
+		const float DistanceSquared = FVector2D(
+			PawnLocation.X - Container->GetActorLocation().X,
+			PawnLocation.Y - Container->GetActorLocation().Y).SizeSquared();
+		if (DistanceSquared < BestDistanceSquared)
+		{
+			BestDistanceSquared = DistanceSquared;
+			Best = Container;
+		}
+	}
+	InteractTarget = Best;
+
+	// Held state: the touch button, or E on a desktop. E exists because that is
+	// how this game is actually played during development, and a mouse cannot
+	// hold a virtual button and a movement stick at once.
+	bool bHeld = InteractTouchIndex != INDEX_NONE;
+#if !UE_BUILD_SHIPPING
+	bHeld = bHeld || IsInputKeyDown(EKeys::E);
+#endif
+
+	const int32 BestIndex = Best ? Best->ContainerIndex : INDEX_NONE;
+	if (!bHeld || BestIndex == INDEX_NONE)
+	{
+		// Released, or walked away / emptied the crate while still holding.
+		if (bInteractHeld)
+		{
+			Pawn->RequestCancelLoot();
+		}
+		bInteractHeld = false;
+		HeldContainerIndex = INDEX_NONE;
+		return;
+	}
+
+	// A fresh press, or the same press now nearest a different crate — the
+	// latter matters because a container that has just been emptied drops out of
+	// the candidate set while the finger is still down, and standing between two
+	// crates should then start on the second one rather than wait for a release.
+	if (!bInteractHeld || HeldContainerIndex != BestIndex)
+	{
+		Pawn->RequestBeginLoot(BestIndex);
+		HeldContainerIndex = BestIndex;
+	}
+	bInteractHeld = true;
 }
 
 #if !UE_BUILD_SHIPPING

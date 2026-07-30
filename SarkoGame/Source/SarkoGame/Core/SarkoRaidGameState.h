@@ -14,6 +14,7 @@
 // have that failure mode, but declaring it here — matching
 // SarkoMapBuilder.h's fix — keeps one convention rather than two.
 struct FSarkoMapDefinition;
+class ASarkoLootContainer;
 
 /**
  * Raid clock and raid seed. The server owns both; every client reads
@@ -89,8 +90,40 @@ public:
 
 	bool IsRaidOver() const { return bClockStarted && RemainingSeconds <= 0.f; }
 
+	/**
+	 * One byte per container index: 1 means emptied. This is the only loot state
+	 * on the wire.
+	 *
+	 * Spec §4.3 asks for a replicated `bLooted` on the container. A container is
+	 * spawned locally on every machine from the map file — like every cover
+	 * block — so it has no net identity and cannot replicate a property of its
+	 * own; this array is the same fact, owned by the one actor that does
+	 * replicate. A byte array rather than a bitmask because 42 bytes is nothing
+	 * and a bitmask is a debugging tax.
+	 */
+	UPROPERTY(ReplicatedUsing = OnRep_LootedContainers)
+	TArray<uint8> LootedContainers;
+
+	UFUNCTION()
+	void OnRep_LootedContainers();
+
+	/** Server only: sizes the array to the map's container count. Idempotent. */
+	void SizeLootState(int32 ContainerCount);
+
+	/** False for an out-of-range index — a client-supplied index is never trusted to be in range. */
+	bool IsContainerLooted(int32 ContainerIndex) const;
+
+	/** Server only. Bounds-checked; logs and does nothing for a bad index. */
+	void MarkContainerLooted(int32 ContainerIndex);
+
+	/** Containers register at BeginPlay so a replicated change can recolour them without anything ticking. */
+	void RegisterContainer(ASarkoLootContainer* Container);
+
 private:
 	bool bClockStarted = false;
 	bool bLayoutBuilt = false;
 	FSarkoMapLayout Layout;
+
+	/** Weak: containers are destroyed with the world and this must not keep them alive. */
+	TArray<TWeakObjectPtr<ASarkoLootContainer>> RegisteredContainers;
 };

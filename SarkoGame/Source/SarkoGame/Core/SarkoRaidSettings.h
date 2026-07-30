@@ -86,6 +86,18 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "Loot")
 	int32 BackpackSlots = 12;
 
+	/** How close the pawn must be to open a container. Enforced on the server. */
+	UPROPERTY(EditAnywhere, config, Category = "Loot")
+	float InteractRadiusUU = 250.f;
+
+	/**
+	 * Press-and-hold time to open a container (spec §4.3). This is the cost of
+	 * looting: standing still for a second and a half beside a crate is what
+	 * makes a container a decision rather than a pickup.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Loot")
+	float LootChannelSeconds = 1.5f;
+
 	UPROPERTY(EditAnywhere, config, Category = "AI")
 	float EnemyHearingRadiusUU = 2500.f;
 

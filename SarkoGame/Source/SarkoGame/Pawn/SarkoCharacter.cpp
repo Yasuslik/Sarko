@@ -5,9 +5,14 @@
 #include "Camera/CameraComponent.h"
 #include "Combat/SarkoWeapon.h"
 #include "Components/CapsuleComponent.h"
+#include "Core/SarkoRaidGameMode.h"
+#include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Loot/SarkoBackpack.h"
+#include "Loot/SarkoLootContainer.h"
+#include "Loot/SarkoLootTable.h"
+#include "Map/SarkoMapDefinition.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Net/UnrealNetwork.h"
 
@@ -100,10 +105,167 @@ void ASarkoCharacter::HandleDeath(AActor* Killer)
 		BackpackComponent->ClearOnDeath();
 	}
 
+	// A corpse is not mid-loot. The channel's own per-tick CanInteract re-check
+	// would catch this a frame later anyway; clearing it here means there is no
+	// frame in which a dead pawn is still opening a crate.
+	LootChannelIndex = INDEX_NONE;
+	LocalChannelIndex = INDEX_NONE;
+
 	GetCharacterMovement()->StopMovementImmediately();
 	GetCharacterMovement()->DisableMovement();
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	MoveIntent = FVector2D::ZeroVector;
+}
+
+void ASarkoCharacter::RequestBeginLoot(int32 ContainerIndex)
+{
+	// Local copy first, so the progress bar starts moving this frame rather than
+	// after a round trip — the same reason a shot is drawn before the server
+	// confirms it (spec §10).
+	LocalChannelIndex = ContainerIndex;
+	LocalChannelStartSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+
+	if (HasAuthority())
+	{
+		ServerBeginLoot_Implementation(ContainerIndex);
+	}
+	else
+	{
+		ServerBeginLoot(ContainerIndex);
+	}
+}
+
+void ASarkoCharacter::RequestCancelLoot()
+{
+	LocalChannelIndex = INDEX_NONE;
+	if (HasAuthority())
+	{
+		ServerCancelLoot_Implementation();
+	}
+	else
+	{
+		ServerCancelLoot();
+	}
+}
+
+float ASarkoCharacter::GetLootChannelElapsed() const
+{
+	const int32 Index = HasAuthority() ? LootChannelIndex : LocalChannelIndex;
+	const float Start = HasAuthority() ? LootChannelStartSeconds : LocalChannelStartSeconds;
+	if (Index == INDEX_NONE || !GetWorld())
+	{
+		return 0.f;
+	}
+	return FMath::Max(0.f, GetWorld()->GetTimeSeconds() - Start);
+}
+
+void ASarkoCharacter::ServerBeginLoot_Implementation(int32 ContainerIndex)
+{
+	const ASarkoRaidGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ASarkoRaidGameMode>() : nullptr;
+	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
+	if (!GameMode || !RaidState)
+	{
+		return;
+	}
+
+	// Bounds check before the index is used for anything at all.
+	const TArray<FSarkoLootContainerSpot>& Spots = GameMode->CachedDefinition.Containers;
+	if (!Spots.IsValidIndex(ContainerIndex))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoCharacter: loot request for out-of-range container %d (have %d)"),
+			ContainerIndex, Spots.Num());
+		return;
+	}
+
+	const bool bAlive = HealthComponent && !HealthComponent->IsDead();
+	if (!SarkoLoot::CanInteract(GetActorLocation(), Spots[ContainerIndex].Location,
+			GetDefault<USarkoRaidSettings>()->InteractRadiusUU, bAlive, RaidState->IsContainerLooted(ContainerIndex)))
+	{
+		return;
+	}
+
+	LootChannelIndex = ContainerIndex;
+	LootChannelStartSeconds = GetWorld()->GetTimeSeconds();
+}
+
+void ASarkoCharacter::ServerCancelLoot_Implementation()
+{
+	LootChannelIndex = INDEX_NONE;
+}
+
+void ASarkoCharacter::TickLootChannel()
+{
+	if (LootChannelIndex == INDEX_NONE)
+	{
+		return;
+	}
+
+	ASarkoRaidGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ASarkoRaidGameMode>() : nullptr;
+	ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
+	if (!GameMode || !RaidState)
+	{
+		LootChannelIndex = INDEX_NONE;
+		return;
+	}
+
+	const TArray<FSarkoLootContainerSpot>& Spots = GameMode->CachedDefinition.Containers;
+	if (!Spots.IsValidIndex(LootChannelIndex))
+	{
+		LootChannelIndex = INDEX_NONE;
+		return;
+	}
+
+	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+	const bool bAlive = HealthComponent && !HealthComponent->IsDead();
+
+	// Re-checked every tick, not only at the start: walking away or dying
+	// mid-channel must cancel it, and both are things the server sees first.
+	if (!SarkoLoot::CanInteract(GetActorLocation(), Spots[LootChannelIndex].Location,
+			Settings.InteractRadiusUU, bAlive, RaidState->IsContainerLooted(LootChannelIndex)))
+	{
+		LootChannelIndex = INDEX_NONE;
+		return;
+	}
+
+	if (GetWorld()->GetTimeSeconds() - LootChannelStartSeconds < Settings.LootChannelSeconds)
+	{
+		return;
+	}
+
+	// Channel complete. Roll here and now — never ahead of time: pre-rolled
+	// contents replicate and can be read out of memory, which is a loot map
+	// (slice-1 spec §6.1).
+	const int32 Index = LootChannelIndex;
+	LootChannelIndex = INDEX_NONE;
+
+	const FSarkoLootTable* Table = SarkoLoot::GetLootTables().Find(Spots[Index].Tier);
+	if (!Table)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SarkoCharacter: container %d has tier '%s' with no loot table"),
+			Index, *Spots[Index].Tier.ToString());
+		RaidState->MarkContainerLooted(Index);
+		return;
+	}
+
+	FRandomStream Stream(SarkoLoot::ContainerSeed(RaidState->Seed, Index));
+	const TArray<FSarkoItemStack> Rolled = SarkoLoot::RollContainer(*Table, Stream);
+
+	int32 Taken = 0;
+	int32 LeftBehind = 0;
+	for (const FSarkoItemStack& Stack : Rolled)
+	{
+		const int32 Leftover = BackpackComponent ? BackpackComponent->AddItem(Stack.Item, Stack.Quantity) : Stack.Quantity;
+		Taken += Stack.Quantity - Leftover;
+		LeftBehind += Leftover;
+	}
+
+	// Marked looted either way. Spec §4.3 allows partial loot, and re-opening a
+	// container to fish out the remainder would re-run the roll and duplicate
+	// the part already taken — the same roll, credited twice.
+	RaidState->MarkContainerLooted(Index);
+
+	UE_LOG(LogTemp, Display, TEXT("SarkoCharacter: looted container %d (tier %s): took %d units, left %d behind"),
+		Index, *Spots[Index].Tier.ToString(), Taken, LeftBehind);
 }
 
 void ASarkoCharacter::SetMoveIntent(FVector2D Intent)
@@ -216,6 +378,13 @@ void ASarkoCharacter::Tick(float DeltaSeconds)
 	if (MoveScale > 0.f)
 	{
 		AddMovementInput(FVector(MoveIntent.X, MoveIntent.Y, 0.f), MoveScale);
+	}
+
+	// The loot channel is the server's, and only the server's: it is what decides
+	// whether the haul is real.
+	if (HasAuthority())
+	{
+		TickLootChannel();
 	}
 
 	// A corpse must not keep rotating to face its last aim direction.

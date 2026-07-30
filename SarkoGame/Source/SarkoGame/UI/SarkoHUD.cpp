@@ -6,6 +6,7 @@
 #include "Core/SarkoRaidSettings.h"
 #include "Engine/Canvas.h"
 #include "Loot/SarkoBackpack.h"
+#include "Loot/SarkoLootContainer.h"
 #include "Pawn/SarkoCharacter.h"
 
 void ASarkoHUD::DrawHUD()
@@ -30,6 +31,7 @@ void ASarkoHUD::DrawHUD()
 	DrawHealth();
 	DrawAmmo();
 	DrawBackpack();
+	DrawInteract();
 }
 
 void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, const FLinearColor& Colour)
@@ -193,4 +195,68 @@ void ASarkoHUD::DrawBackpack()
 	// rather than being discovered by counting.
 	const FLinearColor Colour = Used >= Limit ? FLinearColor(1.f, 0.6f, 0.1f, 1.f) : FLinearColor::White;
 	DrawText(Text, Colour, X, 24.f, GEngine->GetLargeFont(), 1.f);
+}
+
+void ASarkoHUD::DrawInteract()
+{
+	const ASarkoPlayerController* PC = Cast<ASarkoPlayerController>(PlayerOwner);
+	if (!PC)
+	{
+		return;
+	}
+
+	// The button is always drawn, so the player learns where it is before they
+	// need it; it dims when there is nothing in reach.
+	const FBox2D Rect = SarkoInput::InteractButtonRect(FVector2D(Canvas->SizeX, Canvas->SizeY));
+	const ASarkoLootContainer* Target = PC->GetInteractTarget();
+	const FLinearColor ButtonColour = Target
+		? FLinearColor(0.95f, 0.8f, 0.25f, 0.55f)
+		: FLinearColor(1.f, 1.f, 1.f, 0.15f);
+	DrawRect(ButtonColour, Rect.Min.X, Rect.Min.Y, Rect.GetSize().X, Rect.GetSize().Y);
+
+	float LabelWidth = 0.f;
+	float LabelHeight = 0.f;
+	GetTextSize(TEXT("E"), LabelWidth, LabelHeight, GEngine->GetLargeFont(), 1.f);
+	DrawText(TEXT("E"), FLinearColor::White,
+		Rect.GetCenter().X - LabelWidth * 0.5f, Rect.GetCenter().Y - LabelHeight * 0.5f,
+		GEngine->GetLargeFont(), 1.f);
+
+	if (!Target)
+	{
+		return;
+	}
+
+	// Prompt: top-centre, under the clock. Never a bottom corner (spec §9).
+	const FString Prompt = FString::Printf(TEXT("ОБШУКАТИ (%s)"), *Target->Tier.ToString());
+	float PromptWidth = 0.f;
+	float PromptHeight = 0.f;
+	GetTextSize(Prompt, PromptWidth, PromptHeight, GEngine->GetLargeFont(), 1.f);
+	const float PromptX = (Canvas->SizeX - PromptWidth) * 0.5f;
+	constexpr float PromptY = 76.f;
+	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f), PromptX - 10.f, PromptY - 4.f, PromptWidth + 20.f, PromptHeight + 8.f);
+	DrawText(Prompt, FLinearColor::White, PromptX, PromptY, GEngine->GetLargeFont(), 1.f);
+
+	if (!PC->IsInteractHeld())
+	{
+		return;
+	}
+
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	if (!Pawn)
+	{
+		return;
+	}
+
+	// Progress: local and cosmetic. The server owns whether the channel
+	// completes; this bar only has to stop the player wondering whether the
+	// hold is doing anything.
+	const float Duration = FMath::Max(0.01f, GetDefault<USarkoRaidSettings>()->LootChannelSeconds);
+	const float Fraction = FMath::Clamp(Pawn->GetLootChannelElapsed() / Duration, 0.f, 1.f);
+
+	constexpr float BarWidth = 260.f;
+	constexpr float BarHeight = 12.f;
+	const float BarX = (Canvas->SizeX - BarWidth) * 0.5f;
+	const float BarY = PromptY + PromptHeight + 10.f;
+	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.5f), BarX - 2.f, BarY - 2.f, BarWidth + 4.f, BarHeight + 4.f);
+	DrawRect(FLinearColor(0.95f, 0.8f, 0.25f, 0.9f), BarX, BarY, BarWidth * Fraction, BarHeight);
 }
