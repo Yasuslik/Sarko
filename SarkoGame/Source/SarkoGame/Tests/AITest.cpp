@@ -16,25 +16,75 @@ bool FSarkoAIStateTransitions::RunTest(const FString& Parameters)
 	// binary asset that cannot be written or tested here at all.
 	using namespace SarkoAI;
 
+	const float HysteresisRangeUU = 150.f;
+
 	TestEqual(TEXT("no target at all means patrol"),
-		static_cast<int32>(DecideState(ESarkoAIState::Idle, /*bHasTarget*/ false, 0.f, false, 2500.f, 1200.f)),
+		static_cast<int32>(DecideState(ESarkoAIState::Idle, /*bHasTarget*/ false, 0.f, false, 2500.f, 1200.f, HysteresisRangeUU)),
 		static_cast<int32>(ESarkoAIState::Patrol));
 
 	TestEqual(TEXT("a heard but unseen target is chased"),
-		static_cast<int32>(DecideState(ESarkoAIState::Patrol, true, 2000.f, /*bHasLineOfSight*/ false, 2500.f, 1200.f)),
+		static_cast<int32>(DecideState(ESarkoAIState::Patrol, true, 2000.f, /*bHasLineOfSight*/ false, 2500.f, 1200.f, HysteresisRangeUU)),
 		static_cast<int32>(ESarkoAIState::Chase));
 
 	TestEqual(TEXT("a visible target in range is shot at"),
-		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, 900.f, true, 2500.f, 1200.f)),
+		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, 900.f, true, 2500.f, 1200.f, HysteresisRangeUU)),
 		static_cast<int32>(ESarkoAIState::Shoot));
 
 	TestEqual(TEXT("a visible target beyond firing range is closed on"),
-		static_cast<int32>(DecideState(ESarkoAIState::Shoot, true, 2200.f, true, 2500.f, 1200.f)),
+		static_cast<int32>(DecideState(ESarkoAIState::Shoot, true, 2200.f, true, 2500.f, 1200.f, HysteresisRangeUU)),
 		static_cast<int32>(ESarkoAIState::Chase));
 
 	TestEqual(TEXT("a target outside hearing range is forgotten"),
-		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, 9000.f, false, 2500.f, 1200.f)),
+		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, 9000.f, false, 2500.f, 1200.f, HysteresisRangeUU)),
 		static_cast<int32>(ESarkoAIState::Patrol));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoAIStateHysteresis,
+	"Sarko.AI.StateHysteresis",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoAIStateHysteresis::RunTest(const FString& Parameters)
+{
+	// Current was previously read by nothing: at exactly the firing range the
+	// state would chatter Chase<->Shoot every tick as floating-point distance
+	// drifted by fractions of a uu around the boundary. These cases hold
+	// DistanceToTarget fixed and vary only Current, which is the one thing
+	// that proves the parameter is actually read — the old
+	// FSarkoAIStateTransitions test above passes four different Current
+	// values and would pass identically even if DecideState ignored it
+	// entirely (as it used to).
+	using namespace SarkoAI;
+
+	const float HearingRadius = 2500.f;
+	const float FiringRange = 1200.f;
+	const float HysteresisRangeUU = 150.f;
+
+	TestEqual(TEXT("already shooting exactly at the firing range stays in Shoot"),
+		static_cast<int32>(DecideState(ESarkoAIState::Shoot, true, FiringRange, true, HearingRadius, FiringRange, HysteresisRangeUU)),
+		static_cast<int32>(ESarkoAIState::Shoot));
+
+	TestEqual(TEXT("chasing at exactly the firing range enters Shoot"),
+		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, FiringRange, true, HearingRadius, FiringRange, HysteresisRangeUU)),
+		static_cast<int32>(ESarkoAIState::Shoot));
+
+	// The discriminating case: identical distance, inside the hysteresis
+	// band past FiringRange but past the plain entry threshold too. Only
+	// Current differs between these two assertions, and the outcome must
+	// differ with it, or the parameter is decorative.
+	const float DistanceInHysteresisBand = FiringRange + HysteresisRangeUU * 0.5f;
+	TestEqual(TEXT("already shooting, just past the firing range but inside the hysteresis band, stays in Shoot"),
+		static_cast<int32>(DecideState(ESarkoAIState::Shoot, true, DistanceInHysteresisBand, true, HearingRadius, FiringRange, HysteresisRangeUU)),
+		static_cast<int32>(ESarkoAIState::Shoot));
+	TestEqual(TEXT("chasing at that same distance stays in Chase instead of entering Shoot"),
+		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, DistanceInHysteresisBand, true, HearingRadius, FiringRange, HysteresisRangeUU)),
+		static_cast<int32>(ESarkoAIState::Chase));
+
+	TestEqual(TEXT("already shooting beyond the hysteresis band drops back to Chase"),
+		static_cast<int32>(DecideState(ESarkoAIState::Shoot, true, FiringRange + HysteresisRangeUU * 2.f, true, HearingRadius, FiringRange, HysteresisRangeUU)),
+		static_cast<int32>(ESarkoAIState::Chase));
+
 	return true;
 }
 

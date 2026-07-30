@@ -76,6 +76,16 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "AI")
 	float EnemyFireIntervalSeconds = 0.9f;
 
+	/**
+	 * Hysteresis band for the Shoot/Chase boundary: once shooting, the enemy
+	 * tolerates the target drifting up to this far past the firing range
+	 * before giving up and chasing again, instead of re-evaluating against
+	 * the bare firing range every tick and chattering between the two
+	 * states right at the boundary.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float AIShootHysteresisRangeUU = 150.f;
+
 	/** Chase/patrol speed. A separate knob from the player's WalkSpeed because
 	 * how fast the enemy closes distance is its own balance question. */
 	UPROPERTY(EditAnywhere, config, Category = "AI")

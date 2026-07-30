@@ -214,9 +214,14 @@ void USarkoWeaponComponent::StartReload()
 		return;
 	}
 
-	bReloading = true;
+	// bReloading must only latch once a timer actually exists to clear it
+	// again. Setting it first and checking the world second meant a call
+	// with no world left bReloading stuck true forever with nothing left to
+	// ever set it back — the weapon bricked permanently rather than merely
+	// failing to reload this one time.
 	if (UWorld* World = GetWorld())
 	{
+		bReloading = true;
 		World->GetTimerManager().SetTimer(ReloadTimer, this, &USarkoWeaponComponent::FinishReload,
 			GetDefault<USarkoRaidSettings>()->ReloadSeconds, false);
 	}

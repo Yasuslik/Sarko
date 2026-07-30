@@ -21,13 +21,23 @@ namespace SarkoAI
 	 * A C++ state machine rather than a Behavior Tree because BTs, Blackboards
 	 * and StateTrees are all binary assets — unwritable and untestable here.
 	 */
+	/**
+	 * ShootHysteresisRangeUU widens the "stay in Shoot" range past
+	 * FiringRange only while Current is already Shoot, and does not affect
+	 * the range required to *enter* Shoot from another state. Without this,
+	 * a pawn hovering at exactly FiringRange (a common resting distance,
+	 * since Chase closes distance until it crosses the threshold) would
+	 * chatter Chase<->Shoot every tick as floating-point distance drifted by
+	 * fractions of a uu around the boundary.
+	 */
 	ESarkoAIState DecideState(
 		ESarkoAIState Current,
 		bool bHasTarget,
 		float DistanceToTarget,
 		bool bHasLineOfSight,
 		float HearingRadius,
-		float FiringRange);
+		float FiringRange,
+		float ShootHysteresisRangeUU);
 
 	/**
 	 * Pure steering decision: there is no navmesh in this project, so the

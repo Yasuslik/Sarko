@@ -17,7 +17,8 @@ ESarkoAIState SarkoAI::DecideState(
 	float DistanceToTarget,
 	bool bHasLineOfSight,
 	float HearingRadius,
-	float FiringRange)
+	float FiringRange,
+	float ShootHysteresisRangeUU)
 {
 	// Nothing to react to: wander.
 	if (!bHasTarget || DistanceToTarget > HearingRadius)
@@ -25,8 +26,16 @@ ESarkoAIState SarkoAI::DecideState(
 		return ESarkoAIState::Patrol;
 	}
 
-	// Seen and close enough to hit: shoot. Otherwise close the distance.
-	if (bHasLineOfSight && DistanceToTarget <= FiringRange)
+	// Seen and close enough to hit: shoot. Already shooting tolerates
+	// drifting up to ShootHysteresisRangeUU past FiringRange before giving
+	// it up — the hysteresis band that stops the state chattering
+	// Chase<->Shoot every tick right at the boundary. Entering Shoot from
+	// any other state still requires the plain FiringRange, unwidened.
+	const float EffectiveFiringRange = (Current == ESarkoAIState::Shoot)
+		? FiringRange + ShootHysteresisRangeUU
+		: FiringRange;
+
+	if (bHasLineOfSight && DistanceToTarget <= EffectiveFiringRange)
 	{
 		return ESarkoAIState::Shoot;
 	}
@@ -228,7 +237,7 @@ void ASarkoAIController::Tick(float DeltaSeconds)
 	const bool bLineOfSight = Target ? LineOfSightTo(Target) : false;
 
 	State = SarkoAI::DecideState(State, Target != nullptr, Distance, bLineOfSight,
-		Settings.EnemyHearingRadiusUU, Settings.WeaponRangeUU * 0.5f);
+		Settings.EnemyHearingRadiusUU, Settings.WeaponRangeUU * 0.5f, Settings.AIShootHysteresisRangeUU);
 
 	DebugLogAccum += DeltaSeconds;
 	const bool bLogThisTick = Settings.bLogAIDiagnostics && DebugLogAccum > 1.f;
