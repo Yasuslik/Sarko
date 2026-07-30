@@ -64,6 +64,19 @@ public:
 	const FSarkoTouchStick& GetMoveStick() const { return MoveStick; }
 	const FSarkoTouchStick& GetAimStick() const { return AimStick; }
 
+	/**
+	 * TEMPORARY manual-verification aid for the rc-task-6 fix wave: a
+	 * headless -game run has no touch input, so there is no other way to
+	 * make the player pawn actually fire during that run. Fires the
+	 * possessed pawn's weapon repeatedly (well past a full magazine) and
+	 * logs ammo/reloading state before and after, so the log proves the
+	 * player's weapon starts reloading on its own instead of going
+	 * permanently dead. Not part of any of the six review items — remove
+	 * once that manual pass is done.
+	 */
+	UFUNCTION(Exec)
+	void CheatEmptyMagazine();
+
 private:
 	void UpdateSticks();
 

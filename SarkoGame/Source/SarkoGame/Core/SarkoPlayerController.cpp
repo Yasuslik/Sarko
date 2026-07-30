@@ -1,5 +1,6 @@
 #include "Core/SarkoPlayerController.h"
 
+#include "Combat/SarkoWeapon.h"
 #include "Pawn/SarkoCharacter.h"
 
 bool SarkoInput::IsLeftHalf(FVector2D ScreenPosition, FVector2D ViewportSize)
@@ -52,6 +53,32 @@ void ASarkoPlayerController::PlayerTick(float DeltaTime)
 	{
 		Pawn->RequestFire();
 	}
+}
+
+void ASarkoPlayerController::CheatEmptyMagazine()
+{
+	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	if (!Pawn || !Pawn->WeaponComponent)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("CheatEmptyMagazine: no possessed ASarkoCharacter to fire"));
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("CheatEmptyMagazine: before ammo=%d reloading=%d"),
+		Pawn->WeaponComponent->GetAmmoInMagazine(), Pawn->WeaponComponent->IsReloading());
+
+	// Deliberately more than a full magazine: the tail calls land after ammo
+	// hits zero and must be absorbed by the CanFire() gate (auto-starting a
+	// reload, never auto-firing) instead of crashing or silently firing.
+	for (int32 Shot = 0; Shot < 35; ++Shot)
+	{
+		Pawn->RequestFire();
+		UE_LOG(LogTemp, Log, TEXT("CheatEmptyMagazine: shot=%d ammo=%d reloading=%d"),
+			Shot, Pawn->WeaponComponent->GetAmmoInMagazine(), Pawn->WeaponComponent->IsReloading());
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("CheatEmptyMagazine: after ammo=%d reloading=%d"),
+		Pawn->WeaponComponent->GetAmmoInMagazine(), Pawn->WeaponComponent->IsReloading());
 }
 
 void ASarkoPlayerController::UpdateSticks()
