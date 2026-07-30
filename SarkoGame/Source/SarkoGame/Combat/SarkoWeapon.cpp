@@ -154,6 +154,14 @@ void USarkoWeaponComponent::ServerFire(FVector Origin, FVector Direction)
 	}
 
 	// Collect plausible targets, then let the pure helper decide the nudge.
+	// Restricted to foes: without this, candidates are every living pawn but
+	// the shooter, so with eight enemies a shot at the player can be nudged
+	// onto a nearer enemy instead — enemies quietly killing each other over
+	// an 8-minute raid is a playtest confound with nothing to do with
+	// controllability.
+	const USarkoHealthComponent* OwnerHealth = Owner->FindComponentByClass<USarkoHealthComponent>();
+	const ESarkoTeam OwnerTeam = OwnerHealth ? OwnerHealth->GetTeam() : ESarkoTeam::Player;
+
 	TArray<FVector> Candidates;
 	for (TActorIterator<APawn> It(World); It; ++It)
 	{
@@ -164,7 +172,7 @@ void USarkoWeaponComponent::ServerFire(FVector Origin, FVector Direction)
 		}
 		if (const USarkoHealthComponent* Health = Other->FindComponentByClass<USarkoHealthComponent>())
 		{
-			if (!Health->IsDead())
+			if (!Health->IsDead() && SarkoCombat::IsFoe(OwnerTeam, Health->GetTeam()))
 			{
 				Candidates.Add(Other->GetActorLocation());
 			}

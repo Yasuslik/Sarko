@@ -40,6 +40,25 @@ bool FSarkoHealthDamageAndDeath::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoFriendFoeDistinction,
+	"Sarko.Combat.FriendFoeDistinction",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoFriendFoeDistinction::RunTest(const FString& Parameters)
+{
+	// The simplest thing that works for a slice with exactly two sides: a
+	// candidate on the shooter's own team is never a foe, one on the other
+	// team always is.
+	using namespace SarkoCombat;
+
+	TestFalse(TEXT("an enemy is not a foe to another enemy"), IsFoe(ESarkoTeam::Enemy, ESarkoTeam::Enemy));
+	TestFalse(TEXT("the player is not a foe to themselves"), IsFoe(ESarkoTeam::Player, ESarkoTeam::Player));
+	TestTrue(TEXT("an enemy is a foe to the player"), IsFoe(ESarkoTeam::Enemy, ESarkoTeam::Player));
+	TestTrue(TEXT("the player is a foe to an enemy"), IsFoe(ESarkoTeam::Player, ESarkoTeam::Enemy));
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS
 
 #include "Combat/SarkoWeapon.h"

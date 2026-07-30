@@ -2,6 +2,11 @@
 
 #include "Net/UnrealNetwork.h"
 
+bool SarkoCombat::IsFoe(ESarkoTeam OwnerTeam, ESarkoTeam CandidateTeam)
+{
+	return OwnerTeam != CandidateTeam;
+}
+
 USarkoHealthComponent::USarkoHealthComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;

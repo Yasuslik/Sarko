@@ -13,6 +13,7 @@ ASarkoEnemyCharacter::ASarkoEnemyCharacter()
 	AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
 
 	HealthComponent = CreateDefaultSubobject<USarkoHealthComponent>(TEXT("Health"));
+	HealthComponent->SetTeam(ESarkoTeam::Enemy);
 	WeaponComponent = CreateDefaultSubobject<USarkoWeaponComponent>(TEXT("Weapon"));
 
 	GetCharacterMovement()->bOrientRotationToMovement = true;
