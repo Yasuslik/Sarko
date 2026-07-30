@@ -28,3 +28,111 @@ bool FSarkoOverviewHeightFitsSector::RunTest(const FString& Parameters)
 }
 
 #endif // WITH_AUTOMATION_TESTS
+
+#include "Map/SarkoMapDefinition.h"
+
+#if WITH_AUTOMATION_TESTS
+
+namespace
+{
+	const FString MinimalMapJson = TEXT(R"({
+		"id": "test",
+		"extentUU": 20000,
+		"raidDurationSeconds": 900,
+		"blocks": [ { "kind": "wall", "pos": [-4200, 1800, 0], "yaw": 90, "extent": [800, 120, 200] } ],
+		"props": [ { "kind": "car_wreck", "pos": [1200, -300, 0], "yaw": 35 } ],
+		"containers": [ { "pos": [1250, -280, 0], "tier": "military" } ],
+		"playerSpawns": [ { "pos": [-16000, 17000, 100], "yaw": 135 } ],
+		"botSpawns": [ { "pos": [8000, -12000, 100], "zone": "deep" } ],
+		"extractions": [ { "pos": [-14000, 19000, 0], "radiusUU": 400, "name": "North path" } ]
+	})");
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoMapDefinitionParses,
+	"Sarko.Map.DefinitionParses",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoMapDefinitionParses::RunTest(const FString& Parameters)
+{
+	FSarkoMapDefinition Definition;
+	FString Error;
+	TestTrue(TEXT("a well-formed map parses"), SarkoMap::ParseDefinition(MinimalMapJson, Definition, Error));
+	TestEqual(TEXT("no error on success"), Error, FString());
+
+	TestEqual(TEXT("id survives"), Definition.Id, FString(TEXT("test")));
+	TestEqual(TEXT("extent survives"), Definition.ExtentUU, 20000.f);
+	TestEqual(TEXT("raid duration survives"), Definition.RaidDurationSeconds, 900.f);
+	TestEqual(TEXT("one block"), Definition.Blocks.Num(), 1);
+	TestEqual(TEXT("one prop"), Definition.Props.Num(), 1);
+	TestEqual(TEXT("one container"), Definition.Containers.Num(), 1);
+	TestEqual(TEXT("one player spawn"), Definition.PlayerSpawns.Num(), 1);
+	TestEqual(TEXT("one bot spawn"), Definition.BotSpawns.Num(), 1);
+	TestEqual(TEXT("one extraction"), Definition.Extractions.Num(), 1);
+
+	// The block's numbers must land in the right fields, not merely be present.
+	TestTrue(TEXT("block position is read in order x,y,z"),
+		Definition.Blocks[0].Location.Equals(FVector(-4200.f, 1800.f, 0.f), 0.01f));
+	TestEqual(TEXT("block yaw is read"), Definition.Blocks[0].Rotation.Yaw, 90.0);
+	TestTrue(TEXT("block extent is read"),
+		Definition.Blocks[0].Extent.Equals(FVector(800.f, 120.f, 200.f), 0.01f));
+	TestEqual(TEXT("extraction name is read"), Definition.Extractions[0].Name, FString(TEXT("North path")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoMapDefinitionRejectsBadInput,
+	"Sarko.Map.DefinitionRejectsBadInput",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoMapDefinitionRejectsBadInput::RunTest(const FString& Parameters)
+{
+	// A map file is hand-edited, so it will be broken sooner or later. Every
+	// rejection must name the problem: a silent empty map is the worst outcome,
+	// because the game launches and simply has nothing in it.
+	const TArray<TPair<FString, FString>> BadCases = {
+		{ TEXT("not json at all"),        TEXT("{{{") },
+		{ TEXT("missing id"),             TEXT(R"({"extentUU":20000,"raidDurationSeconds":900})") },
+		{ TEXT("missing extent"),         TEXT(R"({"id":"x","raidDurationSeconds":900})") },
+		{ TEXT("negative extent"),        TEXT(R"({"id":"x","extentUU":-5,"raidDurationSeconds":900})") },
+		{ TEXT("no player spawn"),        TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[]})") },
+		{ TEXT("position not a triple"),  TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[1,2],"yaw":0}]})") },
+	};
+
+	for (const TPair<FString, FString>& Case : BadCases)
+	{
+		FSarkoMapDefinition Definition;
+		FString Error;
+		const bool bParsed = SarkoMap::ParseDefinition(Case.Value, Definition, Error);
+		TestFalse(FString::Printf(TEXT("rejected: %s"), *Case.Key), bParsed);
+		TestFalse(FString::Printf(TEXT("error message is not empty: %s"), *Case.Key), Error.IsEmpty());
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoDefinitionConvertsToLayout,
+	"Sarko.Map.DefinitionConvertsToLayout",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoDefinitionConvertsToLayout::RunTest(const FString& Parameters)
+{
+	FSarkoMapDefinition Definition;
+	FString Error;
+	if (!SarkoMap::ParseDefinition(MinimalMapJson, Definition, Error))
+	{
+		AddError(FString::Printf(TEXT("fixture failed to parse: %s"), *Error));
+		return false;
+	}
+
+	// The whole point of the seam: the existing in-memory type is unchanged, so
+	// everything downstream of it keeps working untouched.
+	const FSarkoMapLayout Layout = SarkoMap::ToLayout(Definition);
+	TestEqual(TEXT("extent carries over"), Layout.Extent, Definition.ExtentUU);
+	TestEqual(TEXT("cover carries over"), Layout.Cover.Num(), Definition.Blocks.Num());
+	TestEqual(TEXT("player starts carry over"), Layout.PlayerStarts.Num(), Definition.PlayerSpawns.Num());
+	TestEqual(TEXT("bot spawns carry over"), Layout.EnemySpawns.Num(), Definition.BotSpawns.Num());
+	return true;
+}
+
+#endif // WITH_AUTOMATION_TESTS
