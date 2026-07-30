@@ -29,7 +29,7 @@ func seedPlayer(t *testing.T, s *store.Store, device string, stash []domain.Item
 func startParams(playerID string, loadout []domain.ItemStack) store.StartRaidParams {
 	return store.StartRaidParams{
 		PlayerID:   playerID,
-		MapID:      "forest",
+		MapID:      "bridge",
 		Loadout:    loadout,
 		PendingTTL: time.Minute,
 	}

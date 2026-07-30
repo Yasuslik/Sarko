@@ -38,7 +38,7 @@ Base URL: `https://sarko-api-production.up.railway.app`. Field names are exactly
 |---|---|---|
 | `POST /v1/auth/anonymous` (no auth) | `{"device_id":"<≤128 chars>"}` | `{"player_id":"<uuid>","token":"<jwt>"}` |
 | `GET /v1/profile` (Bearer) | — | `{"player_id","schema_version","stash":[{"item_id","quantity"}],"vehicle_tier","unlocked_maps":[...]}` |
-| `POST /v1/raid/start` (Bearer) | `{"map_id":"forest","loadout":[{"item_id","quantity"}]}` | `{"session_id","session_token","seed","expires_at"}` |
+| `POST /v1/raid/start` (Bearer) | `{"map_id":"bridge","loadout":[{"item_id","quantity"}]}` | `{"session_id","session_token","seed","expires_at"}` |
 | `POST /v1/raid/confirm` (Bearer) | `{"session_id","session_token"}` | `{"expires_at":"<RFC3339>"}` |
 | `POST /v1/raid/result` (Bearer) | `{"session_id","session_token","outcome":"extracted"\|"died","items":[{"item_id","quantity"}]}` | `{"session_id","outcome","credited_items":[...],"already_closed":bool}` |
 
@@ -46,7 +46,7 @@ Errors are always `{"error":{"code":"<snake_case>","message":"..."}}`. Codes thi
 
 ### Three real conflicts between the spec and the deployed code — flagged, not silently resolved
 
-1. **`map_id: "bridge"` is rejected with 403 `map_locked`.** `internal/domain/garage.go` maps tier `none` → `forest` only; the tier ladder is `forest, swamp, mountains, industrial, airbase`. There is no `bridge`. Verified live: `{"error":{"code":"map_locked",...}}`. **This plan does not rename anything in the backend.** It adds `USarkoRaidSettings::BackendMapId` (default `forest`) as the id sent over the wire, keeping `MapId=bridge` as the local data-file name, and a test that asserts `BackendMapId` is one of the tier-`none` unlocked maps. If the owner wants the wire id to read `bridge`, that is a one-line change to `mapsByTier[TierNone]` plus its two store tests — **ask, do not assume**.
+1. **RESOLVED 2026-07-31 (owner decision):** the backend's tier-`none` map was renamed `forest` → `bridge` in `internal/domain/garage.go` (commit `80a5a4d`); the ladder above it is unchanged. The wire id and the local data-file name are now both `bridge`, so `BackendMapId` keeps its indirection only as configuration hygiene and defaults to `bridge`. Every `forest` literal that remained in Tasks 7–9 below has been updated to `bridge` accordingly.
 2. **`RAID_TTL=12m` on the deployed service vs `raidDurationSeconds: 900` (15 min) in `bridge.json`.** `sarko-api/README.md` states the rule: the client timer must be **strictly shorter** than `RAID_TTL`, and `GRACE_BUFFER` is not play time. Confirm returns `expires_at = now + RAID_TTL + GRACE_BUFFER` = 14 min. Task 8 therefore clamps the raid clock to `min(map duration, (expires_at − now) − BackendGraceMarginSeconds)` = 12 min, and logs the clamp loudly. **To actually play 15 minutes, `RAID_TTL` must be raised to ≥ 16m on Railway.** That is an infra change and is out of this plan's scope — flag it in the task-9 report.
 3. **`seed` overflows `int32`.** `StartRaid` does `int64(rand.Uint32())`, so seeds up to 4 294 967 295 arrive (the live probe returned `3402905197`). `ASarkoRaidGameMode::Seed` and `ASarkoRaidGameState::Seed` are `int32`. Task 7 adds `SarkoBackend::SeedToInt32` doing the bit-preserving `uint32` reinterpretation, with a test pinning that exact live value. A naïve assignment or `FCString::Atoi` is silent, platform-dependent corruption.
 
@@ -916,7 +916,7 @@ func TestGrantStarterKitDoesNotComeBackAfterTheKitIsSpent(t *testing.T) {
 	// launch — which is why the flag lives on the player row, not on the item.
 	started, err := s.StartRaid(ctx, store.StartRaidParams{
 		PlayerID:   playerID,
-		MapID:      "forest",
+		MapID:      "bridge",
 		Loadout:    []domain.ItemStack{{ItemID: "pistol", Quantity: 1}},
 		PendingTTL: time.Minute,
 	})
@@ -1132,7 +1132,7 @@ func TestRaidResultRejectsAnInventedItem(t *testing.T) {
 
 	var started store.StartedRaid
 	if code := c.do(http.MethodPost, "/v1/raid/start",
-		map[string]any{"map_id": "forest", "loadout": []any{}}, &started); code != http.StatusOK {
+		map[string]any{"map_id": "bridge", "loadout": []any{}}, &started); code != http.StatusOK {
 		t.Fatalf("raid/start status = %d, want 200", code)
 	}
 	c.confirm(started)
@@ -4169,9 +4169,9 @@ bool FSarkoBackendBodiesMatchTheContract::RunTest(const FString& Parameters)
 	TArray<FSarkoItemStack> Loadout;
 	Loadout.Add(FSarkoItemStack{ TEXT("pistol"), 1 });
 	Loadout.Add(FSarkoItemStack{ TEXT("ammo_9mm"), 60 });
-	const FString Start = SarkoBackend::MakeRaidStartBody(TEXT("forest"), Loadout);
+	const FString Start = SarkoBackend::MakeRaidStartBody(TEXT("bridge"), Loadout);
 	TestTrue(TEXT("start body carries map_id"), Start.Contains(TEXT("\"map_id\"")));
-	TestTrue(TEXT("start body carries the map"), Start.Contains(TEXT("forest")));
+	TestTrue(TEXT("start body carries the map"), Start.Contains(TEXT("bridge")));
 	TestTrue(TEXT("start body carries loadout"), Start.Contains(TEXT("\"loadout\"")));
 	TestTrue(TEXT("stacks use item_id, not id or item"), Start.Contains(TEXT("\"item_id\"")));
 	TestTrue(TEXT("stacks use quantity, not qty or count"), Start.Contains(TEXT("\"quantity\"")));
@@ -4179,7 +4179,7 @@ bool FSarkoBackendBodiesMatchTheContract::RunTest(const FString& Parameters)
 
 	// An empty loadout is legal (domain.ValidateStacks allows it) and must still
 	// produce an array, not a null.
-	const FString EmptyStart = SarkoBackend::MakeRaidStartBody(TEXT("forest"), TArray<FSarkoItemStack>());
+	const FString EmptyStart = SarkoBackend::MakeRaidStartBody(TEXT("bridge"), TArray<FSarkoItemStack>());
 	TestTrue(TEXT("an empty loadout is an empty array"), EmptyStart.Contains(TEXT("\"loadout\":[]")));
 
 	const FString Session = SarkoBackend::MakeSessionBody(TEXT("sid"), TEXT("stok"));
@@ -4288,10 +4288,10 @@ bool FSarkoBackendSettingsAreShippable::RunTest(const FString& Parameters)
 	TestFalse(TEXT("the base url has no trailing slash"), Settings.BackendBaseUrl.EndsWith(TEXT("/")));
 
 	// The wire map id must be a map the backend actually unlocks at vehicle tier
-	// `none`. sarko-api/internal/domain/garage.go maps TierNone to "forest" and
+	// `none`. sarko-api/internal/domain/garage.go maps TierNone to "bridge" and
 	// knows nothing called "bridge", which /v1/raid/start answers with 403
 	// map_locked — verified live on 2026-07-30. See the plan's conflict note.
-	TestEqual(TEXT("the wire map id is the tier-none map"), Settings.BackendMapId, FString(TEXT("forest")));
+	TestEqual(TEXT("the wire map id is the tier-none map"), Settings.BackendMapId, FString(TEXT("bridge")));
 	TestEqual(TEXT("the local data file is still bridge"), Settings.MapId, FName(TEXT("bridge")));
 
 	// The grace margin exists so the client's clock ends before the server's
@@ -4896,13 +4896,13 @@ In `Core/SarkoRaidSettings.h`, a new `Backend` category:
 	 * The map id sent to /v1/raid/start, which is NOT the local data file name.
 	 *
 	 * sarko-api unlocks maps by vehicle tier (internal/domain/garage.go), and
-	 * tier `none` unlocks exactly "forest". It has never heard of "bridge", and
+	 * tier `none` unlocks exactly "bridge" (renamed from "forest" in 80a5a4d), and
 	 * sending that gets 403 map_locked — verified against the deployed service.
 	 * The Bridge sector is what tier-none players actually play, so it goes over
 	 * the wire as the tier-none map until the backend's ladder is renamed.
 	 */
 	UPROPERTY(EditAnywhere, config, Category = "Backend")
-	FString BackendMapId = TEXT("forest");
+	FString BackendMapId = TEXT("bridge");
 
 	/**
 	 * How far short of the server's deadline the in-raid clock stops.
@@ -4927,7 +4927,7 @@ and in `Config/DefaultGame.ini`:
 ```ini
 bBackendEnabled=True
 BackendBaseUrl=https://sarko-api-production.up.railway.app
-BackendMapId=forest
+BackendMapId=bridge
 BackendGraceMarginSeconds=120.000000
 BackendTimeoutSeconds=10.000000
 ```
@@ -5594,7 +5594,7 @@ echo "$JWT" > /tmp/sarko-e2e-jwt.txt
 curl -fsS $API/v1/profile -H "Authorization: Bearer $JWT"; echo
 ```
 
-Expected profile: `"stash":[{"item_id":"ammo_9mm","quantity":60},{"item_id":"medkit","quantity":1},{"item_id":"pistol","quantity":1}]` (sorted by `item_id`), `"vehicle_tier":"none"`, `"unlocked_maps":["forest"]`.
+Expected profile: `"stash":[{"item_id":"ammo_9mm","quantity":60},{"item_id":"medkit","quantity":1},{"item_id":"pistol","quantity":1}]` (sorted by `item_id`), `"vehicle_tier":"none"`, `"unlocked_maps":["bridge"]`.
 
 Also confirm the gate rejects an invented item, using a throwaway session:
 
@@ -5602,7 +5602,7 @@ Also confirm the gate rejects an invented item, using a throwaway session:
 API=https://sarko-api-production.up.railway.app
 JWT=$(cat /tmp/sarko-e2e-jwt.txt)
 S=$(curl -fsS -X POST $API/v1/raid/start -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' \
-  -d '{"map_id":"forest","loadout":[]}')
+  -d '{"map_id":"bridge","loadout":[]}')
 SID=$(python3 -c "import sys,json;print(json.load(sys.stdin)['session_id'])" <<<"$S")
 STOK=$(python3 -c "import sys,json;print(json.load(sys.stdin)['session_token'])" <<<"$S")
 curl -fsS -X POST $API/v1/raid/confirm -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' \
@@ -5709,7 +5709,7 @@ The report must contain:
 2. The before/after stash diff, verbatim.
 3. The `credited_items` log line from the windowed run.
 4. **The `RAID_TTL` finding:** with `RAID_TTL=12m` the clock clamps to 12 minutes against a 15-minute map, and the warning log line that says so. Raising `RAID_TTL` to `16m` on Railway is a one-variable change and is the owner's call.
-5. **The `map_id` finding:** the raid is recorded against `forest`, not `bridge`, because the backend's tier ladder has no `bridge`. Every `raid_sessions.map_id` row for this sector will read `forest` until that is decided.
+5. **The `map_id` finding:** resolved — the backend tier ladder now starts at `bridge` (80a5a4d), so `raid_sessions.map_id` records `bridge` for this sector.
 6. Anything that needed changing in the plan, and why.
 
 ---

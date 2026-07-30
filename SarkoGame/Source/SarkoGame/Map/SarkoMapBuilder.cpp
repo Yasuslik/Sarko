@@ -6,6 +6,8 @@
 #include "Engine/DirectionalLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
+#include "Loot/SarkoExtractionZone.h"
+#include "Loot/SarkoLootContainer.h"
 #include "Map/SarkoMapDefinition.h"
 #include "Map/SarkoMapKinds.h"
 #include "UObject/ConstructorHelpers.h"
@@ -153,17 +155,57 @@ void SarkoMap::SpawnProps(UWorld& World, const FSarkoMapDefinition& Definition)
 		SpawnMeshBox(World, Mesh, Prop.Location, FRotator(0.f, Prop.Yaw, 0.f), Kind.Extent, Kind.bBlocksMovement);
 	}
 
-	// Container markers: the loot mechanic lands in a later plan, but the
-	// positions must be visible now so the layout can be judged.
-	UStaticMesh* CrateMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
-	if (CrateMesh)
+	UE_LOG(LogTemp, Display, TEXT("SarkoMap: spawned %d props, skipped %d"),
+		Definition.Props.Num() - Skipped, Skipped);
+}
+
+void SarkoMap::SpawnLootContainers(UWorld& World, const FSarkoMapDefinition& Definition)
+{
+	for (int32 Index = 0; Index < Definition.Containers.Num(); ++Index)
 	{
-		for (const FSarkoLootContainerSpot& Spot : Definition.Containers)
+		const FSarkoLootContainerSpot& Spot = Definition.Containers[Index];
+
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		ASarkoLootContainer* Container = World.SpawnActor<ASarkoLootContainer>(
+			ASarkoLootContainer::StaticClass(), Spot.Location, FRotator::ZeroRotator, Params);
+		if (!Container)
 		{
-			SpawnMeshBox(World, CrateMesh, Spot.Location, FRotator::ZeroRotator, FVector(45.f, 45.f, 35.f), true);
+			UE_LOG(LogTemp, Error, TEXT("SarkoMap: failed to spawn container %d at %s"), Index, *Spot.Location.ToString());
+			continue;
 		}
+		// Set before BeginPlay would have been nicer, but SpawnActor runs it;
+		// RefreshVisualState is called again from the game state's OnRep, so a
+		// container that learns its index a moment late still ends up correct.
+		Container->SetupFromSpot(Index, Spot.Tier);
+		Container->RefreshVisualState();
 	}
 
-	UE_LOG(LogTemp, Display, TEXT("SarkoMap: spawned %d props and %d containers, skipped %d"),
-		Definition.Props.Num() - Skipped, Definition.Containers.Num(), Skipped);
+	UE_LOG(LogTemp, Display, TEXT("SarkoMap: spawned %d loot containers"), Definition.Containers.Num());
+}
+
+void SarkoMap::SpawnExtractionZones(UWorld& World, const FSarkoMapDefinition& Definition)
+{
+	for (int32 Index = 0; Index < Definition.Extractions.Num(); ++Index)
+	{
+		const FSarkoExtractionSpot& Spot = Definition.Extractions[Index];
+		const FTransform SpawnTransform(FRotator::ZeroRotator, Spot.Location);
+
+		// Deferred, unlike SpawnLootContainers: the pad's mesh is scaled to the
+		// zone's radius in BeginPlay, so the radius has to be set *before*
+		// BeginPlay runs or every pad comes out the class-default size.
+		ASarkoExtractionZone* Zone = World.SpawnActorDeferred<ASarkoExtractionZone>(
+			ASarkoExtractionZone::StaticClass(), SpawnTransform, /*Owner*/ nullptr, /*Instigator*/ nullptr,
+			ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+		if (!Zone)
+		{
+			UE_LOG(LogTemp, Error, TEXT("SarkoMap: failed to spawn extraction zone %d"), Index);
+			continue;
+		}
+		Zone->SetupFromSpot(Index, Spot.Name, Spot.RadiusUU);
+		Zone->FinishSpawning(SpawnTransform);
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("SarkoMap: spawned %d extraction zones"), Definition.Extractions.Num());
 }

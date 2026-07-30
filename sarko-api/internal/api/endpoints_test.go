@@ -11,6 +11,7 @@ import (
 
 	"github.com/Yasuslik/sarko-api/internal/api"
 	"github.com/Yasuslik/sarko-api/internal/auth"
+	"github.com/Yasuslik/sarko-api/internal/domain"
 	"github.com/Yasuslik/sarko-api/internal/store"
 	"github.com/Yasuslik/sarko-api/internal/testutil"
 )
@@ -19,6 +20,22 @@ type client struct {
 	t     *testing.T
 	base  string
 	token string
+}
+
+// loot strips the starter kit that /v1/auth/anonymous grants every new device,
+// so a test asserting what a raid credited sees only what the raid credited.
+func loot(stash []domain.ItemStack) []domain.ItemStack {
+	kit := make(map[string]struct{}, len(domain.StarterKit()))
+	for _, s := range domain.StarterKit() {
+		kit[s.ItemID] = struct{}{}
+	}
+	out := make([]domain.ItemStack, 0, len(stash))
+	for _, s := range stash {
+		if _, isKit := kit[s.ItemID]; !isKit {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func newTestServer(t *testing.T) *client {
@@ -123,7 +140,7 @@ func TestFullRaidCycleOverHTTP(t *testing.T) {
 
 	var started store.StartedRaid
 	code := c.do(http.MethodPost, "/v1/raid/start",
-		map[string]any{"map_id": "forest", "loadout": []any{}}, &started)
+		map[string]any{"map_id": "bridge", "loadout": []any{}}, &started)
 	if code != http.StatusOK {
 		t.Fatalf("raid/start status = %d, want 200", code)
 	}
@@ -144,8 +161,8 @@ func TestFullRaidCycleOverHTTP(t *testing.T) {
 	if code := c.do(http.MethodGet, "/v1/profile", nil, &profile); code != http.StatusOK {
 		t.Fatalf("profile status = %d, want 200", code)
 	}
-	if len(profile.Stash) != 1 || profile.Stash[0].ItemID != "chain" {
-		t.Errorf("stash = %v, want one chain", profile.Stash)
+	if got := loot(profile.Stash); len(got) != 1 || got[0].ItemID != "chain" {
+		t.Errorf("stash = %v, want one chain", got)
 	}
 }
 
@@ -160,7 +177,7 @@ func TestConfirmReturnsDeadlineIncludingGraceBuffer(t *testing.T) {
 
 	var started store.StartedRaid
 	if code := c.do(http.MethodPost, "/v1/raid/start",
-		map[string]any{"map_id": "forest", "loadout": []any{}}, &started); code != http.StatusOK {
+		map[string]any{"map_id": "bridge", "loadout": []any{}}, &started); code != http.StatusOK {
 		t.Fatalf("raid/start status = %d, want 200", code)
 	}
 
@@ -187,7 +204,7 @@ func TestProtectedEndpointsRequireAuth(t *testing.T) {
 		body   any
 	}{
 		{http.MethodGet, "/v1/profile", nil},
-		{http.MethodPost, "/v1/raid/start", map[string]any{"map_id": "forest"}},
+		{http.MethodPost, "/v1/raid/start", map[string]any{"map_id": "bridge"}},
 		{http.MethodPost, "/v1/raid/confirm", map[string]string{
 			"session_id":    "dummy",
 			"session_token": "dummy",
@@ -342,7 +359,7 @@ func TestAnotherPlayersSessionIsRefusedOverHTTP(t *testing.T) {
 	c.login("device-owner")
 	var started store.StartedRaid
 	if code := c.do(http.MethodPost, "/v1/raid/start",
-		map[string]any{"map_id": "forest", "loadout": []any{}}, &started); code != http.StatusOK {
+		map[string]any{"map_id": "bridge", "loadout": []any{}}, &started); code != http.StatusOK {
 		t.Fatalf("raid/start status = %d, want 200", code)
 	}
 
@@ -360,18 +377,21 @@ func TestAnotherPlayersSessionIsRefusedOverHTTP(t *testing.T) {
 		"session_id":    started.SessionID,
 		"session_token": started.SessionToken,
 		"outcome":       "extracted",
-		"items":         []map[string]any{{"item_id": "turbine", "quantity": 5}},
+		// A *plausible* haul on purpose: an invented id would now be rejected by
+		// domain.ValidateRaidItems with a 400 before ownership is ever checked,
+		// and this test is about ownership.
+		"items": []map[string]any{{"item_id": "chain", "quantity": 5}},
 	}, nil); code != http.StatusUnauthorized {
 		t.Errorf("intruder result = %d, want 401 (indistinguishable from a bad token)", code)
 	}
 
-	// The intruder gained nothing.
+	// The intruder gained nothing beyond the starter kit every device is given.
 	var profile store.Profile
 	if code := c.do(http.MethodGet, "/v1/profile", nil, &profile); code != http.StatusOK {
 		t.Fatalf("profile status = %d, want 200", code)
 	}
-	if len(profile.Stash) != 0 {
-		t.Errorf("intruder stash = %v, want empty", profile.Stash)
+	if got := loot(profile.Stash); len(got) != 0 {
+		t.Errorf("intruder stash = %v, want empty", got)
 	}
 
 	// And the owner's raid is untouched: still confirmable, still theirs.
@@ -396,23 +416,30 @@ func TestDeathResultRejectsOversizedSafePocket(t *testing.T) {
 
 	var started store.StartedRaid
 	if code := c.do(http.MethodPost, "/v1/raid/start",
-		map[string]any{"map_id": "forest", "loadout": []any{}}, &started); code != http.StatusOK {
+		map[string]any{"map_id": "bridge", "loadout": []any{}}, &started); code != http.StatusOK {
 		t.Fatalf("raid/start status = %d, want 200", code)
 	}
 	c.confirm(started)
 
+	var env errorEnvelope
 	code := c.do(http.MethodPost, "/v1/raid/result", map[string]any{
 		"session_id":    started.SessionID,
 		"session_token": started.SessionToken,
 		"outcome":       "died",
+		// Three *known* items: an invented id would trip the plausibility gate
+		// first and this test would pass for the wrong reason, since both
+		// rejections are 400.
 		"items": []map[string]any{
-			{"item_id": "turbine", "quantity": 1},
-			{"item_id": "gearbox", "quantity": 1},
-			{"item_id": "battery", "quantity": 1},
+			{"item_id": "scrap_metal", "quantity": 1},
+			{"item_id": "copper_wire", "quantity": 1},
+			{"item_id": "duct_tape", "quantity": 1},
 		},
-	}, nil)
+	}, &env)
 	if code != http.StatusBadRequest {
 		t.Errorf("three safe-pocket items on death = %d, want 400", code)
+	}
+	if env.Error.Code != "safe_pocket_overflow" {
+		t.Errorf("error code = %q, want safe_pocket_overflow", env.Error.Code)
 	}
 }
 
@@ -422,15 +449,18 @@ func TestDeathResultAllowsSplitEntriesOfOneItem(t *testing.T) {
 
 	var started store.StartedRaid
 	if code := c.do(http.MethodPost, "/v1/raid/start",
-		map[string]any{"map_id": "forest", "loadout": []any{}}, &started); code != http.StatusOK {
+		map[string]any{"map_id": "bridge", "loadout": []any{}}, &started); code != http.StatusOK {
 		t.Fatalf("raid/start status = %d, want 200", code)
 	}
 	c.confirm(started)
 
-	// Build 50 entries of the same item id: they merge to one stack, within cap of 2.
+	// Build 50 entries of the same item id: they merge to one stack, within cap of
+	// 2. scrap_metal, not chain: 50 units must also stay under the per-item cap,
+	// which is 12 slots × that item's stackSize (120 for scrap_metal, 12 for the
+	// unstackable chain).
 	items := make([]map[string]any, 50)
 	for i := 0; i < 50; i++ {
-		items[i] = map[string]any{"item_id": "chain", "quantity": 1}
+		items[i] = map[string]any{"item_id": "scrap_metal", "quantity": 1}
 	}
 
 	var result store.RaidResult
@@ -449,7 +479,95 @@ func TestDeathResultAllowsSplitEntriesOfOneItem(t *testing.T) {
 	if code := c.do(http.MethodGet, "/v1/profile", nil, &profile); code != http.StatusOK {
 		t.Fatalf("profile status = %d, want 200", code)
 	}
-	if len(profile.Stash) != 1 || profile.Stash[0].ItemID != "chain" || profile.Stash[0].Quantity != 50 {
-		t.Errorf("stash = %v, want one chain with quantity 50", profile.Stash)
+	if got := loot(profile.Stash); len(got) != 1 || got[0].ItemID != "scrap_metal" || got[0].Quantity != 50 {
+		t.Errorf("stash = %v, want one scrap_metal with quantity 50", got)
+	}
+}
+
+func TestAnonymousAuthGrantsTheStarterKitOnceOverHTTP(t *testing.T) {
+	c := newTestServer(t)
+	c.login("device-kit-http")
+
+	var profile store.Profile
+	if code := c.do(http.MethodGet, "/v1/profile", nil, &profile); code != http.StatusOK {
+		t.Fatalf("profile status = %d, want 200", code)
+	}
+	got := make(map[string]int, len(profile.Stash))
+	for _, item := range profile.Stash {
+		got[item.ItemID] = item.Quantity
+	}
+	for _, want := range domain.StarterKit() {
+		if got[want.ItemID] != want.Quantity {
+			t.Errorf("stash %s = %d, want %d (full stash %v)", want.ItemID, got[want.ItemID], want.Quantity, profile.Stash)
+		}
+	}
+
+	// Logging in again is what every app launch does.
+	c.login("device-kit-http")
+	if code := c.do(http.MethodGet, "/v1/profile", nil, &profile); code != http.StatusOK {
+		t.Fatalf("profile status after re-login = %d, want 200", code)
+	}
+	if len(profile.Stash) != len(domain.StarterKit()) {
+		t.Errorf("re-login grew the stash: %v", profile.Stash)
+	}
+}
+
+func TestRaidResultRejectsAnInventedItem(t *testing.T) {
+	c := newTestServer(t)
+	c.login("device-inventor")
+
+	var started store.StartedRaid
+	if code := c.do(http.MethodPost, "/v1/raid/start",
+		map[string]any{"map_id": "bridge", "loadout": []any{}}, &started); code != http.StatusOK {
+		t.Fatalf("raid/start status = %d, want 200", code)
+	}
+	c.confirm(started)
+
+	// The code, not just the status: this endpoint has several 400s (bad outcome,
+	// malformed stacks, oversized body), and a status-only assertion would stay
+	// green if the plausibility gate were removed and the request failed for some
+	// other reason.
+	var env errorEnvelope
+	if code := c.do(http.MethodPost, "/v1/raid/result", map[string]any{
+		"session_id":    started.SessionID,
+		"session_token": started.SessionToken,
+		"outcome":       "extracted",
+		"items":         []map[string]any{{"item_id": "turbine", "quantity": 1}},
+	}, &env); code != http.StatusBadRequest {
+		t.Errorf("result with a helicopter turbine out of the starter map = %d, want 400", code)
+	}
+	if env.Error.Code != "implausible_items" {
+		t.Errorf("error code = %q, want implausible_items", env.Error.Code)
+	}
+}
+
+// TestRaidStartRejectsAnUnknownLoadoutItem covers the loadout branch of the
+// plausibility gate, which had no HTTP test: /v1/raid/start debits the loadout
+// from the stash, so an id the game does not define cannot have been there, and
+// the gate must refuse it before the store is touched. The assertion is on the
+// error code because raid/start's other 400 (missing map_id, malformed stacks)
+// would otherwise satisfy a status-only check.
+func TestRaidStartRejectsAnUnknownLoadoutItem(t *testing.T) {
+	c := newTestServer(t)
+	c.login("device-loadout-inventor")
+
+	var env errorEnvelope
+	code := c.do(http.MethodPost, "/v1/raid/start", map[string]any{
+		"map_id":  "bridge",
+		"loadout": []map[string]any{{"item_id": "unobtanium", "quantity": 1}},
+	}, &env)
+	if code != http.StatusBadRequest {
+		t.Errorf("raid/start with an invented loadout id = %d, want 400", code)
+	}
+	if env.Error.Code != "implausible_items" {
+		t.Errorf("error code = %q, want implausible_items", env.Error.Code)
+	}
+
+	// And the raid did not start: a rejected loadout must leave no session behind
+	// for the caller to submit a result against.
+	var started store.StartedRaid
+	if code := c.do(http.MethodPost, "/v1/raid/start",
+		map[string]any{"map_id": "bridge", "loadout": []any{}}, &started); code != http.StatusOK {
+		t.Errorf("raid/start after a rejected loadout = %d, want 200 (no session was left open)", code)
 	}
 }

@@ -152,6 +152,29 @@ enforced by test. Naming per ТЗ §18 (`bridge_village_d1`, `bridge_extract_nor
 - Invariant tests updated to Bridge_West numbers; the full-map tests (16 bots / 42 containers)
   move to the ТЗ reference doc as the acceptance bar for the LATER expansion, not this stage.
 
+## 6.5 Stage A.5 — Shelter menu and the one-time tutorial raid (owner decisions, 2026-07-31)
+
+Two decisions from the owner, slotted between Stage A and Stage B:
+
+- **The tutorial raid happens once, with static loot.** Containers in the map JSON gain an
+  optional `fixedItems` list; the backend gains a `tutorial_completed` flag (set on the first
+  *successful* raid result — dying replays the tutorial with the same static layout). Profile
+  exposes the flag; without it the raid uses `fixedItems`, with it the normal seeded rolls.
+  The static layout is authored along the Bridge_West route to teach mechanics in order:
+  junk at spawn (open containers) → medkit at the pipes (heal before the first bot) → ammo +
+  first valuable at the gas station (buildings hold loot) → military at the rail depot
+  (deeper = richer) → extract at E1. Server stays authoritative: fixed lists pass the same
+  plausibility gate.
+- **After extraction the player lands in the Shelter (main menu), not back into a raid.**
+  Flow becomes: boot → shelter → "В РЕЙД" → raid → outcome → shelter with the refreshed
+  profile. MVP shelter is Slate-in-C++ (no binary assets): stash list from `/v1/profile`,
+  raid button, garage progress (bicycle 0/3 parts), shop stub (subscription later, no P2W).
+  The EXTRACTED summary moves to the shelter ("вынесено: …"). Later: shelter visuals, real
+  shop, map selection once there is more than one map.
+
+Ordering: Stage A must be proven live first (Task 9), then A.5 gets its own plan, then B/C —
+the tutorial's static layout must be authored against Bridge_West's final geometry.
+
 ## 7. Out of scope now
 
 Quests, keys, bosses, day/night, weather, in-raid vehicles, destructibility, second floors,

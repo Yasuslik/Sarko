@@ -5,12 +5,20 @@
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Kismet/GameplayStatics.h"
+#include "Loot/SarkoBackpack.h"
+#include "Loot/SarkoExtractionZone.h"
 #include "Map/SarkoMapBuilder.h"
 #include "Pawn/SarkoCharacter.h"
+#include "Pawn/SarkoHealthComponent.h"
 #include "UI/SarkoHUD.h"
 
 ASarkoRaidGameMode::ASarkoRaidGameMode()
 {
+	// AGameModeBase does not tick by default. Without this the dwell never
+	// advances and the clock never expires into MIA — a silent failure where
+	// standing in the zone simply does nothing.
+	PrimaryActorTick.bCanEverTick = true;
+
 	GameStateClass = ASarkoRaidGameState::StaticClass();
 	DefaultPawnClass = ASarkoCharacter::StaticClass();
 	PlayerControllerClass = ASarkoPlayerController::StaticClass();
@@ -28,8 +36,30 @@ void ASarkoRaidGameMode::InitGame(const FString& MapName, const FString& Options
 	const FString SeedOption = UGameplayStatics::ParseOption(Options, TEXT("Seed"));
 	if (!SeedOption.IsEmpty())
 	{
-		Seed = FCString::Atoi(*SeedOption);
+		// Atoi64 then SeedToInt32, not FCString::Atoi: the seeds worth typing here
+		// are the ones copied out of a sarko-api log line, and StartRaid produces
+		// them as int64(rand.Uint32()) — so about half of them exceed INT32_MAX.
+		// Atoi saturates at 2147483647, which silently rolls a *different* set of
+		// crates than the server logged under that seed and makes the one
+		// reproduction tool in the project lie. SeedToInt32 wraps the same bits the
+		// online path wraps, so `?Seed=3402905197` reproduces that raid exactly.
+		Seed = SarkoBackend::SeedToInt32(FCString::Atoi64(*SeedOption));
 	}
+
+	// The salt, generated here on the authority and never replicated. Unlike Seed
+	// this is deliberately *not* readable from the travel URL: a URL option is
+	// visible to a joining client, which would hand back exactly the loot map this
+	// salt exists to withhold. It is also not derived from Seed or from the clock,
+	// because a client knows both. A raid GUID rather than FMath::Rand(), which is
+	// seeded per process and would repeat across raids in one session.
+	//
+	// Two of the GUID's words rather than one hash of it: 32 bits of salt is
+	// offline-sweepable from a single observed roll (the other two inputs are
+	// known, so one crate pins the one salt that explains it, and that reopens the
+	// whole raid). Assembled in uint64 and reinterpreted once, because shifting a
+	// word with its top bit set into a signed 64-bit value overflows.
+	const FGuid SaltSource = FGuid::NewGuid();
+	LootSalt = static_cast<int64>((static_cast<uint64>(SaltSource.A) << 32) | static_cast<uint64>(SaltSource.B));
 
 	// Load the layout here, not in StartPlay: UEngine::LoadMap spawns every
 	// local player's pawn (which calls RestartPlayer) before it calls
@@ -72,7 +102,17 @@ void ASarkoRaidGameMode::StartPlay()
 	{
 		if (ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>())
 		{
-			RaidState->Seed = Seed;
+			// Seed is deliberately *not* assigned here any more, and the clock is
+			// deliberately not started: both happen in ActivateRaid, once
+			// sarko-api's raid/start has handed back the authoritative seed (or the
+			// offline fallback has chosen the local one). Assigning the placeholder
+			// here would let a container roll against a seed that is about to change
+			// — two different hauls for one crate — and would replicate a "the raid
+			// has begun" signal a round trip too early.
+			//
+			// The geometry below does not wait, because none of it depends on the
+			// seed: every machine reduces the same shipped data file, and
+			// RestartPlayer has already run by now and needs the layout.
 			// The server already has the layout and definition from InitGame,
 			// so it hands them over directly instead of reloading. The
 			// server never receives its own OnRep notify, so it must trigger
@@ -96,16 +136,180 @@ void ASarkoRaidGameMode::StartPlay()
 		}
 	}
 
-	if (ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>())
+	// Last, so the world is fully built before a completion callback can land in
+	// it: the raid becomes live in ActivateRaid, one HTTP round trip from here.
+	if (!GetDefault<USarkoRaidSettings>()->bBackendEnabled)
 	{
-		// Prefer the map's own duration when it set one — per-map duration
-		// (15 minutes here, 30 on real maps) — and fall back to the settings
-		// default otherwise, e.g. when the map failed to load.
-		const float DurationSeconds = CachedDefinition.RaidDurationSeconds > 0.f
-			? CachedDefinition.RaidDurationSeconds
-			: GetDefault<USarkoRaidSettings>()->RaidDurationSeconds;
-		RaidState->StartRaidClock(DurationSeconds);
+		FallBackToOfflineRaid(TEXT("the backend is disabled in settings"));
+		return;
 	}
+	BeginBackendSession();
+}
+
+void ASarkoRaidGameMode::BeginBackendSession()
+{
+	Backend = MakeShared<FSarkoBackendClient>();
+
+	// TWeakObjectPtr through every hop: an HTTP completion can land after the
+	// level has been torn down, and this game mode is the first thing to go.
+	TWeakObjectPtr<ASarkoRaidGameMode> WeakThis(this);
+
+	Backend->Authenticate([WeakThis](bool bAuthenticated, const FString& AuthError)
+	{
+		ASarkoRaidGameMode* Self = WeakThis.Get();
+		if (!Self || !Self->Backend)
+		{
+			return;
+		}
+		if (!bAuthenticated)
+		{
+			Self->FallBackToOfflineRaid(AuthError);
+			return;
+		}
+
+		// The loadout goes out **empty**, and it must stay empty until in-raid
+		// weapons and ammo are real items.
+		//
+		// /v1/raid/start debits the loadout from the stash; nothing credits it back
+		// except the raid result, and the result submits the backpack alone. So the
+		// pistol and 60 rounds this used to send were a one-way withdrawal: the first
+		// raid spent the starter kit and every raid after it got 409
+		// insufficient_items, which fell through to the offline path permanently —
+		// the online loop worked exactly once per install. Nothing in the raid even
+		// reads the loadout: the weapon is abstract with infinite reloads, so the
+		// debit was risk with no matching stake, which is dishonest rather than hard.
+		//
+		// An empty loadout means a PvE raid risks only the loot it finds, which is
+		// the intended economy for the tutorial sector. Restore the debit — together
+		// with crediting a survivor's kit back in the result — when losing a weapon
+		// on death is a real consequence.
+		const FString MapId = GetDefault<USarkoRaidSettings>()->BackendMapId;
+		Self->Backend->StartRaid(MapId, SarkoBackend::WireLoadout(),
+			[WeakThis](bool bStarted, const FSarkoRaidSession& NewSession, const FString& StartError)
+			{
+				ASarkoRaidGameMode* Inner = WeakThis.Get();
+				if (!Inner || !Inner->Backend)
+				{
+					return;
+				}
+				if (!bStarted)
+				{
+					Inner->FallBackToOfflineRaid(StartError);
+					return;
+				}
+				Inner->Session = NewSession;
+
+				// Confirm immediately. Until it lands the session is `pending`
+				// and the sweeper hands the loadout back after PENDING_TTL (60 s
+				// on the deployed service), which would leave a raid running
+				// against a session that no longer accepts a result.
+				Inner->Backend->ConfirmRaid(NewSession,
+					[WeakThis](bool bConfirmed, const FDateTime& ExpiresAt, const FString& ConfirmError)
+					{
+						ASarkoRaidGameMode* Confirmed = WeakThis.Get();
+						if (!Confirmed)
+						{
+							return;
+						}
+						if (!bConfirmed)
+						{
+							Confirmed->FallBackToOfflineRaid(ConfirmError);
+							return;
+						}
+
+						const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+						const double SecondsLeft = (ExpiresAt - FDateTime::UtcNow()).GetTotalSeconds();
+						const float Clock = SarkoBackend::ClockSecondsFromDeadline(
+							Confirmed->CachedDefinition.RaidDurationSeconds, SecondsLeft,
+							Settings.BackendGraceMarginSeconds);
+
+						if (Confirmed->MapClockSeconds() > Clock + 1.f)
+						{
+							// Loud, because it is a configuration mismatch a
+							// player would experience as "the raid was shorter
+							// than the map says". RAID_TTL is 20m on the deployed
+							// service against a 15-minute map, so this line
+							// should never appear — if it does, RAID_TTL was
+							// lowered and raising it is the fix.
+							UE_LOG(LogTemp, Warning,
+								TEXT("SarkoRaidGameMode: the map asks for %.0fs but the server's deadline allows %.0fs — raising RAID_TTL is the fix"),
+								Confirmed->MapClockSeconds(), Clock);
+						}
+
+						Confirmed->ActivateRaid(Confirmed->Session.Seed, Clock);
+					});
+			});
+	});
+}
+
+void ASarkoRaidGameMode::FallBackToOfflineRaid(const FString& Reason)
+{
+	if (bOfflineDegraded)
+	{
+		// One line per raid, not one per failed hop: the first failure is the one
+		// that explains the rest, and a repeated Error reads like a loop.
+		return;
+	}
+	bOfflineDegraded = true;
+
+	// Spec §4.6: any HTTP failure logs loudly, the raid still plays, nothing
+	// persists. The game must never hard-lock on the network — the alternative is
+	// a black screen in a lift, and a developer who cannot iterate on a plane.
+	UE_LOG(LogTemp, Error,
+		TEXT("SarkoRaidGameMode: playing OFFLINE — nothing will be saved. Reason: %s"), *Reason);
+
+	// Cleared so FinishRaid can tell "no session" from "a session that failed
+	// halfway": an empty session id is the one signal it reads.
+	Session = FSarkoRaidSession();
+	// The Seed the game mode already holds (URL option or its default) becomes
+	// authoritative for this raid.
+	ActivateRaid(Seed, MapClockSeconds());
+}
+
+void ASarkoRaidGameMode::ActivateRaid(int32 AuthoritativeSeed, float ClockSeconds)
+{
+	ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>();
+	if (!RaidState)
+	{
+		return;
+	}
+	// Both refusals live in SarkoRaid::CanActivateRaid, pure and unit tested. The
+	// settled-outcome half is the one that bites: the damage gate opens on
+	// IsRaidFinished() alone, so a player can be shot dead during the
+	// auth→start→confirm round trip, and the confirm landing afterwards would
+	// otherwise re-arm the raid under its own KIA summary — a fresh seed that
+	// re-rolls every container, and a fresh full clock on a corpse whose result was
+	// already decided.
+	if (!SarkoRaid::CanActivateRaid(RaidState->bSessionReady, RaidState->Outcome))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("SarkoRaidGameMode: refused to activate a raid that is already %s (session ready: %s) — seed %d and a %.0fs clock were discarded"),
+			*UEnum::GetValueAsString(RaidState->Outcome),
+			RaidState->bSessionReady ? TEXT("yes") : TEXT("no"),
+			AuthoritativeSeed, ClockSeconds);
+		return;
+	}
+
+	Seed = AuthoritativeSeed;
+	RaidState->Seed = AuthoritativeSeed;
+	RaidState->StartRaidClock(ClockSeconds);
+	// Last of the three: it is what unlocks looting and the dwell, so it must not
+	// be observable before the seed and the clock it belongs with.
+	RaidState->bSessionReady = true;
+
+	UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: raid live — seed %d, clock %.0fs, session '%s'"),
+		AuthoritativeSeed, ClockSeconds, Session.SessionId.IsEmpty() ? TEXT("(offline)") : *Session.SessionId);
+}
+
+float ASarkoRaidGameMode::MapClockSeconds() const
+{
+	// Prefer the map's own duration when it set one — per-map duration (15 minutes
+	// here, 30 on real maps) — and fall back to the settings default otherwise,
+	// e.g. when the map failed to load. Zero would start a clock that is already
+	// expired, which the Tick below reads as MIA on the first frame.
+	return CachedDefinition.RaidDurationSeconds > 0.f
+		? CachedDefinition.RaidDurationSeconds
+		: GetDefault<USarkoRaidSettings>()->RaidDurationSeconds;
 }
 
 void ASarkoRaidGameMode::RestartPlayer(AController* NewPlayer)
@@ -121,4 +325,209 @@ void ASarkoRaidGameMode::RestartPlayer(AController* NewPlayer)
 	}
 
 	Super::RestartPlayer(NewPlayer);
+}
+
+void ASarkoRaidGameMode::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	// A game mode only ever exists on the server, so everything below is
+	// authority-side by construction — including every location it measures.
+	ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>();
+	UWorld* World = GetWorld();
+	// IsLootable() is "the raid is live": no outcome yet, and the session has
+	// settled. The second half matters as much as the first — a dwell completing
+	// during the auth→start→confirm round trip would finish the raid before there
+	// is a session to submit it to, which is the one path that silently throws a
+	// haul away. The clock is not running yet either (ActivateRaid starts it), so
+	// the round trip costs no raid time.
+	if (!RaidState || !World || !RaidState->IsLootable())
+	{
+		return;
+	}
+
+	// The clock is the ceiling. Spec §4.5: time out is MIA, which is death.
+	// Checked before the dwell, and FinishRaid is idempotent, so the frame a
+	// dwell completes on an expired clock still resolves to exactly one outcome.
+	if (RaidState->IsRaidOver())
+	{
+		FinishRaid(ESarkoRaidOutcome::MIA);
+		return;
+	}
+
+	const TArray<FSarkoExtractionSpot>& Zones = CachedDefinition.Extractions;
+	if (Zones.Num() == 0)
+	{
+		return;
+	}
+	const float RequiredDwell = FMath::Max(0.1f, GetDefault<USarkoRaidSettings>()->ExtractDwellSeconds);
+
+	// Prune pawns that are gone instead of letting the map grow for the whole
+	// raid. Cheap: it is one entry per living player, not per actor.
+	for (auto Entry = DwellSeconds.CreateIterator(); Entry; ++Entry)
+	{
+		if (!Entry.Key().IsValid())
+		{
+			Entry.RemoveCurrent();
+		}
+	}
+
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		ASarkoCharacter* Pawn = It->IsValid() ? Cast<ASarkoCharacter>((*It)->GetPawn()) : nullptr;
+		if (!Pawn || (Pawn->HealthComponent && Pawn->HealthComponent->IsDead()))
+		{
+			continue;
+		}
+
+		// The server's own copy of the pawn, never a client-supplied position —
+		// the same rule the loot channel follows.
+		const int32 ZoneIndex = SarkoExtract::FindZoneContaining(Pawn->GetActorLocation(), Zones);
+		float& Dwell = DwellSeconds.FindOrAdd(Pawn);
+		Dwell = SarkoExtract::AdvanceDwell(Dwell, ZoneIndex != INDEX_NONE, DeltaSeconds);
+
+		// Replicated to the owner only, so that pawn's HUD can draw a countdown
+		// without anyone else learning that somebody is extracting.
+		Pawn->SetExtractProgress(ZoneIndex, Dwell);
+
+		if (Dwell >= RequiredDwell && Zones.IsValidIndex(ZoneIndex))
+		{
+			UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: extracted at zone %d ('%s') with %d backpack slots used"),
+				ZoneIndex, *Zones[ZoneIndex].Name,
+				Pawn->BackpackComponent ? Pawn->BackpackComponent->GetUsedSlots() : 0);
+			FinishRaid(ESarkoRaidOutcome::Extracted);
+			return;
+		}
+	}
+}
+
+void ASarkoRaidGameMode::HandlePlayerDied(ASarkoCharacter* Pawn)
+{
+	// The pawn has already emptied its own backpack (see ASarkoCharacter::
+	// HandleDeath, which owns the whole death path — this only reports it), so
+	// by the time a result is submitted there is nothing to credit. The order
+	// matters and is deliberate.
+	FinishRaid(ESarkoRaidOutcome::Died);
+}
+
+void ASarkoRaidGameMode::FinishRaid(ESarkoRaidOutcome NewOutcome)
+{
+	ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>();
+	// CanFinishRaid is the whole idempotency and mutual-exclusion rule, pure and
+	// unit tested: first real outcome wins, and InProgress is not an outcome.
+	if (!RaidState || !SarkoRaid::CanFinishRaid(RaidState->Outcome, NewOutcome))
+	{
+		return;
+	}
+	// Both per-pawn effects run *before* Outcome is written, and on the server's
+	// own copy of every player pawn.
+	//
+	// The order is the point for the haul: the HUD's summary reads the backpack and
+	// says "the server emptied the backpack before the outcome was set", so that
+	// has to be true for every losing outcome rather than only for the one that
+	// happens to run through a death path. Input freeze does not care about the
+	// order, and is here so there is one loop rather than two.
+	const bool bLosesHaul = SarkoRaid::OutcomeLosesHaul(NewOutcome);
+	if (UWorld* World = GetWorld())
+	{
+		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+		{
+			ASarkoCharacter* Pawn = It->IsValid() ? Cast<ASarkoCharacter>((*It)->GetPawn()) : nullptr;
+			if (!Pawn)
+			{
+				continue;
+			}
+
+			// Spec §4.5: MIA is death, so MIA loses the haul too. KIA already
+			// cleared it on the pawn's own death path (ASarkoCharacter::
+			// HandleDeath) and clearing an empty backpack again is a no-op, so
+			// this is the single place the rule holds for all of them.
+			if (bLosesHaul && Pawn->BackpackComponent)
+			{
+				Pawn->BackpackComponent->ClearOnDeath();
+			}
+
+			// Input freeze, on the server. The owning client's controller also
+			// stops sending (ASarkoPlayerController::PlayerTick), but a client
+			// that keeps sending is exactly the case worth defending against:
+			// movement is disabled on the server's own copy of every player pawn,
+			// and the aim/fire/loot RPCs check the outcome for themselves, so
+			// ignoring the freeze buys nothing.
+			Pawn->FreezeForRaidEnd();
+		}
+	}
+
+	RaidState->Outcome = NewOutcome;
+
+	UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: raid finished as %s, %.1f s left on the clock"),
+		*UEnum::GetValueAsString(NewOutcome), RaidState->RemainingSeconds);
+
+	// The backend comes last, deliberately: the HUD must show the outcome
+	// immediately, whether or not the network cooperates (spec §4.6 — the game
+	// never hard-locks on network).
+	//
+	// Submitted once. The backend is idempotent by session id, which is a safety
+	// net for a dropped connection — not a licence to send twice. CanFinishRaid
+	// above already makes this unreachable a second time; the flag is the belt to
+	// that braces, because the cost of being wrong is a double-credited haul.
+	if (bSessionSubmitted)
+	{
+		return;
+	}
+	bSessionSubmitted = true;
+
+	if (!Backend || Session.SessionId.IsEmpty())
+	{
+		// The offline path: no token, so no result. Logged at Error once, never per
+		// tick, and the raid has already ended locally with its summary on screen.
+		UE_LOG(LogTemp, Error,
+			TEXT("SarkoRaidGameMode: raid ended '%s' with no backend session — nothing was saved"),
+			SarkoBackend::OutcomeToWire(NewOutcome));
+		return;
+	}
+
+	// Only an extraction carries anything out, and this reads the backpack on the
+	// same tick the outcome settled: the loop above cleared it for every losing
+	// outcome *before* Outcome was written, so a died/MIA haul is empty by
+	// construction and an extracted one is intact. Sending an explicitly empty
+	// array for the losing outcomes makes the intent independent of that ordering.
+	TArray<FSarkoItemStack> Haul;
+	if (NewOutcome == ESarkoRaidOutcome::Extracted)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+			{
+				const ASarkoCharacter* Pawn = It->IsValid() ? Cast<ASarkoCharacter>((*It)->GetPawn()) : nullptr;
+				if (Pawn && Pawn->BackpackComponent)
+				{
+					Haul = Pawn->BackpackComponent->GetSlots();
+					break;
+				}
+			}
+		}
+	}
+
+	// The client is captured by *strong* reference on purpose, unlike every other
+	// hop in this file. A raid can end moments before the world goes away; a weak
+	// capture would let this game mode's TSharedPtr be the only owner, and the
+	// completion would then be dropped unlogged at exactly the moment a player most
+	// needs to know whether their haul was saved. The lambda dies with the request,
+	// so the client outlives the raid by one round trip and no longer.
+	Backend->SubmitResult(Session, SarkoBackend::OutcomeToWire(NewOutcome), Haul,
+		[Keep = Backend, Wire = FString(SarkoBackend::OutcomeToWire(NewOutcome))](bool bSuccess, const FString& Error)
+		{
+			// Nothing here touches the game mode, precisely so a result landing
+			// after teardown is still logged.
+			if (bSuccess)
+			{
+				UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: result '%s' submitted"), *Wire);
+			}
+			else
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("SarkoRaidGameMode: the raid result '%s' was NOT saved: %s. The session expires on the server and closes as died."),
+					*Wire, *Error);
+			}
+		});
 }

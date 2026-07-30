@@ -14,6 +14,68 @@
 // have that failure mode, but declaring it here — matching
 // SarkoMapBuilder.h's fix — keeps one convention rather than two.
 struct FSarkoMapDefinition;
+class ASarkoLootContainer;
+
+/** How a raid ended. Replicated to everyone: the HUD's final screen reads it. */
+UENUM()
+enum class ESarkoRaidOutcome : uint8
+{
+	InProgress,
+	/** Stood the full dwell in a zone. The backpack is the haul. */
+	Extracted,
+	/** HP hit zero. The backpack is already empty by the time this is set. */
+	Died,
+	/**
+	 * The raid clock ran out. Spec §4.5: MIA is death — loot lost, submitted to
+	 * the backend as `died`. It is the ceiling on a raid, not its goal.
+	 */
+	MIA
+};
+
+namespace SarkoRaid
+{
+	/**
+	 * Whether a requested outcome may replace the current one. Pure, so the one
+	 * rule that keeps a raid from being decided twice is unit tested with no
+	 * world, no game mode and no network.
+	 *
+	 * First real outcome wins, and nothing may finish a raid into InProgress.
+	 * The clock reaching zero on the same frame a dwell completes must not turn
+	 * an extraction into an MIA, and a bullet landing on the extraction frame
+	 * must not turn it into a KIA — the outcome is submitted to the backend once
+	 * (Task 8), and the backend's idempotency is a safety net, not a licence.
+	 */
+	bool CanFinishRaid(ESarkoRaidOutcome Current, ESarkoRaidOutcome Requested);
+
+	/**
+	 * Whether an outcome costs the player everything they were carrying. Pure, so
+	 * the other half of spec §4.5 — "MIA is death, loot lost" — is unit tested
+	 * without a world.
+	 *
+	 * Extracted is the only outcome that keeps a haul. Died clears the backpack on
+	 * the pawn's own death path, but MIA has no death path at all, so before this
+	 * existed the clock running out left the haul intact and the MIA summary
+	 * itemised loot the player had just lost. FinishRaid consults this before it
+	 * writes Outcome, which is what makes the HUD's "the server emptied the
+	 * backpack before the outcome was set" a fact rather than a hope.
+	 */
+	bool OutcomeLosesHaul(ESarkoRaidOutcome Outcome);
+
+	/**
+	 * Whether a raid may still be made live. Pure, so the guard is unit tested
+	 * with no world and no HTTP.
+	 *
+	 * Two refusals, not one. `bSessionReady` catches the ordinary double
+	 * activation (the offline fallback firing after a confirm already landed).
+	 * A settled outcome catches the nastier one: the damage gate opens on
+	 * IsRaidFinished() alone, so a player *can* be killed during the
+	 * auth→start→confirm round trip, and the completion landing afterwards would
+	 * otherwise hand a corpse a fresh seed and a fresh full clock under its own
+	 * KIA summary — re-rolling every container against a seed the result was
+	 * never submitted with.
+	 */
+	bool CanActivateRaid(bool bSessionReady, ESarkoRaidOutcome Outcome);
+}
 
 /**
  * Raid clock and raid seed. The server owns both; every client reads
@@ -52,6 +114,13 @@ public:
 	 * raid/start response. It does not shape the map — geometry comes from the
 	 * map file — so changing it changes what is in the crates, not where they
 	 * are.
+	 *
+	 * Known gap, pre-existing and out of this slice (which is single-player
+	 * listen-server, so nothing joins): an authoritative seed that happens to be
+	 * 0 equals this default, so replication sends no change and OnRep_Seed never
+	 * fires — a joining client would never spawn its geometry. `bSessionReady` is
+	 * the safer future trigger: it is false until the raid is live and is what
+	 * actually means "the raid has begun".
 	 */
 	UPROPERTY(ReplicatedUsing = OnRep_Seed, BlueprintReadOnly, Category = "Raid")
 	int32 Seed = 0;
@@ -89,8 +158,94 @@ public:
 
 	bool IsRaidOver() const { return bClockStarted && RemainingSeconds <= 0.f; }
 
+	/**
+	 * How this raid ended, or InProgress. Written only by
+	 * ASarkoRaidGameMode::FinishRaid, on the server, exactly once; replicated to
+	 * everyone because it is what freezes input and draws the summary.
+	 */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Raid")
+	ESarkoRaidOutcome Outcome = ESarkoRaidOutcome::InProgress;
+
+	bool IsRaidFinished() const { return Outcome != ESarkoRaidOutcome::InProgress; }
+
+	/**
+	 * True once the raid's authoritative seed is in place — either because
+	 * sarko-api opened a session, or because the backend is disabled or
+	 * unreachable and the local seed is being used instead.
+	 *
+	 * Containers refuse to open until it is set, because a container looted
+	 * against the placeholder seed and then re-derived against the real one would
+	 * give two different hauls for one crate. The clock does not run either
+	 * (ASarkoRaidGameMode::ActivateRaid starts it), so the round trip cannot cost
+	 * the player raid time and cannot expire a raid into MIA before it began.
+	 */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Raid")
+	bool bSessionReady = false;
+
+	/**
+	 * Whether the raid is live: the seed has landed and no outcome has been
+	 * settled. Everything that turns time or position into value — opening a
+	 * container, the extraction dwell — asks this rather than IsRaidFinished()
+	 * alone, so neither end of the raid can be played through.
+	 */
+	bool IsLootable() const { return bSessionReady && !IsRaidFinished(); }
+
+	/**
+	 * One byte per container index: 1 means emptied. This is the only loot state
+	 * on the wire.
+	 *
+	 * Spec §4.3 asks for a replicated `bLooted` on the container. A container is
+	 * spawned locally on every machine from the map file — like every cover
+	 * block — so it has no net identity and cannot replicate a property of its
+	 * own; this array is the same fact, owned by the one actor that does
+	 * replicate. A byte array rather than a bitmask because 42 bytes is nothing
+	 * and a bitmask is a debugging tax.
+	 */
+	UPROPERTY(ReplicatedUsing = OnRep_LootedContainers)
+	TArray<uint8> LootedContainers;
+
+	UFUNCTION()
+	void OnRep_LootedContainers();
+
+	/** Server only: sizes the array to the map's container count. Idempotent. */
+	void SizeLootState(int32 ContainerCount);
+
+	/** False for an out-of-range index — a client-supplied index is never trusted to be in range. */
+	bool IsContainerLooted(int32 ContainerIndex) const;
+
+	/** Server only. Bounds-checked; logs and does nothing for a bad index. */
+	void MarkContainerLooted(int32 ContainerIndex);
+
+	/** Containers register at BeginPlay so a replicated change can recolour them without anything ticking. */
+	void RegisterContainer(ASarkoLootContainer* Container);
+
+	/**
+	 * Every container that has spawned on this machine, in no particular order —
+	 * registration appends, but OnRep_LootedContainers drops stale entries with
+	 * RemoveAtSwap, so any removal reshuffles the tail. Nothing indexes into this
+	 * (the looted state is keyed by the map file's container index, not by a
+	 * position here), so an unspecified order costs nothing and a swap-remove is
+	 * cheaper than preserving one.
+	 *
+	 * This registry is the machine's container list, so nothing else needs to run
+	 * a TActorIterator to find them — and in particular the player controller's
+	 * per-frame proximity check does not (an iterator heap-allocates, and it had no
+	 * way to tell "the containers have not spawned yet" from "this map has none",
+	 * so on a container-less map it rescanned the whole world every frame forever).
+	 * Late-spawning is handled for free: a container added after the first
+	 * PlayerTick — which is the normal case on a client, where containers spawn
+	 * from OnRep_Seed — appears here the moment it registers.
+	 *
+	 * Weak entries can be stale; callers must null-check. Stale ones are dropped
+	 * by OnRep_LootedContainers rather than eagerly.
+	 */
+	const TArray<TWeakObjectPtr<ASarkoLootContainer>>& GetContainers() const { return RegisteredContainers; }
+
 private:
 	bool bClockStarted = false;
 	bool bLayoutBuilt = false;
 	FSarkoMapLayout Layout;
+
+	/** Weak: containers are destroyed with the world and this must not keep them alive. */
+	TArray<TWeakObjectPtr<ASarkoLootContainer>> RegisteredContainers;
 };

@@ -64,9 +64,24 @@ namespace SarkoMap
 
 	/**
 	 * Spawns everything in a definition that is not already covered by
-	 * SpawnLayout's floor and cover: props and container markers. Logs and
-	 * skips an unknown kind rather than substituting a default, because a
-	 * silently wrong prop is harder to notice than a missing one.
+	 * SpawnLayout's floor and cover: the props. Logs and skips an unknown kind
+	 * rather than substituting a default, because a silently wrong prop is
+	 * harder to notice than a missing one.
 	 */
 	void SpawnProps(UWorld& World, const FSarkoMapDefinition& Definition);
+
+	/**
+	 * Spawns one ASarkoLootContainer per definition entry, in array order, so
+	 * ContainerIndex means the same thing on every machine. Deterministic and
+	 * local — nothing here replicates.
+	 */
+	void SpawnLootContainers(UWorld& World, const FSarkoMapDefinition& Definition);
+
+	/**
+	 * Spawns one visual pad per extraction spot, in array order, on every
+	 * machine — so ZoneIndex means the same thing everywhere, exactly as
+	 * ContainerIndex does. The pads decide nothing: the dwell is measured by the
+	 * game mode against the definition, server side.
+	 */
+	void SpawnExtractionZones(UWorld& World, const FSarkoMapDefinition& Definition);
 }

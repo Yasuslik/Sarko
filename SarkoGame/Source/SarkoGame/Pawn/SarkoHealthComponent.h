@@ -48,11 +48,26 @@ public:
 	/**
 	 * Server only. Clamps at zero, ignores non-positive amounts, and fires
 	 * OnDied exactly once no matter how much overkill arrives.
+	 *
+	 * Refuses damage outright once the raid has an outcome. That is the first of
+	 * the three layers that make an extracted player untouchable: the outcome
+	 * enum already refuses a second FinishRaid, but a bullet that lands after the
+	 * extraction would still run the death *side-effects* — and clearing the
+	 * backpack is one of them, which turns a real haul into an EXTRACTED summary
+	 * with nothing in it.
 	 */
 	void ApplyDamage(float Amount, AActor* DamageInstigator);
 
 	/** Test seam: puts the component in a known state without a world. */
 	void ResetForTest(float NewMaxHealth);
+
+	/**
+	 * Test seam: stands in for the game-state lookup ApplyDamage makes, so the
+	 * "a settled raid takes no more damage" gate is exercisable by a NewObject
+	 * component, which has no world and therefore no game state to settle. Only
+	 * tests ever set it; in a raid it stays false and the real lookup decides.
+	 */
+	void SetRaidFinishedForTest(bool bFinished) { bRaidFinishedForTest = bFinished; }
 
 	FSarkoDiedSignature OnDied;
 
@@ -75,4 +90,15 @@ protected:
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Health")
 	ESarkoTeam Team = ESarkoTeam::Player;
+
+private:
+	/**
+	 * True once this machine's game state carries a real outcome. One lookup per
+	 * damage event, on the server-only path, so a settled raid costs nothing in
+	 * the common case and cannot be reached at all off the authority.
+	 */
+	bool IsRaidFinishedNow() const;
+
+	/** Only SetRaidFinishedForTest writes this. See its comment. */
+	bool bRaidFinishedForTest = false;
 };

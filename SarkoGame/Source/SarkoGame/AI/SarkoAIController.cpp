@@ -4,6 +4,7 @@
 #include "CollisionQueryParams.h"
 #include "CollisionShape.h"
 #include "Components/CapsuleComponent.h"
+#include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
@@ -226,6 +227,19 @@ void ASarkoAIController::Tick(float DeltaSeconds)
 
 	const USarkoHealthComponent* SelfHealth = Self->FindComponentByClass<USarkoHealthComponent>();
 	if (SelfHealth && SelfHealth->IsDead())
+	{
+		return;
+	}
+
+	// The bots stand down the moment the raid has an outcome, and visibly so —
+	// no steering, no state changes, no fire. USarkoHealthComponent::ApplyDamage
+	// already refuses the hits, but a squad still tracking and shooting a player
+	// frozen on the extraction pad under a summary screen reads as a bug even when
+	// nothing takes damage, and a bot that keeps aiming is one refactor away from
+	// one that keeps hurting.
+	const UWorld* World = GetWorld();
+	const ASarkoRaidGameState* RaidState = World ? World->GetGameState<ASarkoRaidGameState>() : nullptr;
+	if (RaidState && RaidState->IsRaidFinished())
 	{
 		return;
 	}

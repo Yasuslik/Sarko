@@ -55,6 +55,13 @@ func handleRaidStart(deps Deps) http.HandlerFunc {
 			WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
 		}
+		// The loadout is content-checked too: an id the game does not define
+		// cannot have been in a stash that only this API ever writes to, so a
+		// loadout naming one is either a stale client or a forged request.
+		if err := domain.ValidateRaidItems(req.Loadout); err != nil {
+			WriteError(w, http.StatusBadRequest, "implausible_items", err.Error())
+			return
+		}
 
 		started, err := deps.Store.StartRaid(r.Context(), store.StartRaidParams{
 			PlayerID:   playerID,
@@ -137,6 +144,14 @@ func handleRaidResult(deps Deps) http.HandlerFunc {
 		}
 		if err := domain.ValidateStacks(req.Items); err != nil {
 			WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		// Spec §4.7: the UE server is a client to this API and is not trusted
+		// with arbitrary item grants. This is the count-and-quantity floor —
+		// every id must exist, the haul must fit the 12-slot backpack, and no
+		// stack may exceed what a backpack holds.
+		if err := domain.ValidateRaidItems(req.Items); err != nil {
+			WriteError(w, http.StatusBadRequest, "implausible_items", err.Error())
 			return
 		}
 		if domain.RaidOutcome(req.Outcome) == domain.OutcomeDied &&

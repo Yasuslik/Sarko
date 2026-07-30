@@ -76,6 +76,88 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "Combat")
 	float MinFireIntervalSeconds = 0.15f;
 
+	/**
+	 * In-raid backpack size in slots (spec §4.4). Items stack within a slot by
+	 * their catalog stackSize, so this is a decision about how many *kinds* of
+	 * thing a raid can bring home — the greed dial. The backend's
+	 * domain.MaxRaidStacks mirrors it as a plausibility cap, so raising it here
+	 * without raising it there makes full hauls get rejected at result time.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Loot")
+	int32 BackpackSlots = 12;
+
+	/** How close the pawn must be to open a container. Enforced on the server. */
+	UPROPERTY(EditAnywhere, config, Category = "Loot")
+	float InteractRadiusUU = 250.f;
+
+	/**
+	 * Press-and-hold time to open a container (spec §4.3). This is the cost of
+	 * looting: standing still for a second and a half beside a crate is what
+	 * makes a container a decision rather than a pickup.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Loot")
+	float LootChannelSeconds = 1.5f;
+
+	/**
+	 * Seconds the player must stand inside an extraction zone (spec §4.5).
+	 *
+	 * Slice-1 spec §8 says ten; the Stage A spec says five and is the later
+	 * decision, so five it is. This being tunable rather than a constant is the
+	 * point: it is the length of the most frightening moment in the raid.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Extraction")
+	float ExtractDwellSeconds = 5.f;
+
+	/**
+	 * Whether the raid talks to sarko-api at all. Off means the raid runs on a
+	 * local seed and nothing persists — useful on a plane, and the only way to
+	 * iterate on gameplay while the backend is down.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Backend")
+	bool bBackendEnabled = true;
+
+	/**
+	 * No trailing slash: paths are appended verbatim.
+	 *
+	 * In DefaultGame.ini this value must be *quoted*: the ini parser swallows
+	 * "//" as a comment, so an unquoted URL loads as "https:" and every request
+	 * goes nowhere with no warning at all.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Backend")
+	FString BackendBaseUrl = TEXT("https://sarko-api-production.up.railway.app");
+
+	/**
+	 * The map id sent to /v1/raid/start, which is not necessarily the local data
+	 * file name.
+	 *
+	 * sarko-api unlocks maps by vehicle tier (internal/domain/garage.go), and
+	 * tier `none` unlocks exactly one map; sending anything else gets 403
+	 * map_locked. That map was renamed forest -> bridge in 80a5a4d, so today this
+	 * matches MapId — the indirection stays because the wire id belongs to the
+	 * backend's ladder and the data-file name belongs to this repo, and they have
+	 * already drifted apart once.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Backend")
+	FString BackendMapId = TEXT("bridge");
+
+	/**
+	 * How far short of the server's deadline the in-raid clock stops.
+	 *
+	 * /v1/raid/confirm returns expires_at = now + RAID_TTL + GRACE_BUFFER (22
+	 * minutes on the deployed service, RAID_TTL having been raised to 20m so a
+	 * 15-minute map plays in full). sarko-api/README.md is explicit that the
+	 * grace buffer is slack for a slow submission and not play time, so the
+	 * clock ends this many seconds earlier. Playing right up to expires_at means
+	 * a player who extracts on the last second can lose the run to network
+	 * latency.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Backend")
+	float BackendGraceMarginSeconds = 120.f;
+
+	/** Per-request timeout. Short: a stalled call must not hold the end of a raid open. */
+	UPROPERTY(EditAnywhere, config, Category = "Backend")
+	float BackendTimeoutSeconds = 10.f;
+
 	UPROPERTY(EditAnywhere, config, Category = "AI")
 	float EnemyHearingRadiusUU = 2500.f;
 

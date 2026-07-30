@@ -36,7 +36,7 @@ func TestOneOpenRaidPerPlayerIsEnforced(t *testing.T) {
 	}
 
 	insert := `INSERT INTO raid_sessions (player_id, map_id, seed, session_token_hash, loadout, expires_at)
-	           VALUES ($1, 'forest', 1, '\x00', '[]'::jsonb, now() + interval '1 minute')`
+	           VALUES ($1, 'bridge', 1, '\x00', '[]'::jsonb, now() + interval '1 minute')`
 
 	if _, err := pool.Exec(ctx, insert, playerID); err != nil {
 		t.Fatalf("first raid should insert: %v", err)

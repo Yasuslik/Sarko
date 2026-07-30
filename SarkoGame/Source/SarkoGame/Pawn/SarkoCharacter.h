@@ -10,6 +10,7 @@
 class UCameraComponent;
 class USpringArmComponent;
 class USarkoWeaponComponent;
+class USarkoBackpackComponent;
 
 namespace SarkoAim
 {
@@ -57,6 +58,10 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	TObjectPtr<USarkoWeaponComponent> WeaponComponent;
 
+	/** What this pawn is carrying. Replicated owner-only by the component itself. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Loot")
+	TObjectPtr<USarkoBackpackComponent> BackpackComponent;
+
 	/** Called by the controller the moment the aim thumb lifts. */
 	void RequestFire();
 
@@ -66,6 +71,39 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Health")
 	TObjectPtr<USarkoHealthComponent> HealthComponent;
+
+	/** Client intent: begin opening the container at this index. Validated server-side. */
+	void RequestBeginLoot(int32 ContainerIndex);
+
+	/** Client intent: stop opening. Also called automatically when the pawn walks away or dies. */
+	void RequestCancelLoot();
+
+	/** INDEX_NONE when not channelling. Server truth; the client keeps its own cosmetic copy. */
+	int32 GetLootChannelIndex() const { return LootChannelIndex; }
+
+	/** Seconds the channel has been running, or 0. Used by the HUD for the progress bar. */
+	float GetLootChannelElapsed() const;
+
+	/** Server only: pushes the dwell state the owning client's HUD draws. */
+	void SetExtractProgress(int32 ZoneIndex, float DwellSeconds);
+
+	/** INDEX_NONE when not in a zone. Owner-only replicated. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Extraction")
+	int32 ExtractZoneIndex = INDEX_NONE;
+
+	/** Seconds stood in the current zone. Owner-only replicated. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Extraction")
+	float ExtractDwellSeconds = 0.f;
+
+	/**
+	 * Server only: the raid is over for this pawn, whatever the outcome.
+	 *
+	 * Movement is disabled on the *server's* copy, which is what makes the
+	 * freeze real: a client that keeps sending ServerMove gets MOVE_None applied
+	 * to it. Deliberately not an unpossess — the HUD still has to read the
+	 * backpack it is about to list on the summary screen.
+	 */
+	void FreezeForRaidEnd();
 
 protected:
 	UFUNCTION()
@@ -108,7 +146,58 @@ private:
 	UFUNCTION(Server, Reliable)
 	void ServerRequestFire(FVector Direction);
 
+	/**
+	 * Server RPC. Reliable: a dropped begin would leave a player holding the
+	 * button with nothing happening, which reads as a broken container.
+	 *
+	 * ContainerIndex is hostile input — the server bounds-checks it against its
+	 * own map definition and re-measures the distance from its own copy of this
+	 * pawn, exactly as ServerRequestFire re-derives the muzzle origin.
+	 */
+	UFUNCTION(Server, Reliable)
+	void ServerBeginLoot(int32 ContainerIndex);
+
+	UFUNCTION(Server, Reliable)
+	void ServerCancelLoot();
+
+	/**
+	 * The server refused a begin request, so the client must drop the optimistic
+	 * channel it started (see RequestBeginLoot).
+	 *
+	 * Without this the bar sits at 100% for as long as the button is held on any
+	 * refused request — out of range on the server's copy of the pawn, an index
+	 * that is already emptied, a raid that finished mid-flight — and reads as "the
+	 * container is broken" rather than "that did not work".
+	 *
+	 * A client notify rather than a replicated rejection counter: the refusal
+	 * concerns exactly one client and carries which request it refused, so nothing
+	 * about it belongs in per-pawn replicated state that then also has to be
+	 * conditioned to the owner. Reliable, because a dropped refusal is the pinned
+	 * bar this exists to prevent.
+	 */
+	UFUNCTION(Client, Reliable)
+	void ClientLootRejected(int32 ContainerIndex);
+
+	/** Server: completes the channel, rolls and transfers. Called from Tick. */
+	void TickLootChannel();
+
+	/**
+	 * True once the game state carries a real outcome. Every server RPC on this
+	 * pawn consults it, so the freeze does not depend on the client politely
+	 * stopping — spec §4.5's "input is frozen" has to hold against a client that
+	 * does not cooperate.
+	 */
+	bool IsRaidFinishedNow() const;
+
 	FVector2D MoveIntent = FVector2D::ZeroVector;
 	float MoveScale = 0.f;
 	bool bIsAiming = false;
+
+	/** Server-side channel state. Not replicated: the HUD's bar is local and cosmetic. */
+	int32 LootChannelIndex = INDEX_NONE;
+	float LootChannelStartSeconds = 0.f;
+
+	/** The client's own copy, so the bar moves without waiting for a round trip. */
+	int32 LocalChannelIndex = INDEX_NONE;
+	float LocalChannelStartSeconds = 0.f;
 };

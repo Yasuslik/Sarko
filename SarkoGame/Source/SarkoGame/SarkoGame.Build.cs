@@ -22,7 +22,8 @@ public class SarkoGame : ModuleRules
 			"NavigationSystem",
 			"DeveloperSettings",
 			"Json",
-			"JsonUtilities"
+			"JsonUtilities",
+			"HTTP"
 		});
 	}
 }
