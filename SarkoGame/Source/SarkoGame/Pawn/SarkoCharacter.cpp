@@ -1,5 +1,7 @@
 #include "Pawn/SarkoCharacter.h"
 
+#include "Pawn/SarkoBody.h"
+
 #include "Camera/CameraComponent.h"
 #include "Combat/SarkoWeapon.h"
 #include "Components/CapsuleComponent.h"
@@ -76,6 +78,10 @@ void ASarkoCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
 void ASarkoCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// A visible body. ACharacter's mesh is empty by default, so without
+	// this the player cannot see their own character at all.
+	SarkoBody::AttachPlaceholderBody(*this, FLinearColor(0.25f, 0.5f, 0.95f));
 
 	if (HasAuthority() && HealthComponent)
 	{

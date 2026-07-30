@@ -325,10 +325,15 @@ FSarkoMapLayout SarkoMap::BuildLayout(int32 Seed, const USarkoRaidSettings& Sett
 			Stream.FRandRange(-Settings.MapExtent, Settings.MapExtent),
 			Stream.FRandRange(100.f, 200.f));
 		Block.Rotation = FRotator(0.f, Stream.FRandRange(0.f, 90.f), 0.f);
+		// Human-scaled cover, not buildings. The pawn is ~176 uu tall, so a
+		// 500 uu half-extent block is a ten-metre wall — at that size the map
+		// reads as a city block rather than a firefight. Waist-to-head height
+		// is what makes cover mean something: low blocks you shoot over, tall
+		// blocks you hide behind.
 		Block.Extent = FVector(
-			Stream.FRandRange(150.f, 500.f),
-			Stream.FRandRange(150.f, 500.f),
-			Stream.FRandRange(120.f, 260.f));
+			Stream.FRandRange(60.f, 180.f),
+			Stream.FRandRange(60.f, 180.f),
+			Stream.FRandRange(55.f, 130.f));
 		Layout.Cover.Add(Block);
 	}
 

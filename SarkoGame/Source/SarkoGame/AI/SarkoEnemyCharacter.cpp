@@ -1,5 +1,7 @@
 #include "AI/SarkoEnemyCharacter.h"
 
+#include "Pawn/SarkoBody.h"
+
 #include "AI/SarkoAIController.h"
 #include "Combat/SarkoWeapon.h"
 #include "Components/CapsuleComponent.h"
@@ -26,6 +28,9 @@ ASarkoEnemyCharacter::ASarkoEnemyCharacter()
 void ASarkoEnemyCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// Red, so it reads as hostile at a glance from directly above.
+	SarkoBody::AttachPlaceholderBody(*this, FLinearColor(0.85f, 0.18f, 0.15f));
 
 	if (HasAuthority() && HealthComponent)
 	{
