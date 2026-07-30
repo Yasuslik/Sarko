@@ -5,6 +5,7 @@
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Engine/Canvas.h"
+#include "Loot/SarkoBackpack.h"
 #include "Pawn/SarkoCharacter.h"
 
 void ASarkoHUD::DrawHUD()
@@ -28,6 +29,7 @@ void ASarkoHUD::DrawHUD()
 	DrawTopBar();
 	DrawHealth();
 	DrawAmmo();
+	DrawBackpack();
 }
 
 void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, const FLinearColor& Colour)
@@ -161,4 +163,34 @@ void ASarkoHUD::DrawAmmo()
 	const FLinearColor Colour = bReloading ? FLinearColor(1.f, 0.6f, 0.1f, 1.f) : FLinearColor::White;
 
 	DrawText(AmmoText, Colour, 24.f, 24.f, GEngine->GetLargeFont(), 1.f);
+}
+
+void ASarkoHUD::DrawBackpack()
+{
+	// Top-left, immediately right of the ammo readout: spec §9 puts every
+	// number along the top, and the bottom corners belong to the thumbs.
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	if (!Pawn || !Pawn->BackpackComponent)
+	{
+		return;
+	}
+
+	const USarkoBackpackComponent* Backpack = Pawn->BackpackComponent;
+	const int32 Used = Backpack->GetUsedSlots();
+	const int32 Limit = Backpack->GetSlotLimit();
+	const FString Text = FString::Printf(TEXT("%d/%d"), Used, Limit);
+
+	// The x offset is measured from the widest string DrawAmmo can produce
+	// rather than guessed: "RELOADING" in the large font is far wider than the
+	// two digits of a magazine count, and a fixed offset that clears "30"
+	// overlaps it the moment the player reloads.
+	float AmmoWidth = 0.f;
+	float AmmoHeight = 0.f;
+	GetTextSize(TEXT("RELOADING"), AmmoWidth, AmmoHeight, GEngine->GetLargeFont(), 1.f);
+	const float X = 24.f + AmmoWidth + 24.f;
+
+	// Amber when full, so "the crate had more in it" is legible at a glance
+	// rather than being discovered by counting.
+	const FLinearColor Colour = Used >= Limit ? FLinearColor(1.f, 0.6f, 0.1f, 1.f) : FLinearColor::White;
+	DrawText(Text, Colour, X, 24.f, GEngine->GetLargeFont(), 1.f);
 }

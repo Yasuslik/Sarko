@@ -24,4 +24,5 @@ private:
 	void DrawTopBar();
 	void DrawHealth();
 	void DrawAmmo();
+	void DrawBackpack();
 };

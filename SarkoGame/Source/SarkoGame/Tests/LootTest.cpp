@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 
+#include "Loot/SarkoBackpack.h"
 #include "Loot/SarkoItemCatalog.h"
 #include "Loot/SarkoLootTable.h"
 #include "Map/SarkoMapDefinition.h"
@@ -425,6 +426,98 @@ bool FSarkoRealLootTablesObeyTheDesignRules::RunTest(const FString& Parameters)
 		TestNotNull(*FString::Printf(TEXT("bridge.json tier '%s' has a loot table"), *Spot.Tier.ToString()),
 			Tables.Find(Spot.Tier));
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBackpackStacksAndOverflows,
+	"Sarko.Loot.BackpackStacksAndOverflows",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBackpackStacksAndOverflows::RunTest(const FString& Parameters)
+{
+	const FSarkoItemCatalog Catalog = FixtureCatalog(); // pistol/1, ammo_9mm/60, medkit/3, scrap_metal/10, chain/1
+	TArray<FSarkoItemStack> Slots;
+
+	// Stacking: 25 rounds of ammo (stackSize 60) is one slot, not 25.
+	TestEqual(TEXT("25 ammo all fits"), SarkoLoot::AddToBackpack(Slots, Catalog, 12, TEXT("ammo_9mm"), 25), 0);
+	TestEqual(TEXT("and occupies one slot"), Slots.Num(), 1);
+	TestEqual(TEXT("with the right quantity"), Slots[0].Quantity, 25);
+
+	// Topping up the same stack does not open a second slot.
+	TestEqual(TEXT("30 more ammo fits"), SarkoLoot::AddToBackpack(Slots, Catalog, 12, TEXT("ammo_9mm"), 30), 0);
+	TestEqual(TEXT("still one slot"), Slots.Num(), 1);
+	TestEqual(TEXT("55 rounds"), Slots[0].Quantity, 55);
+
+	// Past the stack size, a second slot opens and carries the remainder.
+	TestEqual(TEXT("20 more ammo fits, spilling into a new stack"),
+		SarkoLoot::AddToBackpack(Slots, Catalog, 12, TEXT("ammo_9mm"), 20), 0);
+	TestEqual(TEXT("two slots now"), Slots.Num(), 2);
+	TestEqual(TEXT("the first is full"), Slots[0].Quantity, 60);
+	TestEqual(TEXT("the second holds the rest"), Slots[1].Quantity, 15);
+
+	// A non-stacking item takes one whole slot each.
+	TArray<FSarkoItemStack> Pistols;
+	TestEqual(TEXT("three pistols fit"), SarkoLoot::AddToBackpack(Pistols, Catalog, 12, TEXT("pistol"), 3), 0);
+	TestEqual(TEXT("in three slots (stackSize 1)"), Pistols.Num(), 3);
+
+	// Overflow: what does not fit is reported, and nothing is invented.
+	TArray<FSarkoItemStack> Small;
+	const int32 Leftover = SarkoLoot::AddToBackpack(Small, Catalog, 2, TEXT("pistol"), 5);
+	TestEqual(TEXT("only two pistols fit in two slots"), Small.Num(), 2);
+	TestEqual(TEXT("three are reported as leftover"), Leftover, 3);
+
+	// Spec §4.3: overflow stays in the container, so the caller must be able to
+	// tell exactly how much it kept. Silently dropping the remainder would look
+	// identical to a full transfer and lose loot without a word.
+	int32 Total = 0;
+	for (const FSarkoItemStack& Stack : Small)
+	{
+		Total += Stack.Quantity;
+	}
+	TestEqual(TEXT("what fit plus what did not equals what was offered"), Total + Leftover, 5);
+
+	// A quantity that is zero or negative changes nothing, and an unknown item
+	// is refused whole rather than added with a guessed stack size.
+	TestEqual(TEXT("zero quantity is a no-op"), SarkoLoot::AddToBackpack(Small, Catalog, 2, TEXT("pistol"), 0), 0);
+	TestEqual(TEXT("negative quantity is a no-op"), SarkoLoot::AddToBackpack(Small, Catalog, 2, TEXT("pistol"), -4), 0);
+	TestEqual(TEXT("an unknown item is refused entirely"),
+		SarkoLoot::AddToBackpack(Small, Catalog, 12, TEXT("plutonium"), 3), 3);
+	TestEqual(TEXT("and did not touch the slots"), Small.Num(), 2);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBackpackFillsPartialStacksBeforeOpeningSlots,
+	"Sarko.Loot.BackpackFillsPartialStacksBeforeOpeningSlots",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBackpackFillsPartialStacksBeforeOpeningSlots::RunTest(const FString& Parameters)
+{
+	const FSarkoItemCatalog Catalog = FixtureCatalog();
+
+	// Two partial medkit stacks (stackSize 3) plus one more medkit must top up
+	// an existing stack rather than open a third slot — otherwise a 12-slot
+	// backpack fills up with half-empty stacks and the limit means nothing.
+	TArray<FSarkoItemStack> Slots;
+	Slots.Add(FSarkoItemStack{ TEXT("medkit"), 1 });
+	Slots.Add(FSarkoItemStack{ TEXT("scrap_metal"), 2 });
+
+	TestEqual(TEXT("one medkit fits"), SarkoLoot::AddToBackpack(Slots, Catalog, 12, TEXT("medkit"), 1), 0);
+	TestEqual(TEXT("no new slot was opened"), Slots.Num(), 2);
+	TestEqual(TEXT("the partial medkit stack grew"), Slots[0].Quantity, 2);
+
+	// A full backpack of partial stacks still accepts a top-up: the limit is
+	// slots, not items.
+	TArray<FSarkoItemStack> Full;
+	Full.Add(FSarkoItemStack{ TEXT("ammo_9mm"), 10 });
+	TestEqual(TEXT("a one-slot backpack still accepts more ammo"),
+		SarkoLoot::AddToBackpack(Full, Catalog, 1, TEXT("ammo_9mm"), 40), 0);
+	TestEqual(TEXT("still one slot"), Full.Num(), 1);
+	TestEqual(TEXT("50 rounds"), Full[0].Quantity, 50);
+	// But it refuses a different item, because that would need a second slot.
+	TestEqual(TEXT("a one-slot backpack refuses a different item"),
+		SarkoLoot::AddToBackpack(Full, Catalog, 1, TEXT("medkit"), 1), 1);
 	return true;
 }
 

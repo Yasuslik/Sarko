@@ -7,6 +7,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Core/SarkoRaidSettings.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Loot/SarkoBackpack.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Net/UnrealNetwork.h"
 
@@ -67,6 +68,7 @@ ASarkoCharacter::ASarkoCharacter()
 
 	HealthComponent = CreateDefaultSubobject<USarkoHealthComponent>(TEXT("Health"));
 	WeaponComponent = CreateDefaultSubobject<USarkoWeaponComponent>(TEXT("Weapon"));
+	BackpackComponent = CreateDefaultSubobject<USarkoBackpackComponent>(TEXT("Backpack"));
 }
 
 void ASarkoCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -91,6 +93,13 @@ void ASarkoCharacter::BeginPlay()
 
 void ASarkoCharacter::HandleDeath(AActor* Killer)
 {
+	// Spec §4.4: died means the haul is gone. This runs before the game mode is
+	// told, so by the time a result is submitted there is nothing to credit.
+	if (BackpackComponent)
+	{
+		BackpackComponent->ClearOnDeath();
+	}
+
 	GetCharacterMovement()->StopMovementImmediately();
 	GetCharacterMovement()->DisableMovement();
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);

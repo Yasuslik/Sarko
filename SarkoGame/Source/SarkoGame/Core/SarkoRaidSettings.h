@@ -76,6 +76,16 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "Combat")
 	float MinFireIntervalSeconds = 0.15f;
 
+	/**
+	 * In-raid backpack size in slots (spec §4.4). Items stack within a slot by
+	 * their catalog stackSize, so this is a decision about how many *kinds* of
+	 * thing a raid can bring home — the greed dial. The backend's
+	 * domain.MaxRaidStacks mirrors it as a plausibility cap, so raising it here
+	 * without raising it there makes full hauls get rejected at result time.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Loot")
+	int32 BackpackSlots = 12;
+
 	UPROPERTY(EditAnywhere, config, Category = "AI")
 	float EnemyHearingRadiusUU = 2500.f;
 

@@ -10,6 +10,7 @@
 class UCameraComponent;
 class USpringArmComponent;
 class USarkoWeaponComponent;
+class USarkoBackpackComponent;
 
 namespace SarkoAim
 {
@@ -56,6 +57,10 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	TObjectPtr<USarkoWeaponComponent> WeaponComponent;
+
+	/** What this pawn is carrying. Replicated owner-only by the component itself. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Loot")
+	TObjectPtr<USarkoBackpackComponent> BackpackComponent;
 
 	/** Called by the controller the moment the aim thumb lifts. */
 	void RequestFire();
