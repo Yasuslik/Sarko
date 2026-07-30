@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
-#include "Map/SarkoMapBuilder.h"
+#include "Map/SarkoMapDefinition.h"
 
 #include "SarkoRaidGameMode.generated.h"
 
@@ -40,6 +40,14 @@ public:
 
 	/** The layout this raid was built from; pawns spawn against it. */
 	FSarkoMapLayout CachedLayout;
+
+	/**
+	 * The hand-authored definition this raid was loaded from. Populated in
+	 * InitGame, before any login can occur; StartPlay reads its
+	 * RaidDurationSeconds and hands it to the game state so props spawn from
+	 * the same source the geometry does.
+	 */
+	FSarkoMapDefinition CachedDefinition;
 
 private:
 	/** Round-robins through CachedLayout.PlayerStarts across spawns and respawns. */

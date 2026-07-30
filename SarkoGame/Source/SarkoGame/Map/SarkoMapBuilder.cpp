@@ -7,6 +7,8 @@
 #include "Engine/DirectionalLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
+#include "Map/SarkoMapDefinition.h"
+#include "Map/SarkoMapKinds.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace
@@ -65,6 +67,43 @@ namespace
 			Component->SetIntensity(SunIntensityLux);
 			Component->SetLightColor(FLinearColor(1.f, 0.97f, 0.92f));
 			Component->SetCastShadows(true);
+		}
+	}
+
+	/**
+	 * Spawns one box-shaped actor with a given mesh, transform and extent. The
+	 * one spawn path SpawnLayout (floor, cover) and SpawnProps (props,
+	 * container markers) both use.
+	 *
+	 * The Movable -> assign -> Static ordering is load-bearing:
+	 * AStaticMeshActor's mesh component defaults to Static mobility, and
+	 * UStaticMeshComponent::SetStaticMesh silently refuses to change the mesh
+	 * on a Static component once the world has begun play — which it already
+	 * has by the time this runs. Without this, the mesh assignment below is a
+	 * no-op: the actor ends up with no mesh and no collision, so anything
+	 * standing on it just falls through forever. Go Movable just long enough
+	 * to assign the mesh, scale and collision, then lock it back to Static.
+	 */
+	void SpawnMeshBox(UWorld& World, UStaticMesh* Mesh, const FVector& Location, const FRotator& Rotation, const FVector& Extent, bool bCollides)
+	{
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		AStaticMeshActor* Actor = World.SpawnActor<AStaticMeshActor>(Location, Rotation, Params);
+		if (!Actor)
+		{
+			return;
+		}
+		if (UStaticMeshComponent* Component = Actor->GetStaticMeshComponent())
+		{
+			Component->SetMobility(EComponentMobility::Movable);
+			Component->SetStaticMesh(Mesh);
+			// The engine cube (and the engine cylinder, built to the same
+			// bounding-box convention) is 100 uu across, so scale is extent/50
+			// per axis.
+			Component->SetWorldScale3D(Extent / 50.f);
+			Component->SetCollisionEnabled(bCollides ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
+			Component->SetMobility(EComponentMobility::Static);
 		}
 	}
 
@@ -367,41 +406,52 @@ void SarkoMap::SpawnLayout(UWorld& World, const FSarkoMapLayout& Layout)
 		return;
 	}
 
-	const auto SpawnBox = [&World, CubeMesh](const FVector& Location, const FRotator& Rotation, const FVector& Extent)
-	{
-		FActorSpawnParameters Params;
-		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-		AStaticMeshActor* Actor = World.SpawnActor<AStaticMeshActor>(Location, Rotation, Params);
-		if (!Actor)
-		{
-			return;
-		}
-		if (UStaticMeshComponent* Mesh = Actor->GetStaticMeshComponent())
-		{
-			// AStaticMeshActor's mesh component defaults to Static mobility, and
-			// UStaticMeshComponent::SetStaticMesh silently refuses to change the
-			// mesh on a Static component once the world has begun play — which
-			// it already has by the time StartPlay spawns this geometry. Without
-			// this, the mesh assignment below is a no-op: the floor and every
-			// cover block end up with no mesh and no collision, so anything
-			// standing on the "floor" just falls through it forever. Go
-			// Movable just long enough to assign the mesh, scale and collision,
-			// then lock it back to Static.
-			Mesh->SetMobility(EComponentMobility::Movable);
-			Mesh->SetStaticMesh(CubeMesh);
-			// The engine cube is 100 uu across, so scale is extent/50 per axis.
-			Mesh->SetWorldScale3D(Extent / 50.f);
-			Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-			Mesh->SetMobility(EComponentMobility::Static);
-		}
-	};
-
 	// Floor: one flattened cube covering the play area.
-	SpawnBox(FVector(0.f, 0.f, -25.f), FRotator::ZeroRotator, FVector(Layout.Extent, Layout.Extent, 25.f));
+	SpawnMeshBox(World, CubeMesh, FVector(0.f, 0.f, -25.f), FRotator::ZeroRotator, FVector(Layout.Extent, Layout.Extent, 25.f), true);
 
 	for (const FSarkoCoverBlock& Block : Layout.Cover)
 	{
-		SpawnBox(Block.Location, Block.Rotation, Block.Extent);
+		SpawnMeshBox(World, CubeMesh, Block.Location, Block.Rotation, Block.Extent, true);
 	}
+}
+
+void SarkoMap::SpawnProps(UWorld& World, const FSarkoMapDefinition& Definition)
+{
+	int32 Skipped = 0;
+
+	for (const FSarkoMapProp& Prop : Definition.Props)
+	{
+		FSarkoPropKind Kind;
+		if (!FindPropKind(Prop.Kind, Kind))
+		{
+			UE_LOG(LogTemp, Error, TEXT("SarkoMap: unknown prop kind '%s' at %s — skipped"),
+				*Prop.Kind.ToString(), *Prop.Location.ToString());
+			++Skipped;
+			continue;
+		}
+
+		UStaticMesh* Mesh = Cast<UStaticMesh>(Kind.Mesh.TryLoad());
+		if (!Mesh)
+		{
+			UE_LOG(LogTemp, Error, TEXT("SarkoMap: mesh missing for kind '%s'"), *Prop.Kind.ToString());
+			++Skipped;
+			continue;
+		}
+
+		SpawnMeshBox(World, Mesh, Prop.Location, FRotator(0.f, Prop.Yaw, 0.f), Kind.Extent, Kind.bBlocksMovement);
+	}
+
+	// Container markers: the loot mechanic lands in a later plan, but the
+	// positions must be visible now so the layout can be judged.
+	UStaticMesh* CrateMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	if (CrateMesh)
+	{
+		for (const FSarkoLootContainerSpot& Spot : Definition.Containers)
+		{
+			SpawnMeshBox(World, CrateMesh, Spot.Location, FRotator::ZeroRotator, FVector(45.f, 45.f, 35.f), true);
+		}
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("SarkoMap: spawned %d props and %d containers, skipped %d"),
+		Definition.Props.Num() - Skipped, Definition.Containers.Num(), Skipped);
 }

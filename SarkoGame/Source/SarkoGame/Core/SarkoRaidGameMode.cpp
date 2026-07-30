@@ -30,18 +30,31 @@ void ASarkoRaidGameMode::InitGame(const FString& MapName, const FString& Options
 		Seed = FCString::Atoi(*SeedOption);
 	}
 
-	// Compute the layout here, not in StartPlay: UEngine::LoadMap spawns
-	// every local player's pawn (which calls RestartPlayer) before it calls
+	// Load the layout here, not in StartPlay: UEngine::LoadMap spawns every
+	// local player's pawn (which calls RestartPlayer) before it calls
 	// UWorld::BeginPlay, which is what invokes StartPlay. Waiting for
 	// StartPlay to populate CachedLayout means the very first RestartPlayer
 	// of a standalone or PIE launch always finds it empty and falls back to
 	// the world origin. InitGame runs ahead of player spawning in the same
-	// LoadMap sequence, and SarkoMap::BuildLayout is a pure function of
-	// (Seed, Settings) — no world or game state required — so it can safely
-	// run this early. The game state may not exist yet at this point, so
-	// this only computes the layout; StartPlay below hands it to the game
-	// state to spawn once a world and game state both exist.
-	CachedLayout = SarkoMap::BuildLayout(Seed, *GetDefault<USarkoRaidSettings>());
+	// LoadMap sequence, and loading a definition from disk needs no world or
+	// game state, so it can safely run this early. The game state may not
+	// exist yet at this point, so this only loads the definition; StartPlay
+	// below hands it to the game state to spawn once a world and game state
+	// both exist.
+	FSarkoMapDefinition Definition;
+	FString Error;
+	if (SarkoMap::LoadDefinitionFromDisk(GetDefault<USarkoRaidSettings>()->MapId.ToString(), Definition, Error))
+	{
+		CachedDefinition = Definition;
+		CachedLayout = SarkoMap::ToLayout(Definition);
+	}
+	else
+	{
+		// Loud, and empty. A hand-edited map file will break eventually, and a
+		// silently empty raid is the confusing outcome: the game starts, the
+		// player falls through nothing, and nothing says why.
+		UE_LOG(LogTemp, Error, TEXT("SarkoRaidGameMode: %s"), *Error);
+	}
 }
 
 void ASarkoRaidGameMode::StartPlay()
@@ -59,13 +72,13 @@ void ASarkoRaidGameMode::StartPlay()
 		if (ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>())
 		{
 			RaidState->Seed = Seed;
-			// The server already has the layout from InitGame, so it hands
-			// that over directly instead of recomputing it. The server
-			// never receives its own OnRep notify, so it must trigger the
-			// spawn explicitly; clients build and spawn their own copy via
-			// OnRep_Seed once the replicated value arrives, since they have
-			// no game mode instance to hand them a precomputed layout.
-			RaidState->SpawnPrebuiltLayout(CachedLayout);
+			// The server already has the layout and definition from InitGame,
+			// so it hands them over directly instead of reloading. The
+			// server never receives its own OnRep notify, so it must trigger
+			// the spawn explicitly; clients build and spawn their own copy
+			// via OnRep_Seed once the replicated value arrives, since they
+			// have no game mode instance to hand them a precomputed layout.
+			RaidState->SpawnPrebuiltLayout(CachedLayout, CachedDefinition);
 			CachedLayout = RaidState->GetLayout();
 		}
 
@@ -84,7 +97,13 @@ void ASarkoRaidGameMode::StartPlay()
 
 	if (ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>())
 	{
-		RaidState->StartRaidClock(GetDefault<USarkoRaidSettings>()->RaidDurationSeconds);
+		// Prefer the map's own duration when it set one — per-map duration
+		// (15 minutes here, 30 on real maps) — and fall back to the settings
+		// default otherwise, e.g. when the map failed to load.
+		const float DurationSeconds = CachedDefinition.RaidDurationSeconds > 0.f
+			? CachedDefinition.RaidDurationSeconds
+			: GetDefault<USarkoRaidSettings>()->RaidDurationSeconds;
+		RaidState->StartRaidClock(DurationSeconds);
 	}
 }
 

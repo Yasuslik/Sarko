@@ -6,6 +6,15 @@
 
 #include "SarkoRaidGameState.generated.h"
 
+// Forward-declared at file (global) scope on purpose, not inline as
+// "struct FSarkoMapDefinition" inside a namespace: doing that in
+// SarkoMapBuilder.h once already created a second, permanently-incomplete
+// SarkoMap::FSarkoMapDefinition that shadowed the real ::FSarkoMapDefinition
+// for every unqualified lookup inside that namespace. A class scope does not
+// have that failure mode, but declaring it here — matching
+// SarkoMapBuilder.h's fix — keeps one convention rather than two.
+struct FSarkoMapDefinition;
+
 /**
  * Raid clock and map seed. The server owns both; every client reads
  * RemainingSeconds to draw the timer.
@@ -51,15 +60,15 @@ public:
 	void BuildAndSpawnLayout();
 
 	/**
-	 * Spawns this machine's geometry for a layout that was already computed
-	 * elsewhere (the game mode's InitGame calls SarkoMap::BuildLayout — pure,
-	 * no world needed — before this game state is guaranteed to exist, so it
-	 * cannot spawn anything yet; StartPlay hands the result here once a world
-	 * and this game state both exist). Guarded by the same bLayoutBuilt flag
-	 * as BuildAndSpawnLayout, which calls this internally, so the two paths
-	 * can never double-spawn the geometry between them.
+	 * Spawns this machine's geometry and props for a layout/definition that
+	 * was already computed elsewhere (the game mode's InitGame loads the map
+	 * definition — pure, no world needed — before this game state is
+	 * guaranteed to exist, so it cannot spawn anything yet; StartPlay hands
+	 * the result here once a world and this game state both exist). Guarded
+	 * by the same bLayoutBuilt flag as BuildAndSpawnLayout, which calls this
+	 * internally, so the two paths can never double-spawn between them.
 	 */
-	void SpawnPrebuiltLayout(const FSarkoMapLayout& InLayout);
+	void SpawnPrebuiltLayout(const FSarkoMapLayout& InLayout, const FSarkoMapDefinition& InDefinition);
 
 	/** The layout this machine generated from Seed. Valid once BuildAndSpawnLayout has run. */
 	const FSarkoMapLayout& GetLayout() const { return Layout; }

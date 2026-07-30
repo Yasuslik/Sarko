@@ -136,3 +136,43 @@ bool FSarkoDefinitionConvertsToLayout::RunTest(const FString& Parameters)
 }
 
 #endif // WITH_AUTOMATION_TESTS
+
+#include "Map/SarkoMapKinds.h"
+
+#if WITH_AUTOMATION_TESTS
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoPropKindsAreComplete,
+	"Sarko.Map.PropKindsAreComplete",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoPropKindsAreComplete::RunTest(const FString& Parameters)
+{
+	// Every kind the Bridge map uses must resolve, or that prop silently does
+	// not appear and the map has a hole in it that no test would otherwise see.
+	const TArray<FName> UsedKinds = {
+		TEXT("wall"), TEXT("car_wreck"), TEXT("bus"), TEXT("house"),
+		TEXT("fuel_pump"), TEXT("freight_car"), TEXT("water_tower"),
+		TEXT("sandbag"), TEXT("crate"), TEXT("pipe"), TEXT("bridge_deck")
+	};
+
+	for (const FName& Kind : UsedKinds)
+	{
+		FSarkoPropKind Resolved;
+		const bool bFound = SarkoMap::FindPropKind(Kind, Resolved);
+		TestTrue(FString::Printf(TEXT("kind '%s' resolves"), *Kind.ToString()), bFound);
+		if (bFound)
+		{
+			TestTrue(FString::Printf(TEXT("kind '%s' has a positive extent"), *Kind.ToString()),
+				Resolved.Extent.GetMin() > 0.f);
+			TestTrue(FString::Printf(TEXT("kind '%s' names a mesh"), *Kind.ToString()),
+				Resolved.Mesh.IsValid() || !Resolved.Mesh.ToString().IsEmpty());
+		}
+	}
+
+	FSarkoPropKind Unknown;
+	TestFalse(TEXT("an unknown kind does not resolve"), SarkoMap::FindPropKind(TEXT("nonsense"), Unknown));
+	return true;
+}
+
+#endif // WITH_AUTOMATION_TESTS

@@ -28,6 +28,10 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "Map")
 	int32 CoverCount = 40;
 
+	/** Which file under Data/Maps to load. */
+	UPROPERTY(EditAnywhere, config, Category = "Map")
+	FName MapId = TEXT("bridge");
+
 	UPROPERTY(EditAnywhere, config, Category = "Movement")
 	float WalkSpeed = 400.f;
 

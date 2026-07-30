@@ -6,6 +6,19 @@
 
 class USarkoRaidSettings;
 
+// Forward-declared at global scope, not inside namespace SarkoMap below: an
+// elaborated-type-specifier ("struct FSarkoMapDefinition") written directly
+// inside a namespace block, with no prior visible declaration, introduces
+// the name into *that* namespace instead of finding the real global type —
+// silently creating a second, permanently-incomplete SarkoMap::FSarkoMapDefinition
+// that shadows the real ::FSarkoMapDefinition from SarkoMapDefinition.h for
+// every unqualified lookup inside namespace SarkoMap from then on. That broke
+// SarkoMapDefinition.cpp's own ParseDefinition/ToLayout bodies once this header
+// started forward-declaring the type. Declaring it here instead, then
+// referring to the plain (unqualified, un-re-elaborated) name below, avoids
+// that trap.
+struct FSarkoMapDefinition;
+
 /** One piece of cover: a box the player can hide behind and shots cannot cross. */
 USTRUCT()
 struct FSarkoCoverBlock
@@ -52,4 +65,12 @@ namespace SarkoMap
 
 	/** Spawns floor and cover for a layout using engine primitive meshes. */
 	void SpawnLayout(UWorld& World, const FSarkoMapLayout& Layout);
+
+	/**
+	 * Spawns everything in a definition that is not already covered by
+	 * SpawnLayout's floor and cover: props and container markers. Logs and
+	 * skips an unknown kind rather than substituting a default, because a
+	 * silently wrong prop is harder to notice than a missing one.
+	 */
+	void SpawnProps(UWorld& World, const FSarkoMapDefinition& Definition);
 }
