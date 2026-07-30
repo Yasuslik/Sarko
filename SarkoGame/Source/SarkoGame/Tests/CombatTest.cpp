@@ -118,6 +118,32 @@ bool FSarkoAimAssistEdgeCases::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoAimAssistIgnoresMuzzleHeightAtCloseRange,
+	"Sarko.Combat.AimAssistIgnoresMuzzleHeightAtCloseRange",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoAimAssistIgnoresMuzzleHeightAtCloseRange::RunTest(const FString& Parameters)
+{
+	// The muzzle sits 40uu above the ground while every candidate is a pawn
+	// *centre* (Z=0), so a 3D cone comparison carries a constant vertical
+	// bias that only matters at close range: at 6 deg half-angle, anything
+	// closer than 40/tan(6 deg) =~ 380uu reads as outside the cone even
+	// dead-centre. This target is comfortably inside the cone horizontally
+	// (2.86 deg) but the 40uu Z offset alone pushes the naive 3D angle to
+	// 8.11 deg, outside a 6 deg cone — so this only passes once the
+	// comparison is horizontal.
+	const FVector Origin(0.f, 0.f, 40.f);
+	const FVector Aim(1.f, 0.f, 0.f);
+	const TArray<FVector> CloseOffCentreTarget = { FVector(300.f, 15.f, 0.f) };
+
+	const FVector Result = SarkoCombat::ApplyAimAssist(Origin, Aim, 6.f, CloseOffCentreTarget);
+	TestFalse(TEXT("a close, horizontally in-cone target is not defeated by the muzzle's vertical offset"),
+		Result.Equals(Aim, 0.0001f));
+	TestTrue(TEXT("the close, horizontally in-cone target pulls the aim"), Result.Y > 0.f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FSarkoNormalizeFireDirection,
 	"Sarko.Combat.NormalizeFireDirection",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

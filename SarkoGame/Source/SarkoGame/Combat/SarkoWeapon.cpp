@@ -15,6 +15,21 @@ FVector SarkoCombat::ApplyAimAssist(FVector Origin, FVector Direction, float Con
 		return Direction;
 	}
 
+	// The cone test is horizontal only. Origin is the muzzle, offset above
+	// the ground by a fixed height, while every candidate is a pawn's
+	// *centre* at ground-relative Z — comparing the full 3D angle bakes that
+	// constant vertical offset into the result, and at close range it
+	// dominates: with a 6 deg cone and a 40uu muzzle height, anything closer
+	// than ~380uu reads as outside the cone even dead-centre. A purely
+	// horizontal aim assist has no reason to care about that Z difference at
+	// all, so the cone comparison (only the comparison — the final aimed
+	// direction below still points at the real 3D target) is done in 2D.
+	const FVector2D Aim2D = FVector2D(Aim.X, Aim.Y).GetSafeNormal();
+	if (Aim2D.IsNearlyZero())
+	{
+		return Direction;
+	}
+
 	const float CosLimit = FMath::Cos(FMath::DegreesToRadians(ConeHalfAngleDeg));
 
 	const FVector* Best = nullptr;
@@ -23,15 +38,15 @@ FVector SarkoCombat::ApplyAimAssist(FVector Origin, FVector Direction, float Con
 	for (const FVector& Target : CandidateTargets)
 	{
 		const FVector ToTarget = Target - Origin;
-		const FVector ToTargetDir = ToTarget.GetSafeNormal();
-		if (ToTargetDir.IsNearlyZero())
+		const FVector2D ToTargetDir2D = FVector2D(ToTarget.X, ToTarget.Y).GetSafeNormal();
+		if (ToTargetDir2D.IsNearlyZero())
 		{
 			continue;
 		}
 
 		// Strictly inside the cone. Anything else is left alone — this single
 		// comparison is what separates assistance from aimbotting.
-		if (FVector::DotProduct(Aim, ToTargetDir) < CosLimit)
+		if (FVector2D::DotProduct(Aim2D, ToTargetDir2D) < CosLimit)
 		{
 			continue;
 		}
