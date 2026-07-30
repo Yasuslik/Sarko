@@ -4,10 +4,12 @@
 #include "Core/SarkoRaidSettings.h"
 #include "Kismet/GameplayStatics.h"
 #include "Map/SarkoMapBuilder.h"
+#include "Pawn/SarkoCharacter.h"
 
 ASarkoRaidGameMode::ASarkoRaidGameMode()
 {
 	GameStateClass = ASarkoRaidGameState::StaticClass();
+	DefaultPawnClass = ASarkoCharacter::StaticClass();
 	bStartPlayersAsSpectators = false;
 }
 
@@ -52,4 +54,19 @@ void ASarkoRaidGameMode::StartPlay()
 	{
 		RaidState->StartRaidClock(GetDefault<USarkoRaidSettings>()->RaidDurationSeconds);
 	}
+}
+
+void ASarkoRaidGameMode::RestartPlayer(AController* NewPlayer)
+{
+	if (CachedLayout.PlayerStarts.Num() > 0)
+	{
+		const int32 Index = NextPlayerStartIndex % CachedLayout.PlayerStarts.Num();
+		++NextPlayerStartIndex;
+
+		const FTransform SpawnTransform(FRotator::ZeroRotator, CachedLayout.PlayerStarts[Index]);
+		RestartPlayerAtTransform(NewPlayer, SpawnTransform);
+		return;
+	}
+
+	Super::RestartPlayer(NewPlayer);
 }
