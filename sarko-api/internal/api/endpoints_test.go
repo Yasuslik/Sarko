@@ -454,10 +454,13 @@ func TestDeathResultAllowsSplitEntriesOfOneItem(t *testing.T) {
 	}
 	c.confirm(started)
 
-	// Build 50 entries of the same item id: they merge to one stack, within cap of 2.
+	// Build 50 entries of the same item id: they merge to one stack, within cap of
+	// 2. scrap_metal, not chain: 50 units must also stay under the per-item cap,
+	// which is 12 slots × that item's stackSize (120 for scrap_metal, 12 for the
+	// unstackable chain).
 	items := make([]map[string]any, 50)
 	for i := 0; i < 50; i++ {
-		items[i] = map[string]any{"item_id": "chain", "quantity": 1}
+		items[i] = map[string]any{"item_id": "scrap_metal", "quantity": 1}
 	}
 
 	var result store.RaidResult
@@ -476,8 +479,8 @@ func TestDeathResultAllowsSplitEntriesOfOneItem(t *testing.T) {
 	if code := c.do(http.MethodGet, "/v1/profile", nil, &profile); code != http.StatusOK {
 		t.Fatalf("profile status = %d, want 200", code)
 	}
-	if got := loot(profile.Stash); len(got) != 1 || got[0].ItemID != "chain" || got[0].Quantity != 50 {
-		t.Errorf("stash = %v, want one chain with quantity 50", got)
+	if got := loot(profile.Stash); len(got) != 1 || got[0].ItemID != "scrap_metal" || got[0].Quantity != 50 {
+		t.Errorf("stash = %v, want one scrap_metal with quantity 50", got)
 	}
 }
 
@@ -520,12 +523,51 @@ func TestRaidResultRejectsAnInventedItem(t *testing.T) {
 	}
 	c.confirm(started)
 
+	// The code, not just the status: this endpoint has several 400s (bad outcome,
+	// malformed stacks, oversized body), and a status-only assertion would stay
+	// green if the plausibility gate were removed and the request failed for some
+	// other reason.
+	var env errorEnvelope
 	if code := c.do(http.MethodPost, "/v1/raid/result", map[string]any{
 		"session_id":    started.SessionID,
 		"session_token": started.SessionToken,
 		"outcome":       "extracted",
 		"items":         []map[string]any{{"item_id": "turbine", "quantity": 1}},
-	}, nil); code != http.StatusBadRequest {
+	}, &env); code != http.StatusBadRequest {
 		t.Errorf("result with a helicopter turbine out of the starter map = %d, want 400", code)
+	}
+	if env.Error.Code != "implausible_items" {
+		t.Errorf("error code = %q, want implausible_items", env.Error.Code)
+	}
+}
+
+// TestRaidStartRejectsAnUnknownLoadoutItem covers the loadout branch of the
+// plausibility gate, which had no HTTP test: /v1/raid/start debits the loadout
+// from the stash, so an id the game does not define cannot have been there, and
+// the gate must refuse it before the store is touched. The assertion is on the
+// error code because raid/start's other 400 (missing map_id, malformed stacks)
+// would otherwise satisfy a status-only check.
+func TestRaidStartRejectsAnUnknownLoadoutItem(t *testing.T) {
+	c := newTestServer(t)
+	c.login("device-loadout-inventor")
+
+	var env errorEnvelope
+	code := c.do(http.MethodPost, "/v1/raid/start", map[string]any{
+		"map_id":  "bridge",
+		"loadout": []map[string]any{{"item_id": "unobtanium", "quantity": 1}},
+	}, &env)
+	if code != http.StatusBadRequest {
+		t.Errorf("raid/start with an invented loadout id = %d, want 400", code)
+	}
+	if env.Error.Code != "implausible_items" {
+		t.Errorf("error code = %q, want implausible_items", env.Error.Code)
+	}
+
+	// And the raid did not start: a rejected loadout must leave no session behind
+	// for the caller to submit a result against.
+	var started store.StartedRaid
+	if code := c.do(http.MethodPost, "/v1/raid/start",
+		map[string]any{"map_id": "bridge", "loadout": []any{}}, &started); code != http.StatusOK {
+		t.Errorf("raid/start after a rejected loadout = %d, want 200 (no session was left open)", code)
 	}
 }
