@@ -69,4 +69,32 @@ public:
 	 * how fast the enemy closes distance is its own balance question. */
 	UPROPERTY(EditAnywhere, config, Category = "AI")
 	float EnemyWalkSpeed = 340.f;
+
+	/**
+	 * There is no navmesh in this project (the map is spawned procedurally at
+	 * runtime, so nothing is baked, and nothing configures runtime generation
+	 * either) — the enemy steers directly at its target instead of pathing.
+	 * This is how far ahead it casts a single forward trace to decide whether
+	 * the straight line to the target is blocked and it needs to steer around
+	 * something instead of walking into it.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float AIAvoidanceTraceDistanceUU = 150.f;
+
+	/**
+	 * How sharply the enemy turns away from its target direction when the
+	 * avoidance trace reports the way ahead is blocked, in degrees. Applied as
+	 * a single fixed rotation of the desired direction rather than a search,
+	 * which is enough to curve around one box of cover on a flat plane.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float AIAvoidanceSteerDegrees = 60.f;
+
+	/**
+	 * Per-second NAVDIAG-style AI logging, off by default because it is noise
+	 * from every enemy every tick. Flip on only when actively debugging AI
+	 * movement.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	bool bLogAIDiagnostics = false;
 };

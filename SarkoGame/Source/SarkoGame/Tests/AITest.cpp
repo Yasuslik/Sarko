@@ -38,4 +38,43 @@ bool FSarkoAIStateTransitions::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoAISteerDirection,
+	"Sarko.AI.SteerDirection",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoAISteerDirection::RunTest(const FString& Parameters)
+{
+	// Pure steering math: no navmesh in this project, so the enemy steers
+	// straight at its target and only deviates when a forward trace (cast by
+	// the controller, not this function) reports the way is blocked. No world
+	// access here either — same reasoning as DecideState above.
+	using namespace SarkoAI;
+
+	const FVector2D Forward(1.f, 0.f);
+
+	{
+		const FVector2D Result = ComputeSteerDirection(Forward, /*bForwardBlocked*/ false, 60.f);
+		TestTrue(TEXT("clear path keeps the desired direction unchanged"), Result.Equals(Forward, KINDA_SMALL_NUMBER));
+	}
+
+	{
+		const FVector2D Result = ComputeSteerDirection(Forward, /*bForwardBlocked*/ true, 90.f);
+		TestTrue(TEXT("a 90-degree avoidance turn rotates (1,0) to (0,1)"), Result.Equals(FVector2D(0.f, 1.f), KINDA_SMALL_NUMBER));
+	}
+
+	{
+		const FVector2D Result = ComputeSteerDirection(Forward, /*bForwardBlocked*/ true, 45.f);
+		TestTrue(TEXT("a blocked steer direction stays unit length"), FMath::IsNearlyEqual(Result.Size(), 1.f, KINDA_SMALL_NUMBER));
+		TestTrue(TEXT("a positive avoidance angle steers away from straight-ahead"), !Result.Equals(Forward, KINDA_SMALL_NUMBER));
+	}
+
+	{
+		const FVector2D Result = ComputeSteerDirection(FVector2D::ZeroVector, /*bForwardBlocked*/ true, 60.f);
+		TestTrue(TEXT("no desired direction means no steer direction, blocked or not"), Result.IsNearlyZero());
+	}
+
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

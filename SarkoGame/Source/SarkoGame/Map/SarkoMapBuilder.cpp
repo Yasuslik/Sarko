@@ -312,13 +312,23 @@ void SarkoMap::SpawnLayout(UWorld& World, const FSarkoMapLayout& Layout)
 		{
 			return;
 		}
-		Actor->SetMobility(EComponentMobility::Static);
 		if (UStaticMeshComponent* Mesh = Actor->GetStaticMeshComponent())
 		{
+			// AStaticMeshActor's mesh component defaults to Static mobility, and
+			// UStaticMeshComponent::SetStaticMesh silently refuses to change the
+			// mesh on a Static component once the world has begun play — which
+			// it already has by the time StartPlay spawns this geometry. Without
+			// this, the mesh assignment below is a no-op: the floor and every
+			// cover block end up with no mesh and no collision, so anything
+			// standing on the "floor" just falls through it forever. Go
+			// Movable just long enough to assign the mesh, scale and collision,
+			// then lock it back to Static.
+			Mesh->SetMobility(EComponentMobility::Movable);
 			Mesh->SetStaticMesh(CubeMesh);
 			// The engine cube is 100 uu across, so scale is extent/50 per axis.
 			Mesh->SetWorldScale3D(Extent / 50.f);
 			Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			Mesh->SetMobility(EComponentMobility::Static);
 		}
 	};
 

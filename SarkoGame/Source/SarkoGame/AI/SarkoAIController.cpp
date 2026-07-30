@@ -3,9 +3,11 @@
 #include "Combat/SarkoWeapon.h"
 #include "Core/SarkoRaidSettings.h"
 #include "EngineUtils.h"
+#include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Pawn/SarkoCharacter.h"
 #include "Pawn/SarkoHealthComponent.h"
+#include "CollisionQueryParams.h"
 
 ESarkoAIState SarkoAI::DecideState(
 	ESarkoAIState Current,
@@ -27,6 +29,29 @@ ESarkoAIState SarkoAI::DecideState(
 		return ESarkoAIState::Shoot;
 	}
 	return ESarkoAIState::Chase;
+}
+
+FVector2D SarkoAI::ComputeSteerDirection(
+	FVector2D DesiredDirection,
+	bool bForwardBlocked,
+	float AvoidanceSteerDegrees)
+{
+	if (!bForwardBlocked || DesiredDirection.IsNearlyZero())
+	{
+		return DesiredDirection;
+	}
+
+	// Rotate the desired direction to the side by a fixed angle so the enemy
+	// curves around whatever the forward trace hit instead of pushing
+	// straight into it and stalling in place — a single fixed rotation is
+	// enough to clear one box of cover on a flat plane.
+	const float Radians = FMath::DegreesToRadians(AvoidanceSteerDegrees);
+	const float CosA = FMath::Cos(Radians);
+	const float SinA = FMath::Sin(Radians);
+	const FVector2D Rotated(
+		DesiredDirection.X * CosA - DesiredDirection.Y * SinA,
+		DesiredDirection.X * SinA + DesiredDirection.Y * CosA);
+	return Rotated.GetSafeNormal();
 }
 
 ASarkoAIController::ASarkoAIController()
@@ -70,6 +95,48 @@ APawn* ASarkoAIController::FindNearestLivingPlayer() const
 	return Nearest;
 }
 
+void ASarkoAIController::SteerToward(const FVector& TargetLocation, const USarkoRaidSettings& Settings, bool bLogThisTick)
+{
+	APawn* Self = GetPawn();
+	UWorld* World = GetWorld();
+	if (!Self || !World)
+	{
+		return;
+	}
+
+	const FVector ToTarget = TargetLocation - Self->GetActorLocation();
+	const FVector2D DesiredDirection = FVector2D(ToTarget.X, ToTarget.Y).GetSafeNormal();
+	if (DesiredDirection.IsNearlyZero())
+	{
+		return;
+	}
+
+	// There is no navmesh in this project — the map is spawned procedurally
+	// at runtime, so nothing is baked, and nothing configures runtime
+	// generation either — so MoveToLocation/MoveToActor always fail and would
+	// leave the enemy standing still forever. Steer straight at the target
+	// instead, with a single short forward trace for obstacle avoidance: the
+	// map is a flat plane with box cover and the view is top-down, so one
+	// trace along the desired direction is enough to tell whether the
+	// straight line is clear.
+	const FVector TraceStart = Self->GetActorLocation();
+	const FVector TraceEnd = TraceStart + FVector(DesiredDirection, 0.f) * Settings.AIAvoidanceTraceDistanceUU;
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SarkoAIAvoidance), /*bTraceComplex*/ false, Self);
+	FHitResult Hit;
+	const bool bForwardBlocked = World->LineTraceSingleByChannel(Hit, TraceStart, TraceEnd, ECC_WorldStatic, QueryParams);
+
+	const FVector2D SteerDirection = SarkoAI::ComputeSteerDirection(DesiredDirection, bForwardBlocked, Settings.AIAvoidanceSteerDegrees);
+
+	if (bLogThisTick)
+	{
+		UE_LOG(LogTemp, Log, TEXT("SarkoAI: loc=%s target=%s blocked=%d steer=%s"),
+			*Self->GetActorLocation().ToString(), *TargetLocation.ToString(), bForwardBlocked, *SteerDirection.ToString());
+	}
+
+	Self->AddMovementInput(FVector(SteerDirection, 0.f), 1.f);
+}
+
 void ASarkoAIController::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
@@ -96,10 +163,12 @@ void ASarkoAIController::Tick(float DeltaSeconds)
 	State = SarkoAI::DecideState(State, Target != nullptr, Distance, bLineOfSight,
 		Settings.EnemyHearingRadiusUU, Settings.WeaponRangeUU * 0.5f);
 
-	static float DebugLogAccum = 0.f;
 	DebugLogAccum += DeltaSeconds;
-	const bool bDebugLogThisTick = DebugLogAccum > 1.f;
-	if (bDebugLogThisTick) { DebugLogAccum = 0.f; }
+	const bool bLogThisTick = Settings.bLogAIDiagnostics && DebugLogAccum > 1.f;
+	if (bLogThisTick)
+	{
+		DebugLogAccum = 0.f;
+	}
 
 	switch (State)
 	{
@@ -109,28 +178,21 @@ void ASarkoAIController::Tick(float DeltaSeconds)
 			const float Extent = Settings.MapExtent * 0.8f;
 			PatrolTarget = FVector(FMath::FRandRange(-Extent, Extent), FMath::FRandRange(-Extent, Extent), Self->GetActorLocation().Z);
 		}
-		{
-			const EPathFollowingRequestResult::Type Result = MoveToLocation(PatrolTarget, 100.f);
-			if (bDebugLogThisTick)
-			{
-				UE_LOG(LogTemp, Warning, TEXT("NAVDIAG Patrol loc=%s target=%s moveResult=%d"), *Self->GetActorLocation().ToString(), *PatrolTarget.ToString(), (int32)Result);
-			}
-		}
+		SteerToward(PatrolTarget, Settings, bLogThisTick);
 		break;
 
 	case ESarkoAIState::Chase:
 		if (Target)
 		{
-			const EPathFollowingRequestResult::Type Result = MoveToActor(Target, 200.f);
-			if (bDebugLogThisTick)
-			{
-				UE_LOG(LogTemp, Warning, TEXT("NAVDIAG Chase loc=%s target=%s moveResult=%d"), *Self->GetActorLocation().ToString(), *Target->GetActorLocation().ToString(), (int32)Result);
-			}
+			SteerToward(Target->GetActorLocation(), Settings, bLogThisTick);
 		}
 		break;
 
 	case ESarkoAIState::Shoot:
-		StopMovement();
+		// No movement input this tick — direct steering has no path-following
+		// component to stop, so standing still while shooting just means not
+		// calling AddMovementInput; the character's own braking deceleration
+		// handles the rest.
 		if (Target && FireCooldown <= 0.f)
 		{
 			if (USarkoWeaponComponent* Weapon = Self->FindComponentByClass<USarkoWeaponComponent>())
