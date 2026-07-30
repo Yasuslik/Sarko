@@ -44,6 +44,19 @@ namespace SarkoAI
 		FVector2D DesiredDirection,
 		bool bForwardBlocked,
 		float AvoidanceSteerDegrees);
+
+	/**
+	 * Pure: given the direction the pawn wanted to go and the impact normal
+	 * of whatever blocked it, decides which side has more room. Returns +1
+	 * to steer by a positive rotation of the desired direction, -1 for a
+	 * negative one — the caller multiplies this into the degrees it passes
+	 * to ComputeSteerDirection. Replaces always rotating the same fixed way,
+	 * which is what let the enemy wedge itself in a concave pocket: a fixed
+	 * rotation can point straight into more geometry just as easily as the
+	 * original desired direction did. No world access — the trace itself is
+	 * cast by the controller.
+	 */
+	float ChooseSteerSign(FVector2D DesiredDirection, FVector2D ImpactNormal2D);
 }
 
 /** Drives one enemy pawn from the decision function above. */
@@ -72,6 +85,9 @@ private:
 	 */
 	void SteerToward(const FVector& TargetLocation, const class USarkoRaidSettings& Settings, bool bLogThisTick);
 
+	/** Picks a fresh, far-off wander point and forces a Patrol-style steer this tick. */
+	void RerollPatrolTarget(const APawn& Self, const class USarkoRaidSettings& Settings);
+
 	ESarkoAIState State = ESarkoAIState::Idle;
 	float FireCooldown = 0.f;
 	FVector PatrolTarget = FVector::ZeroVector;
@@ -83,4 +99,16 @@ private:
 	 * per second per enemy instead of flooding the log every tick.
 	 */
 	float DebugLogAccum = 0.f;
+
+	/**
+	 * Stuck detector state. StuckReferenceLocation is the last place the pawn
+	 * is known to have made real progress from; StuckSeconds is how long it
+	 * has stayed within AIStuckDisplacementThresholdUU of that point. This is
+	 * a backstop independent of the steering math above — it fires
+	 * regardless of *why* the pawn has not moved, which is what guarantees no
+	 * permanent freeze even if avoidance itself is defeated by the geometry.
+	 */
+	FVector StuckReferenceLocation = FVector::ZeroVector;
+	float StuckSeconds = 0.f;
+	bool bStuckReferenceInitialised = false;
 };

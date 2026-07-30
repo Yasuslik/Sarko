@@ -1,13 +1,15 @@
 #include "AI/SarkoAIController.h"
 
 #include "Combat/SarkoWeapon.h"
+#include "CollisionQueryParams.h"
+#include "CollisionShape.h"
+#include "Components/CapsuleComponent.h"
 #include "Core/SarkoRaidSettings.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Pawn/SarkoCharacter.h"
 #include "Pawn/SarkoHealthComponent.h"
-#include "CollisionQueryParams.h"
 
 ESarkoAIState SarkoAI::DecideState(
 	ESarkoAIState Current,
@@ -52,6 +54,17 @@ FVector2D SarkoAI::ComputeSteerDirection(
 		DesiredDirection.X * CosA - DesiredDirection.Y * SinA,
 		DesiredDirection.X * SinA + DesiredDirection.Y * CosA);
 	return Rotated.GetSafeNormal();
+}
+
+float SarkoAI::ChooseSteerSign(FVector2D DesiredDirection, FVector2D ImpactNormal2D)
+{
+	// The 2D perp-dot product's sign tells us which side of the desired
+	// direction the impact normal leans toward; steering toward the opposite
+	// side is steering toward the side with more room. A fixed rotation
+	// (the old behaviour) ignores this entirely and can just as easily turn
+	// into more geometry as away from it.
+	const float Cross = DesiredDirection.X * ImpactNormal2D.Y - DesiredDirection.Y * ImpactNormal2D.X;
+	return Cross >= 0.f ? 1.f : -1.f;
 }
 
 ASarkoAIController::ASarkoAIController()
@@ -115,26 +128,80 @@ void ASarkoAIController::SteerToward(const FVector& TargetLocation, const USarko
 	// at runtime, so nothing is baked, and nothing configures runtime
 	// generation either — so MoveToLocation/MoveToActor always fail and would
 	// leave the enemy standing still forever. Steer straight at the target
-	// instead, with a single short forward trace for obstacle avoidance: the
-	// map is a flat plane with box cover and the view is top-down, so one
-	// trace along the desired direction is enough to tell whether the
-	// straight line is clear.
+	// instead, and probe ahead with a swept capsule rather than a line from
+	// the capsule centre — a line reports "clear" even when geometry clips
+	// the pawn's shoulder, since the pawn's own collision capsule is roughly
+	// AIAvoidanceProbeRadiusUU wide.
+	float ProbeHalfHeight = Settings.AIAvoidanceProbeRadiusUU;
+	if (const ACharacter* Character = Cast<ACharacter>(Self))
+	{
+		ProbeHalfHeight = Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	}
+	const FCollisionShape ProbeShape = FCollisionShape::MakeCapsule(Settings.AIAvoidanceProbeRadiusUU, ProbeHalfHeight);
+	const FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SarkoAIAvoidance), /*bTraceComplex*/ false, Self);
 	const FVector TraceStart = Self->GetActorLocation();
-	const FVector TraceEnd = TraceStart + FVector(DesiredDirection, 0.f) * Settings.AIAvoidanceTraceDistanceUU;
 
-	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SarkoAIAvoidance), /*bTraceComplex*/ false, Self);
+	const auto ProbeDirection = [&](const FVector2D& Direction, FHitResult& OutHit) -> bool
+	{
+		const FVector TraceEnd = TraceStart + FVector(Direction, 0.f) * Settings.AIAvoidanceTraceDistanceUU;
+		return World->SweepSingleByChannel(OutHit, TraceStart, TraceEnd, FQuat::Identity, ECC_WorldStatic, ProbeShape, QueryParams);
+	};
+
 	FHitResult Hit;
-	const bool bForwardBlocked = World->LineTraceSingleByChannel(Hit, TraceStart, TraceEnd, ECC_WorldStatic, QueryParams);
+	const bool bForwardBlocked = ProbeDirection(DesiredDirection, Hit);
 
-	const FVector2D SteerDirection = SarkoAI::ComputeSteerDirection(DesiredDirection, bForwardBlocked, Settings.AIAvoidanceSteerDegrees);
+	FVector2D SteerDirection = DesiredDirection;
+	bool bFoundClearDirection = !bForwardBlocked;
+
+	if (bForwardBlocked)
+	{
+		// Re-trace the chosen direction instead of trusting one fixed
+		// rotation blindly: use the impact normal to pick a side, try that
+		// side, then the other, then both again at a wider angle. Bounded to
+		// four extra sweeps (two angles x two sides) so this can never loop.
+		const FVector2D ImpactNormal2D(Hit.ImpactNormal.X, Hit.ImpactNormal.Y);
+		const float ChosenSign = SarkoAI::ChooseSteerSign(DesiredDirection, ImpactNormal2D);
+
+		const float CandidateAngles[] = { Settings.AIAvoidanceSteerDegrees, Settings.AIAvoidanceWideSteerDegrees };
+		for (const float Angle : CandidateAngles)
+		{
+			for (const float SideSign : { ChosenSign, -ChosenSign })
+			{
+				const FVector2D Candidate = SarkoAI::ComputeSteerDirection(DesiredDirection, true, SideSign * Angle);
+				FHitResult SideHit;
+				if (!ProbeDirection(Candidate, SideHit))
+				{
+					SteerDirection = Candidate;
+					bFoundClearDirection = true;
+					break;
+				}
+			}
+			if (bFoundClearDirection)
+			{
+				break;
+			}
+		}
+	}
 
 	if (bLogThisTick)
 	{
-		UE_LOG(LogTemp, Log, TEXT("SarkoAI: loc=%s target=%s blocked=%d steer=%s"),
-			*Self->GetActorLocation().ToString(), *TargetLocation.ToString(), bForwardBlocked, *SteerDirection.ToString());
+		UE_LOG(LogTemp, Log, TEXT("SarkoAI: loc=%s target=%s blocked=%d clear=%d steer=%s"),
+			*Self->GetActorLocation().ToString(), *TargetLocation.ToString(), bForwardBlocked, bFoundClearDirection, *SteerDirection.ToString());
 	}
 
-	Self->AddMovementInput(FVector(SteerDirection, 0.f), 1.f);
+	// Every bounded attempt this tick was blocked: do not push against
+	// geometry. The stuck detector in Tick is the backstop that guarantees
+	// this can never be a permanent freeze even so.
+	if (bFoundClearDirection)
+	{
+		Self->AddMovementInput(FVector(SteerDirection, 0.f), 1.f);
+	}
+}
+
+void ASarkoAIController::RerollPatrolTarget(const APawn& Self, const USarkoRaidSettings& Settings)
+{
+	const float Extent = Settings.MapExtent * 0.8f;
+	PatrolTarget = FVector(FMath::FRandRange(-Extent, Extent), FMath::FRandRange(-Extent, Extent), Self.GetActorLocation().Z);
 }
 
 void ASarkoAIController::Tick(float DeltaSeconds)
@@ -170,13 +237,55 @@ void ASarkoAIController::Tick(float DeltaSeconds)
 		DebugLogAccum = 0.f;
 	}
 
-	switch (State)
+	// Stuck detector: a backstop against any steering failure, independent of
+	// *why* the pawn has not moved. Patrol's own re-roll only fires once the
+	// pawn gets within 200uu of PatrolTarget, so an enemy wedged 3000uu away
+	// from an unreachable target would otherwise never pick a new one and
+	// freeze for the rest of the raid.
+	if (!bStuckReferenceInitialised)
+	{
+		StuckReferenceLocation = Self->GetActorLocation();
+		bStuckReferenceInitialised = true;
+	}
+
+	bool bForceFallbackToPatrol = false;
+	const float DisplacementFromReference = FVector::Dist2D(Self->GetActorLocation(), StuckReferenceLocation);
+	if (DisplacementFromReference > Settings.AIStuckDisplacementThresholdUU)
+	{
+		StuckReferenceLocation = Self->GetActorLocation();
+		StuckSeconds = 0.f;
+	}
+	else
+	{
+		StuckSeconds += DeltaSeconds;
+		if (StuckSeconds >= Settings.AIStuckTimeThresholdSeconds)
+		{
+			RerollPatrolTarget(*Self, Settings);
+			bForceFallbackToPatrol = true;
+			StuckReferenceLocation = Self->GetActorLocation();
+			StuckSeconds = 0.f;
+
+			if (bLogThisTick || Settings.bLogAIDiagnostics)
+			{
+				UE_LOG(LogTemp, Log, TEXT("SarkoAI: stuck detector fired at loc=%s, new PatrolTarget=%s"),
+					*Self->GetActorLocation().ToString(), *PatrolTarget.ToString());
+			}
+		}
+	}
+
+	// A stuck Chase falls back to Patrol for this tick so it steers toward
+	// the fresh wander point instead of straight at the same blocked
+	// geometry it was already failing to get around.
+	const ESarkoAIState EffectiveState = (bForceFallbackToPatrol && State == ESarkoAIState::Chase)
+		? ESarkoAIState::Patrol
+		: State;
+
+	switch (EffectiveState)
 	{
 	case ESarkoAIState::Patrol:
 		if (FVector::Dist2D(Self->GetActorLocation(), PatrolTarget) < 200.f)
 		{
-			const float Extent = Settings.MapExtent * 0.8f;
-			PatrolTarget = FVector(FMath::FRandRange(-Extent, Extent), FMath::FRandRange(-Extent, Extent), Self->GetActorLocation().Z);
+			RerollPatrolTarget(*Self, Settings);
 		}
 		SteerToward(PatrolTarget, Settings, bLogThisTick);
 		break;

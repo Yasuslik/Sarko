@@ -91,6 +91,39 @@ public:
 	float AIAvoidanceSteerDegrees = 60.f;
 
 	/**
+	 * Fallback steer angle tried on both sides when the narrow
+	 * AIAvoidanceSteerDegrees rotation is also blocked. Wider than the
+	 * primary angle so a pocket that defeats the first attempt has a real
+	 * chance of clearing on the second.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float AIAvoidanceWideSteerDegrees = 120.f;
+
+	/**
+	 * Radius of the capsule swept ahead of the enemy to test for obstacles.
+	 * A line trace from the capsule centre reports "clear" even when
+	 * geometry clips the pawn's shoulder, since the enemy's own collision
+	 * capsule is roughly this wide; sweeping a capsule this size instead
+	 * catches that case.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float AIAvoidanceProbeRadiusUU = 40.f;
+
+	/**
+	 * Backstop against any steering failure: if the enemy has not moved more
+	 * than this far (in either state — patrol or chase) within
+	 * AIStuckTimeThresholdSeconds, it re-rolls PatrolTarget and falls back to
+	 * patrolling for that tick, regardless of what the steering math decided.
+	 * This guarantees no permanent freeze even if avoidance is defeated by
+	 * the geometry.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float AIStuckDisplacementThresholdUU = 50.f;
+
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float AIStuckTimeThresholdSeconds = 2.f;
+
+	/**
 	 * Per-second NAVDIAG-style AI logging, off by default because it is noise
 	 * from every enemy every tick. Flip on only when actively debugging AI
 	 * movement.

@@ -77,4 +77,33 @@ bool FSarkoAISteerDirection::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoAISteerSideChoice,
+	"Sarko.AI.SteerSideChoice",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoAISteerSideChoice::RunTest(const FString& Parameters)
+{
+	// Pure side-choice: the whole point of item 2 is that this must depend on
+	// the impact normal instead of always picking the same side, or the enemy
+	// can rotate straight into more geometry in a concave pocket exactly the
+	// way the old fixed-CCW rotation did.
+	using namespace SarkoAI;
+
+	const FVector2D Forward(1.f, 0.f);
+
+	const float SignA = ChooseSteerSign(Forward, FVector2D(0.f, 1.f));
+	const float SignB = ChooseSteerSign(Forward, FVector2D(0.f, -1.f));
+	TestTrue(TEXT("a normal on one side and its mirror choose opposite sides"), SignA * SignB < 0.f);
+	TestTrue(TEXT("the chosen sign is always +1 or -1"), FMath::IsNearlyEqual(FMath::Abs(SignA), 1.f) && FMath::IsNearlyEqual(FMath::Abs(SignB), 1.f));
+
+	// A straight-on hit (normal opposes the desired direction exactly) is a
+	// degenerate tie: it must still return a deterministic, well-formed sign
+	// rather than zero or NaN.
+	const float SignHeadOn = ChooseSteerSign(Forward, FVector2D(-1.f, 0.f));
+	TestTrue(TEXT("a head-on hit still resolves to +1 or -1, not zero"), FMath::IsNearlyEqual(FMath::Abs(SignHeadOn), 1.f));
+
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS
