@@ -1,9 +1,12 @@
 #include "Map/SarkoMapBuilder.h"
 
+#include "Components/DirectionalLightComponent.h"
+#include "Components/LightComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Core/SarkoRaidSettings.h"
+#include "Engine/DirectionalLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
-#include "Components/StaticMeshComponent.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace
@@ -14,6 +17,56 @@ namespace
 	constexpr int32 PlayerStartCount = 4;
 	constexpr int32 EnemySpawnCount = 8;
 	constexpr int32 ClearPointAttempts = 64;
+
+	/**
+	 * Sun angle. Steep rather than horizontal so a top-down camera sees lit
+	 * surfaces rather than long shadows across everything.
+	 */
+	const FRotator SunRotation(-55.f, 30.f, 0.f);
+
+	/** Bright enough to read grey boxes on a phone screen in daylight. */
+	constexpr float SunIntensityLux = 6.f;
+
+	/**
+	 * Exactly one directional light — the sun.
+	 *
+	 * Not two. The mobile forward shading path supports a single directional
+	 * light, and a second one makes the engine warn on screen that lights are
+	 * "competing to be the single one used for forward shading" and then pick
+	 * one by brightness. A fill light from the opposite side is the obvious way
+	 * to stop cover's shadowed faces going black, and it is exactly what this
+	 * renderer cannot have.
+	 *
+	 * Not a SkyLight for the ambient either: a sky light needs a cubemap or a
+	 * scene to capture, and this level is empty and this project authors no
+	 * assets, so it would light the scene with the black it found. The shadowed
+	 * sides instead read via the sun's shadow softness and the material's own
+	 * base colour, which is enough for grey boxes.
+	 *
+	 * Movable mobility matters: this is spawned after BeginPlay, so there is no
+	 * baked lighting for a Static light to have contributed to, and a Static
+	 * light created at runtime lights nothing at all.
+	 */
+	void SpawnLighting(UWorld& World)
+	{
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		ADirectionalLight* Sun = World.SpawnActor<ADirectionalLight>(FVector(0.f, 0.f, 5000.f), SunRotation, Params);
+		if (!Sun)
+		{
+			UE_LOG(LogTemp, Error, TEXT("SarkoMap: failed to spawn the sun; the raid will render black"));
+			return;
+		}
+
+		Sun->SetMobility(EComponentMobility::Movable);
+		if (ULightComponent* Component = Sun->GetLightComponent())
+		{
+			Component->SetIntensity(SunIntensityLux);
+			Component->SetLightColor(FLinearColor(1.f, 0.97f, 0.92f));
+			Component->SetCastShadows(true);
+		}
+	}
 
 	/**
 	 * Extra push past the required clearance distance so the result is
@@ -293,6 +346,13 @@ FSarkoMapLayout SarkoMap::BuildLayout(int32 Seed, const USarkoRaidSettings& Sett
 
 void SarkoMap::SpawnLayout(UWorld& World, const FSarkoMapLayout& Layout)
 {
+	// Light first, or the whole raid renders black. /Engine/Maps/Entry is an
+	// empty container with no lights in it, and this project authors no level,
+	// so nothing lights the scene unless we spawn it here. The HUD still draws
+	// (it is 2D primitives over the frame), which makes the symptom confusing:
+	// sticks and timer visible, world pitch black.
+	SpawnLighting(World);
+
 	// Engine primitives, referenced by path. Nothing is authored — this is how
 	// the slice gets geometry without a single .uasset of our own.
 	UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
