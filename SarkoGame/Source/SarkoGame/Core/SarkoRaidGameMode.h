@@ -4,6 +4,9 @@
 #include "Core/SarkoRaidGameState.h"
 #include "GameFramework/GameModeBase.h"
 #include "Map/SarkoMapDefinition.h"
+// Included, not forward-declared: FSarkoRaidSession is a USTRUCT held by value
+// below, so the full type has to be here.
+#include "Net/SarkoBackendClient.h"
 
 #include "SarkoRaidGameMode.generated.h"
 
@@ -100,6 +103,41 @@ public:
 	FSarkoMapDefinition CachedDefinition;
 
 private:
+	/**
+	 * Kicks off auth → start → confirm. Called from the tail of StartPlay, **not**
+	 * from BeginPlay: AGameModeBase::StartPlay dispatches BeginPlay to every actor
+	 * including this one, so a BeginPlay override runs *inside* Super::StartPlay()
+	 * — before this mode has spawned the layout and the bots. Activating a raid
+	 * that early is the same InitGame-vs-StartPlay ordering trap that already bit
+	 * the player-spawn path.
+	 */
+	void BeginBackendSession();
+
+	/** Everything after a failed call: log, use the local seed, keep playing (spec §4.6). */
+	void FallBackToOfflineRaid(const FString& Reason);
+
+	/** Marks the seed authoritative, starts the clock and lets containers open. */
+	void ActivateRaid(int32 AuthoritativeSeed, float ClockSeconds);
+
+	/**
+	 * The map file's own raid duration, or the settings default when the map
+	 * carried none (a bridge.json that failed to load reads as zero, and a
+	 * zero-second clock is a raid that expires into MIA on the spawn frame).
+	 */
+	float MapClockSeconds() const;
+
+	/** Shared, because the client is used across several async callbacks. */
+	TSharedPtr<class FSarkoBackendClient> Backend;
+
+	/** Empty session id means offline: nothing to submit and nothing to save. */
+	FSarkoRaidSession Session;
+
+	/** The result goes out exactly once per raid; the backend's idempotency is a net, not a licence. */
+	bool bSessionSubmitted = false;
+
+	/** So the loud offline line is logged once per raid rather than per failed hop. */
+	bool bOfflineDegraded = false;
+
 	/** Round-robins through CachedLayout.PlayerStarts across spawns and respawns. */
 	int32 NextPlayerStartIndex = 0;
 

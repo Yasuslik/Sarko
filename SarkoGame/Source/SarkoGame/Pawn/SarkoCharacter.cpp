@@ -245,7 +245,12 @@ void ASarkoCharacter::ServerBeginLoot_Implementation(int32 ContainerIndex)
 {
 	const ASarkoRaidGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ASarkoRaidGameMode>() : nullptr;
 	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
-	if (!GameMode || !RaidState || RaidState->IsRaidFinished())
+	// IsLootable() rather than !IsRaidFinished(): it also refuses a raid whose
+	// authoritative seed has not landed yet (the one HTTP round trip between
+	// StartPlay and ASarkoRaidGameMode::ActivateRaid). Refusing is the safe
+	// direction — a roll against the placeholder seed is a roll that disagrees with
+	// every later re-derivation of the same container.
+	if (!GameMode || !RaidState || !RaidState->IsLootable())
 	{
 		ClientLootRejected(ContainerIndex);
 		return;

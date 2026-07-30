@@ -257,9 +257,13 @@ void ASarkoPlayerController::UpdateInteract()
 	// waved through: it owns both the container registry read below and the looted
 	// bits, so without it there is nothing to interact with and no way to know
 	// whether it has been emptied already.
+	//
+	// IsLootable() also covers the other end: before the raid's authoritative seed
+	// arrives the server refuses every loot request, so a prompt drawn during that
+	// round trip would only invite a press that cannot work.
 	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
 	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
-	if (!Pawn || !RaidState || RaidState->IsRaidFinished())
+	if (!Pawn || !RaidState || !RaidState->IsLootable())
 	{
 		bInteractHeld = false;
 		HeldContainerIndex = INDEX_NONE;

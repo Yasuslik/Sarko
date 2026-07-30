@@ -1,5 +1,6 @@
 #include "Net/SarkoBackendClient.h"
 
+#include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Dom/JsonObject.h"
 #include "HttpModule.h"
@@ -213,6 +214,42 @@ FString SarkoBackend::EnsureDeviceId()
 			*Path);
 	}
 	return Fresh;
+}
+
+float SarkoBackend::ClockSecondsFromDeadline(float MapDurationSeconds, double SecondsUntilDeadline, float GraceMarginSeconds)
+{
+	/** Never end a raid on the spawn frame, whatever the server said. */
+	constexpr float MinimumPlayableSeconds = 30.f;
+
+	const float FromMap = MapDurationSeconds > 0.f
+		? MapDurationSeconds
+		: GetDefault<USarkoRaidSettings>()->RaidDurationSeconds;
+
+	const float FromServer = static_cast<float>(SecondsUntilDeadline) - FMath::Max(0.f, GraceMarginSeconds);
+
+	// The map is the ceiling and the server is the other ceiling; the floor stops
+	// a bad clock or an old deadline from producing a raid that is already over.
+	return FMath::Max(MinimumPlayableSeconds, FMath::Min(FromMap, FMath::Max(FromServer, MinimumPlayableSeconds)));
+}
+
+const TCHAR* SarkoBackend::OutcomeToWire(ESarkoRaidOutcome Outcome)
+{
+	// Only Extracted maps to "extracted". Everything else — including a state
+	// that should never reach here — is "died", because the failure direction
+	// that costs a player their haul is recoverable and the one that grants free
+	// loot is not.
+	return Outcome == ESarkoRaidOutcome::Extracted ? TEXT("extracted") : TEXT("died");
+}
+
+TArray<FSarkoItemStack> SarkoBackend::StarterLoadout()
+{
+	// Mirrors domain.StarterKit() minus the medkit. Keep them in step: this is
+	// debited from the stash at /v1/raid/start, and asking for more than the kit
+	// granted is 409 insufficient_items on a brand-new player's first raid.
+	TArray<FSarkoItemStack> Loadout;
+	Loadout.Add(FSarkoItemStack{ TEXT("pistol"), 1 });
+	Loadout.Add(FSarkoItemStack{ TEXT("ammo_9mm"), 60 });
+	return Loadout;
 }
 
 void FSarkoBackendClient::Send(const FString& Path, const FString& Body, bool bAuthenticated,

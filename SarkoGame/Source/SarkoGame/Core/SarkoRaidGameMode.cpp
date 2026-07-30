@@ -95,7 +95,17 @@ void ASarkoRaidGameMode::StartPlay()
 	{
 		if (ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>())
 		{
-			RaidState->Seed = Seed;
+			// Seed is deliberately *not* assigned here any more, and the clock is
+			// deliberately not started: both happen in ActivateRaid, once
+			// sarko-api's raid/start has handed back the authoritative seed (or the
+			// offline fallback has chosen the local one). Assigning the placeholder
+			// here would let a container roll against a seed that is about to change
+			// — two different hauls for one crate — and would replicate a "the raid
+			// has begun" signal a round trip too early.
+			//
+			// The geometry below does not wait, because none of it depends on the
+			// seed: every machine reduces the same shipped data file, and
+			// RestartPlayer has already run by now and needs the layout.
 			// The server already has the layout and definition from InitGame,
 			// so it hands them over directly instead of reloading. The
 			// server never receives its own OnRep notify, so it must trigger
@@ -119,16 +129,148 @@ void ASarkoRaidGameMode::StartPlay()
 		}
 	}
 
-	if (ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>())
+	// Last, so the world is fully built before a completion callback can land in
+	// it: the raid becomes live in ActivateRaid, one HTTP round trip from here.
+	if (!GetDefault<USarkoRaidSettings>()->bBackendEnabled)
 	{
-		// Prefer the map's own duration when it set one — per-map duration
-		// (15 minutes here, 30 on real maps) — and fall back to the settings
-		// default otherwise, e.g. when the map failed to load.
-		const float DurationSeconds = CachedDefinition.RaidDurationSeconds > 0.f
-			? CachedDefinition.RaidDurationSeconds
-			: GetDefault<USarkoRaidSettings>()->RaidDurationSeconds;
-		RaidState->StartRaidClock(DurationSeconds);
+		FallBackToOfflineRaid(TEXT("the backend is disabled in settings"));
+		return;
 	}
+	BeginBackendSession();
+}
+
+void ASarkoRaidGameMode::BeginBackendSession()
+{
+	Backend = MakeShared<FSarkoBackendClient>();
+
+	// TWeakObjectPtr through every hop: an HTTP completion can land after the
+	// level has been torn down, and this game mode is the first thing to go.
+	TWeakObjectPtr<ASarkoRaidGameMode> WeakThis(this);
+
+	Backend->Authenticate([WeakThis](bool bAuthenticated, const FString& AuthError)
+	{
+		ASarkoRaidGameMode* Self = WeakThis.Get();
+		if (!Self || !Self->Backend)
+		{
+			return;
+		}
+		if (!bAuthenticated)
+		{
+			Self->FallBackToOfflineRaid(AuthError);
+			return;
+		}
+
+		const FString MapId = GetDefault<USarkoRaidSettings>()->BackendMapId;
+		Self->Backend->StartRaid(MapId, SarkoBackend::StarterLoadout(),
+			[WeakThis](bool bStarted, const FSarkoRaidSession& NewSession, const FString& StartError)
+			{
+				ASarkoRaidGameMode* Inner = WeakThis.Get();
+				if (!Inner || !Inner->Backend)
+				{
+					return;
+				}
+				if (!bStarted)
+				{
+					Inner->FallBackToOfflineRaid(StartError);
+					return;
+				}
+				Inner->Session = NewSession;
+
+				// Confirm immediately. Until it lands the session is `pending`
+				// and the sweeper hands the loadout back after PENDING_TTL (60 s
+				// on the deployed service), which would leave a raid running
+				// against a session that no longer accepts a result.
+				Inner->Backend->ConfirmRaid(NewSession,
+					[WeakThis](bool bConfirmed, const FDateTime& ExpiresAt, const FString& ConfirmError)
+					{
+						ASarkoRaidGameMode* Confirmed = WeakThis.Get();
+						if (!Confirmed)
+						{
+							return;
+						}
+						if (!bConfirmed)
+						{
+							Confirmed->FallBackToOfflineRaid(ConfirmError);
+							return;
+						}
+
+						const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+						const double SecondsLeft = (ExpiresAt - FDateTime::UtcNow()).GetTotalSeconds();
+						const float Clock = SarkoBackend::ClockSecondsFromDeadline(
+							Confirmed->CachedDefinition.RaidDurationSeconds, SecondsLeft,
+							Settings.BackendGraceMarginSeconds);
+
+						if (Confirmed->MapClockSeconds() > Clock + 1.f)
+						{
+							// Loud, because it is a configuration mismatch a
+							// player would experience as "the raid was shorter
+							// than the map says". RAID_TTL is 20m on the deployed
+							// service against a 15-minute map, so this line
+							// should never appear — if it does, RAID_TTL was
+							// lowered and raising it is the fix.
+							UE_LOG(LogTemp, Warning,
+								TEXT("SarkoRaidGameMode: the map asks for %.0fs but the server's deadline allows %.0fs — raising RAID_TTL is the fix"),
+								Confirmed->MapClockSeconds(), Clock);
+						}
+
+						Confirmed->ActivateRaid(Confirmed->Session.Seed, Clock);
+					});
+			});
+	});
+}
+
+void ASarkoRaidGameMode::FallBackToOfflineRaid(const FString& Reason)
+{
+	if (bOfflineDegraded)
+	{
+		// One line per raid, not one per failed hop: the first failure is the one
+		// that explains the rest, and a repeated Error reads like a loop.
+		return;
+	}
+	bOfflineDegraded = true;
+
+	// Spec §4.6: any HTTP failure logs loudly, the raid still plays, nothing
+	// persists. The game must never hard-lock on the network — the alternative is
+	// a black screen in a lift, and a developer who cannot iterate on a plane.
+	UE_LOG(LogTemp, Error,
+		TEXT("SarkoRaidGameMode: playing OFFLINE — nothing will be saved. Reason: %s"), *Reason);
+
+	// Cleared so FinishRaid can tell "no session" from "a session that failed
+	// halfway": an empty session id is the one signal it reads.
+	Session = FSarkoRaidSession();
+	// The Seed the game mode already holds (URL option or its default) becomes
+	// authoritative for this raid.
+	ActivateRaid(Seed, MapClockSeconds());
+}
+
+void ASarkoRaidGameMode::ActivateRaid(int32 AuthoritativeSeed, float ClockSeconds)
+{
+	ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>();
+	if (!RaidState || RaidState->bSessionReady)
+	{
+		return;
+	}
+
+	Seed = AuthoritativeSeed;
+	RaidState->Seed = AuthoritativeSeed;
+	RaidState->StartRaidClock(ClockSeconds);
+	// Last of the three: it is what unlocks looting and the dwell, so it must not
+	// be observable before the seed and the clock it belongs with.
+	RaidState->bSessionReady = true;
+
+	UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: raid live — seed %d, clock %.0fs, session '%s'"),
+		AuthoritativeSeed, ClockSeconds, Session.SessionId.IsEmpty() ? TEXT("(offline)") : *Session.SessionId);
+}
+
+float ASarkoRaidGameMode::MapClockSeconds() const
+{
+	// Prefer the map's own duration when it set one — per-map duration (15 minutes
+	// here, 30 on real maps) — and fall back to the settings default otherwise,
+	// e.g. when the map failed to load. Zero would start a clock that is already
+	// expired, which the Tick below reads as MIA on the first frame.
+	return CachedDefinition.RaidDurationSeconds > 0.f
+		? CachedDefinition.RaidDurationSeconds
+		: GetDefault<USarkoRaidSettings>()->RaidDurationSeconds;
 }
 
 void ASarkoRaidGameMode::RestartPlayer(AController* NewPlayer)
@@ -154,7 +296,13 @@ void ASarkoRaidGameMode::Tick(float DeltaSeconds)
 	// authority-side by construction — including every location it measures.
 	ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>();
 	UWorld* World = GetWorld();
-	if (!RaidState || !World || RaidState->IsRaidFinished())
+	// IsLootable() is "the raid is live": no outcome yet, and the session has
+	// settled. The second half matters as much as the first — a dwell completing
+	// during the auth→start→confirm round trip would finish the raid before there
+	// is a session to submit it to, which is the one path that silently throws a
+	// haul away. The clock is not running yet either (ActivateRaid starts it), so
+	// the round trip costs no raid time.
+	if (!RaidState || !World || !RaidState->IsLootable())
 	{
 		return;
 	}
@@ -275,7 +423,72 @@ void ASarkoRaidGameMode::FinishRaid(ESarkoRaidOutcome NewOutcome)
 	UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: raid finished as %s, %.1f s left on the clock"),
 		*UEnum::GetValueAsString(NewOutcome), RaidState->RemainingSeconds);
 
-	// Task 8 adds the backend submission here. Deliberately after the state is
-	// set: the HUD must show the outcome immediately, whether or not the network
-	// cooperates (spec §4.6 — the game never hard-locks on network).
+	// The backend comes last, deliberately: the HUD must show the outcome
+	// immediately, whether or not the network cooperates (spec §4.6 — the game
+	// never hard-locks on network).
+	//
+	// Submitted once. The backend is idempotent by session id, which is a safety
+	// net for a dropped connection — not a licence to send twice. CanFinishRaid
+	// above already makes this unreachable a second time; the flag is the belt to
+	// that braces, because the cost of being wrong is a double-credited haul.
+	if (bSessionSubmitted)
+	{
+		return;
+	}
+	bSessionSubmitted = true;
+
+	if (!Backend || Session.SessionId.IsEmpty())
+	{
+		// The offline path: no token, so no result. Logged at Error once, never per
+		// tick, and the raid has already ended locally with its summary on screen.
+		UE_LOG(LogTemp, Error,
+			TEXT("SarkoRaidGameMode: raid ended '%s' with no backend session — nothing was saved"),
+			SarkoBackend::OutcomeToWire(NewOutcome));
+		return;
+	}
+
+	// Only an extraction carries anything out, and this reads the backpack on the
+	// same tick the outcome settled: the loop above cleared it for every losing
+	// outcome *before* Outcome was written, so a died/MIA haul is empty by
+	// construction and an extracted one is intact. Sending an explicitly empty
+	// array for the losing outcomes makes the intent independent of that ordering.
+	TArray<FSarkoItemStack> Haul;
+	if (NewOutcome == ESarkoRaidOutcome::Extracted)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+			{
+				const ASarkoCharacter* Pawn = It->IsValid() ? Cast<ASarkoCharacter>((*It)->GetPawn()) : nullptr;
+				if (Pawn && Pawn->BackpackComponent)
+				{
+					Haul = Pawn->BackpackComponent->GetSlots();
+					break;
+				}
+			}
+		}
+	}
+
+	// The client is captured by *strong* reference on purpose, unlike every other
+	// hop in this file. A raid can end moments before the world goes away; a weak
+	// capture would let this game mode's TSharedPtr be the only owner, and the
+	// completion would then be dropped unlogged at exactly the moment a player most
+	// needs to know whether their haul was saved. The lambda dies with the request,
+	// so the client outlives the raid by one round trip and no longer.
+	Backend->SubmitResult(Session, SarkoBackend::OutcomeToWire(NewOutcome), Haul,
+		[Keep = Backend, Wire = FString(SarkoBackend::OutcomeToWire(NewOutcome))](bool bSuccess, const FString& Error)
+		{
+			// Nothing here touches the game mode, precisely so a result landing
+			// after teardown is still logged.
+			if (bSuccess)
+			{
+				UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: result '%s' submitted"), *Wire);
+			}
+			else
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("SarkoRaidGameMode: the raid result '%s' was NOT saved: %s. The session expires on the server and closes as died."),
+					*Wire, *Error);
+			}
+		});
 }

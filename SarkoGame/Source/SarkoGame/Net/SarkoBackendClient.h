@@ -34,6 +34,16 @@ struct FSarkoRaidSession
 	FDateTime ExpiresAt = FDateTime(0);
 };
 
+/**
+ * The outcome enum lives on the game state. Declared here rather than included,
+ * so this header stays free of the game framework and can be included from a
+ * test that has no world. Forward-declared at global scope, never as an
+ * elaborated type inside the namespace below — that mistake creates a second,
+ * permanently incomplete SarkoBackend::ESarkoRaidOutcome (see the comment in
+ * Core/SarkoRaidGameState.h).
+ */
+enum class ESarkoRaidOutcome : uint8;
+
 /** The `{"error":{"code","message"}}` shape every failing endpoint returns. */
 USTRUCT()
 struct FSarkoBackendError
@@ -101,6 +111,43 @@ namespace SarkoBackend
 
 	/** Absolute path of the device-id file. Exposed so a test can reason about it. */
 	FString DeviceIdFilePath();
+
+	// ---- pure: the raid loop's own decisions ----------------------------------
+
+	/**
+	 * How long the in-raid clock should run, given the map's own duration and the
+	 * server's deadline.
+	 *
+	 * The server's deadline is RAID_TTL + GRACE_BUFFER from confirm time, and
+	 * sarko-api/README.md is explicit that the buffer is slack for a slow result
+	 * submission rather than play time: a player who extracts on the last second
+	 * of a clock that runs to the deadline can lose the whole run to latency. So
+	 * the clock is min(map duration, deadline − margin), with a floor so a stale
+	 * or already-expired deadline never ends the raid on the spawn frame.
+	 *
+	 * With RAID_TTL=20m on the deployed service the map's 15 minutes is always the
+	 * smaller of the two, so this is a safety net that normally does not bite —
+	 * the game mode logs at Warning on the frame it ever does.
+	 */
+	float ClockSecondsFromDeadline(float MapDurationSeconds, double SecondsUntilDeadline, float GraceMarginSeconds);
+
+	/**
+	 * The literal outcome string /v1/raid/result accepts. Exactly "extracted" or
+	 * "died" (domain.IsValidOutcome); MIA is death (spec §4.5), and anything
+	 * unexpected degrades to "died" — the direction that cannot grant loot for
+	 * free.
+	 */
+	const TCHAR* OutcomeToWire(ESarkoRaidOutcome Outcome);
+
+	/**
+	 * What the raid takes in. Must be a subset of what the backend's starter kit
+	 * grants, or a new player's first /v1/raid/start is 409 insufficient_items:
+	 * the loadout is debited at entry and a new player owns nothing else.
+	 *
+	 * The medkit stays in the stash: this slice has no healing item to use, so
+	 * taking it in would only risk losing it.
+	 */
+	TArray<FSarkoItemStack> StarterLoadout();
 }
 
 /**

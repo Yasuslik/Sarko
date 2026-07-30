@@ -143,8 +143,9 @@ public:
 	/**
 	 * How far short of the server's deadline the in-raid clock stops.
 	 *
-	 * /v1/raid/confirm returns expires_at = now + RAID_TTL + GRACE_BUFFER (14
-	 * minutes on the deployed service). sarko-api/README.md is explicit that the
+	 * /v1/raid/confirm returns expires_at = now + RAID_TTL + GRACE_BUFFER (22
+	 * minutes on the deployed service, RAID_TTL having been raised to 20m so a
+	 * 15-minute map plays in full). sarko-api/README.md is explicit that the
 	 * grace buffer is slack for a slow submission and not play time, so the
 	 * clock ends this many seconds earlier. Playing right up to expires_at means
 	 * a player who extracts on the last second can lose the run to network

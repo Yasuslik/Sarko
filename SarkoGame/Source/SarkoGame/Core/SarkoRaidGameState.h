@@ -147,6 +147,28 @@ public:
 	bool IsRaidFinished() const { return Outcome != ESarkoRaidOutcome::InProgress; }
 
 	/**
+	 * True once the raid's authoritative seed is in place — either because
+	 * sarko-api opened a session, or because the backend is disabled or
+	 * unreachable and the local seed is being used instead.
+	 *
+	 * Containers refuse to open until it is set, because a container looted
+	 * against the placeholder seed and then re-derived against the real one would
+	 * give two different hauls for one crate. The clock does not run either
+	 * (ASarkoRaidGameMode::ActivateRaid starts it), so the round trip cannot cost
+	 * the player raid time and cannot expire a raid into MIA before it began.
+	 */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Raid")
+	bool bSessionReady = false;
+
+	/**
+	 * Whether the raid is live: the seed has landed and no outcome has been
+	 * settled. Everything that turns time or position into value — opening a
+	 * container, the extraction dwell — asks this rather than IsRaidFinished()
+	 * alone, so neither end of the raid can be played through.
+	 */
+	bool IsLootable() const { return bSessionReady && !IsRaidFinished(); }
+
+	/**
 	 * One byte per container index: 1 means emptied. This is the only loot state
 	 * on the wire.
 	 *

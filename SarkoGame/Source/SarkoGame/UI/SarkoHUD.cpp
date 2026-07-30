@@ -114,6 +114,21 @@ void ASarkoHUD::DrawTopBar()
 	}
 
 	DrawText(CachedClock, FLinearColor::White, (Canvas->SizeX - CachedClockWidth) * 0.5f, 24.f, GEngine->GetLargeFont(), 1.f);
+
+	// The player must be able to tell "the raid has not started yet" from "the
+	// crates are broken". Spec §4.6's loud degradation is a log line for the
+	// developer; this is the same fact for the player. Rebuilt per frame rather
+	// than cached, unlike the clock: it is on screen for one HTTP round trip, so
+	// there is no steady state worth optimising.
+	if (!RaidState->bSessionReady)
+	{
+		const FString Connecting = TEXT("З'ЄДНАННЯ...");
+		float Width = 0.f;
+		float Height = 0.f;
+		GetTextSize(Connecting, Width, Height, GEngine->GetLargeFont(), 1.f);
+		DrawText(Connecting, FLinearColor(1.f, 0.75f, 0.2f), (Canvas->SizeX - Width) * 0.5f, 56.f,
+			GEngine->GetLargeFont(), 1.f);
+	}
 }
 
 void ASarkoHUD::DrawHealth()

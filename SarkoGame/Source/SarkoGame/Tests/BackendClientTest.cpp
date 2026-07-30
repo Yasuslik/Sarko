@@ -1,6 +1,8 @@
 #include "Misc/AutomationTest.h"
 
+#include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
+#include "Loot/SarkoItemCatalog.h"
 #include "Net/SarkoBackendClient.h"
 
 #if WITH_AUTOMATION_TESTS
@@ -171,11 +173,115 @@ bool FSarkoBackendSettingsAreShippable::RunTest(const FString& Parameters)
 	TestEqual(TEXT("the local data file is still bridge"), Settings.MapId, FName(TEXT("bridge")));
 
 	// The grace margin exists so the client's clock ends before the server's
-	// deadline: RAID_TTL is 12m and GRACE_BUFFER 2m on the deployed service, and
-	// sarko-api/README.md is explicit that the buffer is not play time.
+	// deadline: RAID_TTL is 20m and GRACE_BUFFER 2m on the deployed service, and
+	// sarko-api/README.md is explicit that the buffer is not play time. The margin
+	// still has to be here — it is what keeps the clock short of expires_at if the
+	// TTL is ever lowered again.
 	TestTrue(TEXT("there is a grace margin"), Settings.BackendGraceMarginSeconds >= 60.f);
 	TestTrue(TEXT("the HTTP timeout is short enough not to stall a raid"),
 		Settings.BackendTimeoutSeconds > 0.f && Settings.BackendTimeoutSeconds <= 20.f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoRaidClockStopsShortOfTheServerDeadline,
+	"Sarko.Backend.RaidClockStopsShortOfTheServerDeadline",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoRaidClockStopsShortOfTheServerDeadline::RunTest(const FString& Parameters)
+{
+	// The clamp: a confirm that hands back a deadline 14 minutes out (the shape
+	// RAID_TTL=12m + GRACE_BUFFER=2m produced) must not let a 15-minute map run to
+	// the deadline. sarko-api/README.md is explicit that the grace buffer is slack
+	// for a slow result submission and not play time, so the clock lands on
+	// deadline − margin = 12 minutes, not 14 and not 15.
+	//
+	// RAID_TTL is 20m on the deployed service today, so in practice the map's own
+	// duration wins and this branch never fires — it stays tested because the
+	// service's TTL is an environment variable and this is the only thing standing
+	// between lowering it again and hauls lost to a clock that outran the session.
+	const float Clock = SarkoBackend::ClockSecondsFromDeadline(
+		/*MapDurationSeconds*/ 900.f, /*SecondsUntilDeadline*/ 840.0, /*GraceMarginSeconds*/ 120.f);
+	TestTrue(TEXT("the clock stops short of the server deadline"), Clock < 840.f);
+	TestTrue(TEXT("and equals the deadline minus the grace margin"), FMath::IsNearlyEqual(Clock, 720.f, 0.5f));
+
+	// When the server is generous — which is the live configuration, RAID_TTL=20m —
+	// the map's own duration still wins: a 15-minute map must not become a
+	// 25-minute raid because RAID_TTL was raised.
+	TestTrue(TEXT("the map duration is the ceiling"),
+		FMath::IsNearlyEqual(SarkoBackend::ClockSecondsFromDeadline(900.f, 1800.0, 120.f), 900.f, 0.5f));
+
+	// A deadline already in the past, or inside the margin, must not produce a
+	// zero or negative clock — that would end the raid on the spawn frame.
+	TestTrue(TEXT("an expired deadline still yields a playable floor"),
+		SarkoBackend::ClockSecondsFromDeadline(900.f, -5.0, 120.f) >= 30.f);
+	TestTrue(TEXT("a deadline inside the margin still yields a playable floor"),
+		SarkoBackend::ClockSecondsFromDeadline(900.f, 60.0, 120.f) >= 30.f);
+
+	// A map with no duration falls back to the settings default, never to zero.
+	TestTrue(TEXT("a zero map duration does not produce a zero clock"),
+		SarkoBackend::ClockSecondsFromDeadline(0.f, 840.0, 120.f) > 0.f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoOutcomeMapsToTheWireStrings,
+	"Sarko.Backend.OutcomeMapsToTheWireStrings",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoOutcomeMapsToTheWireStrings::RunTest(const FString& Parameters)
+{
+	// domain.IsValidOutcome accepts exactly "extracted" and "died". Anything else
+	// is a 400 and a lost raid.
+	TestEqual(TEXT("extracted"),
+		FString(SarkoBackend::OutcomeToWire(ESarkoRaidOutcome::Extracted)), FString(TEXT("extracted")));
+	TestEqual(TEXT("died"),
+		FString(SarkoBackend::OutcomeToWire(ESarkoRaidOutcome::Died)), FString(TEXT("died")));
+
+	// Spec §4.5: MIA is death. There is no third outcome on the wire, and
+	// inventing one would be rejected outright.
+	TestEqual(TEXT("MIA is submitted as died"),
+		FString(SarkoBackend::OutcomeToWire(ESarkoRaidOutcome::MIA)), FString(TEXT("died")));
+
+	// InProgress must never be submitted; it maps to died so a bug cannot invent
+	// an extraction, which is the direction that would grant loot for free.
+	TestEqual(TEXT("InProgress degrades to died, never to extracted"),
+		FString(SarkoBackend::OutcomeToWire(ESarkoRaidOutcome::InProgress)), FString(TEXT("died")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoStarterLoadoutIsAffordable,
+	"Sarko.Backend.StarterLoadoutIsAffordable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoStarterLoadoutIsAffordable::RunTest(const FString& Parameters)
+{
+	const TArray<FSarkoItemStack> Loadout = SarkoBackend::StarterLoadout();
+	TestTrue(TEXT("the raid takes something in"), Loadout.Num() > 0);
+
+	// Every item must be in the catalog, or /v1/raid/start answers 400
+	// implausible_items and no raid ever begins.
+	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+	for (const FSarkoItemStack& Stack : Loadout)
+	{
+		TestNotNull(*FString::Printf(TEXT("loadout item '%s' is in the catalog"), *Stack.Item.ToString()),
+			Catalog.Find(Stack.Item));
+		TestTrue(TEXT("quantities are positive"), Stack.Quantity > 0);
+	}
+
+	// It must be exactly what the backend's starter kit grants, or the very first
+	// /v1/raid/start fails with 409 insufficient_items: the loadout is debited at
+	// entry, and a new player owns nothing else.
+	TestTrue(TEXT("the loadout is one pistol"),
+		Loadout.FindByPredicate([](const FSarkoItemStack& S) { return S.Item == FName(TEXT("pistol")); }) != nullptr);
+	const FSarkoItemStack* Ammo = Loadout.FindByPredicate(
+		[](const FSarkoItemStack& S) { return S.Item == FName(TEXT("ammo_9mm")); });
+	TestNotNull(TEXT("the loadout carries ammo"), Ammo);
+	if (Ammo)
+	{
+		TestTrue(TEXT("no more ammo than the starter kit grants"), Ammo->Quantity <= 60);
+	}
 	return true;
 }
 
