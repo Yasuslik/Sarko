@@ -1,10 +1,16 @@
 package api
 
 import (
-	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 )
+
+// maxDeviceIDLen bounds the only string an unauthenticated caller can write
+// into the database. device_id is a client-generated identifier (a UUID or a
+// vendor id), so 128 characters is generous; without a cap, /v1/auth/anonymous
+// lets anyone store 64 KB per row and create rows at will.
+const maxDeviceIDLen = 128
 
 type anonymousRequest struct {
 	DeviceID string `json:"device_id"`
@@ -18,12 +24,16 @@ type anonymousResponse struct {
 func handleAnonymousAuth(deps Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req anonymousRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			WriteError(w, http.StatusBadRequest, "bad_request", "body must be JSON")
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 		if req.DeviceID == "" {
 			WriteError(w, http.StatusBadRequest, "bad_request", "device_id is required")
+			return
+		}
+		if len(req.DeviceID) > maxDeviceIDLen {
+			WriteError(w, http.StatusBadRequest, "bad_request",
+				fmt.Sprintf("device_id must be at most %d characters", maxDeviceIDLen))
 			return
 		}
 

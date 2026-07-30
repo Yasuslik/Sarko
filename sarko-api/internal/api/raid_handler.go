@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -45,8 +44,7 @@ func handleRaidStart(deps Deps) http.HandlerFunc {
 		}
 
 		var req startRaidRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			WriteError(w, http.StatusBadRequest, "bad_request", "body must be JSON")
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 		if req.MapID == "" {
@@ -85,8 +83,7 @@ func handleRaidStart(deps Deps) http.HandlerFunc {
 func handleRaidConfirm(deps Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req sessionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			WriteError(w, http.StatusBadRequest, "bad_request", "body must be JSON")
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 		if req.SessionID == "" || req.SessionToken == "" {
@@ -115,8 +112,7 @@ func handleRaidConfirm(deps Deps) http.HandlerFunc {
 func handleRaidResult(deps Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req resultRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			WriteError(w, http.StatusBadRequest, "bad_request", "body must be JSON")
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 		if req.SessionID == "" || req.SessionToken == "" {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -205,6 +206,129 @@ func TestProtectedEndpointsRequireAuth(t *testing.T) {
 		if code != http.StatusUnauthorized {
 			t.Errorf("%s %s without token = %d, want 401", tt.method, tt.path, code)
 		}
+	}
+}
+
+// postRaw sends an arbitrary byte body, bypassing json.Marshal, so a body
+// larger than the reader's cap can actually be produced. It returns the status
+// and the decoded error envelope.
+func (c *client) postRaw(path string, body []byte) (int, errorEnvelope) {
+	c.t.Helper()
+
+	req, err := http.NewRequest(http.MethodPost, c.base+path, bytes.NewReader(body))
+	if err != nil {
+		c.t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		c.t.Fatalf("POST %s: %v", path, err)
+	}
+	defer res.Body.Close()
+
+	var env errorEnvelope
+	if err := json.NewDecoder(res.Body).Decode(&env); err != nil {
+		c.t.Fatalf("decode error envelope from POST %s: %v", path, err)
+	}
+	return res.StatusCode, env
+}
+
+type errorEnvelope struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// TestOversizedBodyIsRejectedAsBadRequest covers every JSON-decoding endpoint,
+// including the unauthenticated one. Without http.MaxBytesReader the decoder
+// would happily allocate whatever an anonymous caller sends; with it, but
+// without the errors.As branch, the failure would surface as a 500.
+//
+// The message assertion is the load-bearing part. Every one of these endpoints
+// returns 400 for an unrecognised body anyway (missing device_id, missing
+// session_id), so a status-only check would stay green with the cap removed —
+// only the distinct "body is too large" message proves the read was truncated
+// instead of fully buffered.
+func TestOversizedBodyIsRejectedAsBadRequest(t *testing.T) {
+	c := newTestServer(t)
+
+	// One JSON string field, well past the 64 KB reader cap.
+	huge := append([]byte(`{"device_id":"`), bytes.Repeat([]byte("a"), 200<<10)...)
+	huge = append(huge, []byte(`"}`)...)
+
+	paths := []string{
+		"/v1/auth/anonymous", // unauthenticated: the exposed surface
+		"/v1/raid/start",
+		"/v1/raid/confirm",
+		"/v1/raid/result",
+	}
+
+	// The unauthenticated endpoint is checked without a token; the protected
+	// ones need one, or they would 401 before the body is ever read.
+	for _, path := range paths {
+		if path != "/v1/auth/anonymous" && c.token == "" {
+			c.login("device-oversized")
+		}
+		code, env := c.postRaw(path, huge)
+		if code != http.StatusBadRequest {
+			t.Errorf("POST %s with a %d-byte body = %d, want 400", path, len(huge), code)
+		}
+		if env.Error.Code != "bad_request" {
+			t.Errorf("POST %s error code = %q, want bad_request", path, env.Error.Code)
+		}
+		if env.Error.Message != "body is too large" {
+			t.Errorf("POST %s message = %q, want %q — the body was not capped",
+				path, env.Error.Message, "body is too large")
+		}
+	}
+}
+
+// TestBodyUnderTheCapIsStillAccepted keeps the cap from being tightened into
+// something that rejects legitimate traffic: a large-but-legal body decodes.
+func TestBodyUnderTheCapIsStillAccepted(t *testing.T) {
+	c := newTestServer(t)
+
+	// ~32 KB of padding in an ignored field, well under the 64 KB cap.
+	body := append([]byte(`{"device_id":"device-under-cap","padding":"`),
+		bytes.Repeat([]byte("a"), 32<<10)...)
+	body = append(body, []byte(`"}`)...)
+
+	req, err := http.NewRequest(http.MethodPost, c.base+"/v1/auth/anonymous", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/auth/anonymous: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("a %d-byte body = %d, want 200", len(body), res.StatusCode)
+	}
+}
+
+func TestAnonymousAuthRejectsOversizedDeviceID(t *testing.T) {
+	c := newTestServer(t)
+
+	// 129 characters: one past the cap, and comfortably inside the body limit,
+	// so this proves the field check exists rather than the reader cap firing.
+	code := c.do(http.MethodPost, "/v1/auth/anonymous",
+		map[string]string{"device_id": strings.Repeat("d", 129)}, nil)
+	if code != http.StatusBadRequest {
+		t.Errorf("129-character device_id = %d, want 400", code)
+	}
+
+	// 128 is still fine.
+	code = c.do(http.MethodPost, "/v1/auth/anonymous",
+		map[string]string{"device_id": strings.Repeat("d", 128)}, nil)
+	if code != http.StatusOK {
+		t.Errorf("128-character device_id = %d, want 200", code)
 	}
 }
 
