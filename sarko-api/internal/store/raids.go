@@ -204,11 +204,17 @@ type RaidResult struct {
 }
 
 // ConfirmRaid marks a pending raid as actually entered and extends its deadline
-// to the full raid duration. Without this the sweeper returns the loadout (§11).
-func (s *Store) ConfirmRaid(ctx context.Context, sessionID, sessionToken string, raidTTL time.Duration) error {
+// by deadline. Without this the sweeper returns the loadout (§11).
+//
+// deadline is one already-computed duration, not a policy: the caller decides
+// what raid duration plus grace buffer means, and the store only records
+// now() + deadline. The confirmed expires_at is returned so the client can
+// align its own in-raid timer to the server's authoritative deadline instead
+// of guessing it from its own configuration.
+func (s *Store) ConfirmRaid(ctx context.Context, sessionID, sessionToken string, deadline time.Duration) (time.Time, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin: %w", err)
+		return time.Time{}, fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -223,7 +229,7 @@ func (s *Store) ConfirmRaid(ctx context.Context, sessionID, sessionToken string,
 	).Scan(&stateText, &storedHash)
 	notFound := errors.Is(err, pgx.ErrNoRows)
 	if err != nil && !notFound {
-		return fmt.Errorf("load session: %w", err)
+		return time.Time{}, fmt.Errorf("load session: %w", err)
 	}
 
 	// Anti-oracle: unlike SubmitResult (which reports ErrNotFound,
@@ -232,22 +238,25 @@ func (s *Store) ConfirmRaid(ctx context.Context, sessionID, sessionToken string,
 	// a non-pending session apart — all three collapse to ErrSessionNotOpen.
 	badToken := !notFound && subtle.ConstantTimeCompare(storedHash, auth.HashToken(sessionToken)) != 1
 	if notFound || badToken || stateText != string(domain.StatePending) {
-		return ErrSessionNotOpen
+		return time.Time{}, ErrSessionNotOpen
 	}
 
-	_, err = tx.Exec(ctx,
+	var expiresAt time.Time
+	err = tx.QueryRow(ctx,
 		`UPDATE raid_sessions
 		 SET state = 'active', confirmed_at = now(), expires_at = now() + $2::interval
-		 WHERE id = $1`,
-		sessionID, fmt.Sprintf("%d seconds", int(raidTTL.Seconds())))
+		 WHERE id = $1
+		 RETURNING expires_at`,
+		sessionID, fmt.Sprintf("%d seconds", int(deadline.Seconds())),
+	).Scan(&expiresAt)
 	if err != nil {
-		return fmt.Errorf("confirm raid: %w", err)
+		return time.Time{}, fmt.Errorf("confirm raid: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit: %w", err)
+		return time.Time{}, fmt.Errorf("commit: %w", err)
 	}
-	return nil
+	return expiresAt, nil
 }
 
 // SubmitResult closes a raid and credits surviving items, exactly once.

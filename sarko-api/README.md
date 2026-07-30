@@ -19,6 +19,35 @@ database and truncates it in testutil.Pool. Go's default parallel package execut
 causes flakes (~40-50% once three packages do DB work). Tests that need Postgres skip
 themselves when `TEST_DATABASE_URL` is unset.
 
+## Configuration
+
+| Env | Default | Meaning |
+|---|---|---|
+| `PORT` | `8080` | listen port |
+| `DATABASE_URL` | — | required |
+| `JWT_SECRET` | — | required |
+| `RAID_TTL` | `12m` | how long a confirmed raid may run |
+| `PENDING_TTL` | `60s` | how long an unconfirmed raid holds its loadout |
+| `GRACE_BUFFER` | `2m` | added to `RAID_TTL` at confirm time |
+
+### Raid timing: the client timer must be shorter than `RAID_TTL`
+
+When a raid is confirmed the server sets `expires_at = now() + RAID_TTL + GRACE_BUFFER`.
+Once that deadline passes the session is closed as **died** and everything the player
+carried and looted is lost, so the timing rule is not cosmetic:
+
+- **The client's in-raid timer must be strictly shorter than `RAID_TTL`.** If the two
+  are equal, a player who extracts on the last second can lose the whole run to a
+  couple of seconds of network delay.
+- **`GRACE_BUFFER` is slack for a slow result submission, not extra play time.** It
+  covers the gap between the client deciding the raid is over and
+  `POST /v1/raid/result` reaching the server. It is not a licence to keep playing,
+  and the client must never present it as remaining time.
+- **The confirm response is the source of truth.** `POST /v1/raid/confirm` returns
+  `200 {"expires_at": "<RFC 3339>"}` — the deadline actually stored on the row. The
+  client should align its countdown to that value rather than to its own copy of
+  `RAID_TTL`, which may be stale after a config change.
+
 ## Endpoints
 
 | Method | Path | Auth | Purpose |
@@ -27,7 +56,7 @@ themselves when `TEST_DATABASE_URL` is unset.
 | POST | `/v1/auth/anonymous` | — | device id → JWT |
 | GET | `/v1/profile` | Bearer | stash, garage tier, unlocked maps |
 | POST | `/v1/raid/start` | Bearer | debit loadout, open session, return one-time token + seed |
-| POST | `/v1/raid/confirm` | Bearer | mark the raid actually entered |
+| POST | `/v1/raid/confirm` | Bearer | mark the raid actually entered; returns `expires_at` |
 | POST | `/v1/raid/result` | Bearer | close the raid, credit survivors (idempotent) |
 | POST | `/v1/garage/craft` | Bearer | spend parts, advance one vehicle tier |
 

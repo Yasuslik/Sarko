@@ -23,10 +23,11 @@ type client struct {
 func newTestServer(t *testing.T) *client {
 	t.Helper()
 	deps := api.Deps{
-		Store:      store.New(testutil.Pool(t)),
-		Issuer:     auth.Issuer{Secret: []byte("test-secret"), TTL: time.Hour},
-		RaidTTL:    time.Minute,
-		PendingTTL: time.Minute,
+		Store:       store.New(testutil.Pool(t)),
+		Issuer:      auth.Issuer{Secret: []byte("test-secret"), TTL: time.Hour},
+		RaidTTL:     time.Minute,
+		PendingTTL:  time.Minute,
+		GraceBuffer: 30 * time.Second,
 	}
 	srv := httptest.NewServer(api.NewRouter(deps))
 	t.Cleanup(srv.Close)
@@ -85,6 +86,28 @@ func (c *client) login(device string) {
 	c.token = out.Token
 }
 
+// confirm calls POST /v1/raid/confirm and asserts the contract the client
+// depends on: 200 with the server's authoritative deadline as RFC 3339, not a
+// bare 204 that would leave the client guessing when the raid really ends.
+func (c *client) confirm(started store.StartedRaid) time.Time {
+	c.t.Helper()
+	var out struct {
+		ExpiresAt string `json:"expires_at"`
+	}
+	code := c.do(http.MethodPost, "/v1/raid/confirm", map[string]string{
+		"session_id":    started.SessionID,
+		"session_token": started.SessionToken,
+	}, &out)
+	if code != http.StatusOK {
+		c.t.Fatalf("raid/confirm status = %d, want 200", code)
+	}
+	expiresAt, err := time.Parse(time.RFC3339, out.ExpiresAt)
+	if err != nil {
+		c.t.Fatalf("raid/confirm expires_at = %q, want RFC 3339: %v", out.ExpiresAt, err)
+	}
+	return expiresAt
+}
+
 func TestFullRaidCycleOverHTTP(t *testing.T) {
 	c := newTestServer(t)
 	c.login("device-e2e")
@@ -104,12 +127,7 @@ func TestFullRaidCycleOverHTTP(t *testing.T) {
 		t.Fatalf("raid/start status = %d, want 200", code)
 	}
 
-	if code := c.do(http.MethodPost, "/v1/raid/confirm", map[string]string{
-		"session_id":    started.SessionID,
-		"session_token": started.SessionToken,
-	}, nil); code != http.StatusNoContent {
-		t.Fatalf("raid/confirm status = %d, want 204", code)
-	}
+	c.confirm(started)
 
 	var result store.RaidResult
 	code = c.do(http.MethodPost, "/v1/raid/result", map[string]any{
@@ -127,6 +145,35 @@ func TestFullRaidCycleOverHTTP(t *testing.T) {
 	}
 	if len(profile.Stash) != 1 || profile.Stash[0].ItemID != "chain" {
 		t.Errorf("stash = %v, want one chain", profile.Stash)
+	}
+}
+
+// TestConfirmReturnsDeadlineIncludingGraceBuffer pins the fix for the bug where
+// a late-but-legitimate extraction was recorded as death: the server's deadline
+// is the raid duration *plus* a grace buffer, and confirm reports it so the
+// client can align its own timer instead of guessing. A bare 204 (the old
+// behaviour) gives the client nothing to align to.
+func TestConfirmReturnsDeadlineIncludingGraceBuffer(t *testing.T) {
+	c := newTestServer(t)
+	c.login("device-grace")
+
+	var started store.StartedRaid
+	if code := c.do(http.MethodPost, "/v1/raid/start",
+		map[string]any{"map_id": "forest", "loadout": []any{}}, &started); code != http.StatusOK {
+		t.Fatalf("raid/start status = %d, want 200", code)
+	}
+
+	before := time.Now()
+	expiresAt := c.confirm(started)
+
+	// newTestServer uses RaidTTL 1m + GraceBuffer 30s.
+	want := before.Add(90 * time.Second)
+	if diff := expiresAt.Sub(want); diff < -5*time.Second || diff > 5*time.Second {
+		t.Errorf("expires_at = %v, want ~%v (RaidTTL + GraceBuffer)", expiresAt, want)
+	}
+	// The buffer must actually be present: strictly later than RaidTTL alone.
+	if !expiresAt.After(before.Add(time.Minute)) {
+		t.Errorf("expires_at = %v is not past RaidTTL alone — the grace buffer is missing", expiresAt)
 	}
 }
 
@@ -181,12 +228,7 @@ func TestDeathResultRejectsOversizedSafePocket(t *testing.T) {
 		map[string]any{"map_id": "forest", "loadout": []any{}}, &started); code != http.StatusOK {
 		t.Fatalf("raid/start status = %d, want 200", code)
 	}
-	if code := c.do(http.MethodPost, "/v1/raid/confirm", map[string]string{
-		"session_id":    started.SessionID,
-		"session_token": started.SessionToken,
-	}, nil); code != http.StatusNoContent {
-		t.Fatalf("raid/confirm status = %d, want 204", code)
-	}
+	c.confirm(started)
 
 	code := c.do(http.MethodPost, "/v1/raid/result", map[string]any{
 		"session_id":    started.SessionID,
@@ -212,12 +254,7 @@ func TestDeathResultAllowsSplitEntriesOfOneItem(t *testing.T) {
 		map[string]any{"map_id": "forest", "loadout": []any{}}, &started); code != http.StatusOK {
 		t.Fatalf("raid/start status = %d, want 200", code)
 	}
-	if code := c.do(http.MethodPost, "/v1/raid/confirm", map[string]string{
-		"session_id":    started.SessionID,
-		"session_token": started.SessionToken,
-	}, nil); code != http.StatusNoContent {
-		t.Fatalf("raid/confirm status = %d, want 204", code)
-	}
+	c.confirm(started)
 
 	// Build 50 entries of the same item id: they merge to one stack, within cap of 2.
 	items := make([]map[string]any, 50)

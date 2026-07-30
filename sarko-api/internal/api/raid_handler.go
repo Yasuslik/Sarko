@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/Yasuslik/sarko-api/internal/auth"
 	"github.com/Yasuslik/sarko-api/internal/domain"
@@ -22,6 +23,11 @@ type startRaidRequest struct {
 type sessionRequest struct {
 	SessionID    string `json:"session_id"`
 	SessionToken string `json:"session_token"`
+}
+
+// confirmResponse tells the client the server's authoritative raid deadline.
+type confirmResponse struct {
+	ExpiresAt string `json:"expires_at"`
 }
 
 type resultRequest struct {
@@ -88,7 +94,10 @@ func handleRaidConfirm(deps Deps) http.HandlerFunc {
 			return
 		}
 
-		err := deps.Store.ConfirmRaid(r.Context(), req.SessionID, req.SessionToken, deps.RaidTTL)
+		// The store records one already-computed deadline: the raid duration
+		// plus the grace buffer that covers a slow result submission.
+		expiresAt, err := deps.Store.ConfirmRaid(r.Context(),
+			req.SessionID, req.SessionToken, deps.RaidTTL+deps.GraceBuffer)
 		switch {
 		case errors.Is(err, store.ErrSessionNotOpen):
 			WriteError(w, http.StatusConflict, "session_not_open", "session is not pending")
@@ -96,7 +105,9 @@ func handleRaidConfirm(deps Deps) http.HandlerFunc {
 			slog.Error("confirm raid", "err", err)
 			WriteError(w, http.StatusInternalServerError, "internal", "could not confirm raid")
 		default:
-			w.WriteHeader(http.StatusNoContent)
+			// The deadline is echoed back so the client aligns its in-raid
+			// timer to the server rather than guessing it.
+			WriteJSON(w, http.StatusOK, confirmResponse{ExpiresAt: expiresAt.UTC().Format(time.RFC3339)})
 		}
 	}
 }

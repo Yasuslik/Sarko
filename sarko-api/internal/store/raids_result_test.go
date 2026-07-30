@@ -36,7 +36,7 @@ func TestSubmitResultCreditsExtractedLoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRaid: %v", err)
 	}
-	if err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 
@@ -71,7 +71,7 @@ func TestSubmitResultIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRaid: %v", err)
 	}
-	if err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 
@@ -132,7 +132,7 @@ func TestDeathCreditsOnlyWhatWasSubmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRaid: %v", err)
 	}
-	if err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 
@@ -181,7 +181,7 @@ func TestConfirmRaidRejectsWrongToken(t *testing.T) {
 		t.Fatalf("StartRaid: %v", err)
 	}
 
-	err = s.ConfirmRaid(ctx, started.SessionID, "forged-token", time.Minute)
+	_, err = s.ConfirmRaid(ctx, started.SessionID, "forged-token", time.Minute)
 	if !errors.Is(err, store.ErrSessionNotOpen) {
 		t.Fatalf("err = %v, want ErrSessionNotOpen", err)
 	}
@@ -208,7 +208,7 @@ func TestConfirmRaidRejectsUnknownSessionID(t *testing.T) {
 		t.Fatalf("StartRaid: %v", err)
 	}
 
-	err = s.ConfirmRaid(ctx, "00000000-0000-0000-0000-000000000000", started.SessionToken, time.Minute)
+	_, err = s.ConfirmRaid(ctx, "00000000-0000-0000-0000-000000000000", started.SessionToken, time.Minute)
 	if !errors.Is(err, store.ErrSessionNotOpen) {
 		t.Fatalf("err = %v, want ErrSessionNotOpen", err)
 	}
@@ -232,7 +232,7 @@ func TestConfirmRaidRejectsAlreadyActiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRaid: %v", err)
 	}
-	if err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute); err != nil {
 		t.Fatalf("first ConfirmRaid: %v", err)
 	}
 	_, firstConfirmedAt := sessionState(t, pool, started.SessionID)
@@ -240,7 +240,7 @@ func TestConfirmRaidRejectsAlreadyActiveSession(t *testing.T) {
 		t.Fatal("confirmed_at must be set after the first confirm")
 	}
 
-	err = s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute)
+	_, err = s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, time.Minute)
 	if !errors.Is(err, store.ErrSessionNotOpen) {
 		t.Fatalf("err = %v, want ErrSessionNotOpen", err)
 	}
@@ -251,6 +251,51 @@ func TestConfirmRaidRejectsAlreadyActiveSession(t *testing.T) {
 	}
 	if secondConfirmedAt == nil || !secondConfirmedAt.Equal(*firstConfirmedAt) {
 		t.Errorf("confirmed_at changed on rejected double-confirm: %v -> %v", firstConfirmedAt, secondConfirmedAt)
+	}
+}
+
+// TestConfirmRaidReturnsStoredDeadline proves the timestamp ConfirmRaid hands
+// back is the row's own expires_at, not a value recomputed in Go. The client
+// aligns its in-raid timer to it, so a drift between the two would put the
+// client's idea of the deadline ahead of the server's — exactly the failure
+// mode the grace buffer exists to prevent.
+func TestConfirmRaidReturnsStoredDeadline(t *testing.T) {
+	pool := testutil.Pool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	playerID := seedPlayer(t, s, "dev-confirm-deadline", nil)
+
+	started, err := s.StartRaid(ctx, startParams(playerID, nil))
+	if err != nil {
+		t.Fatalf("StartRaid: %v", err)
+	}
+
+	const deadline = 14 * time.Minute
+	before := time.Now()
+	expiresAt, err := s.ConfirmRaid(ctx, started.SessionID, started.SessionToken, deadline)
+	if err != nil {
+		t.Fatalf("ConfirmRaid: %v", err)
+	}
+	if expiresAt.IsZero() {
+		t.Fatal("ConfirmRaid must return the confirmed deadline")
+	}
+
+	var stored time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT expires_at FROM raid_sessions WHERE id = $1`, started.SessionID).Scan(&stored); err != nil {
+		t.Fatalf("read expires_at: %v", err)
+	}
+	if !expiresAt.Equal(stored) {
+		t.Errorf("returned expires_at = %v, stored = %v — they must be the same instant", expiresAt, stored)
+	}
+
+	want := before.Add(deadline)
+	if diff := expiresAt.Sub(want); diff < -5*time.Second || diff > 5*time.Second {
+		t.Errorf("expires_at = %v, want ~%v (now + deadline)", expiresAt, want)
+	}
+	// The pending deadline must have been replaced, not kept.
+	if !expiresAt.After(started.ExpiresAt) {
+		t.Errorf("confirmed expires_at %v is not past the pending one %v", expiresAt, started.ExpiresAt)
 	}
 }
 

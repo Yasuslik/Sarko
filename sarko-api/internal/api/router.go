@@ -14,6 +14,10 @@ type Deps struct {
 	Issuer     auth.Issuer
 	RaidTTL    time.Duration
 	PendingTTL time.Duration
+	// GraceBuffer is added to RaidTTL to form the confirmed raid's server-side
+	// deadline. It exists so a result submitted just inside the client's own
+	// timer is still credited when the network delays it.
+	GraceBuffer time.Duration
 }
 
 // NewRouter builds the HTTP route table.

@@ -45,10 +45,11 @@ func run() error {
 	defer pool.Close()
 
 	deps := api.Deps{
-		Store:      store.New(pool),
-		Issuer:     auth.Issuer{Secret: cfg.JWTSecret, TTL: 30 * 24 * time.Hour},
-		RaidTTL:    cfg.RaidTTL,
-		PendingTTL: cfg.PendingTTL,
+		Store:       store.New(pool),
+		Issuer:      auth.Issuer{Secret: cfg.JWTSecret, TTL: 30 * 24 * time.Hour},
+		RaidTTL:     cfg.RaidTTL,
+		PendingTTL:  cfg.PendingTTL,
+		GraceBuffer: cfg.GraceBuffer,
 	}
 
 	go store.RunSweeper(ctx, deps.Store, 15*time.Second)

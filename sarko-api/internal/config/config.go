@@ -17,6 +17,11 @@ type Config struct {
 	RaidTTL time.Duration
 	// PendingTTL is how long an unconfirmed raid survives before its loadout is returned.
 	PendingTTL time.Duration
+	// GraceBuffer is added to RaidTTL when a raid is confirmed, so a result that
+	// leaves the device just before the client's own timer expires is still
+	// credited if the network delays it. It is slack for a slow submission, not
+	// extra play time: the client's in-raid timer must stay shorter than RaidTTL.
+	GraceBuffer time.Duration
 }
 
 func Load() (Config, error) {
@@ -31,6 +36,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if c.PendingTTL, err = envDuration("PENDING_TTL", 60*time.Second); err != nil {
+		return Config{}, err
+	}
+	if c.GraceBuffer, err = envDuration("GRACE_BUFFER", 2*time.Minute); err != nil {
 		return Config{}, err
 	}
 
