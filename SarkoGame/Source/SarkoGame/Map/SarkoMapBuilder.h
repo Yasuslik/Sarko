@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 
+#include "Map/SarkoMapPalette.h"
+
 #include "SarkoMapBuilder.generated.h"
 
 // Forward-declared at global scope, not inside namespace SarkoMap below: an
@@ -39,6 +41,27 @@ struct FSarkoCoverBlock
 
 	UPROPERTY()
 	FVector Extent = FVector(200.f, 200.f, 150.f);
+
+	/**
+	 * What this block is made of, for colour. Structure by default, so every
+	 * block authored before surfaces existed keeps the grey it had.
+	 */
+	UPROPERTY()
+	ESarkoSurface Surface = ESarkoSurface::Structure;
+
+	/**
+	 * False turns the block into a flat surface the player walks over: a road,
+	 * a water strip, a ravine bed. True — the default — is cover, which is what
+	 * every block in the sector was before this field existed.
+	 *
+	 * "Does not block movement" is literal and total: the spawned actor gets
+	 * ECollisionEnabled::NoCollision, so it stops neither pawns nor bullets nor
+	 * line traces. A road is paint on the floor. Everything that reads a block
+	 * as *data* still sees it — CollectIds names it, ToLayout carries it, the
+	 * palette colours it — only the physics body is gone.
+	 */
+	UPROPERTY()
+	bool bBlocksMovement = true;
 };
 
 /**
@@ -67,37 +90,9 @@ struct FSarkoMapLayout
 
 namespace SarkoMap
 {
-	/**
-	 * The sector palette, §14 of the map design: ground muted green-brown,
-	 * everything built on it a neutral grey that reads as a different material.
-	 *
-	 * These are linear-space base colours, not sRGB swatches — they are fed
-	 * straight into a material's BaseColor, which is linear. An sRGB value
-	 * pasted here comes out roughly twice as bright as intended.
-	 *
-	 * Exposed in the header rather than buried in the .cpp so the contrast the
-	 * whole readability argument rests on is something a test can assert.
-	 */
-	namespace Palette
-	{
-		/**
-		 * Ground: desaturated olive/khaki. Dark enough that grey cover sits on
-		 * top of it rather than dissolving into it — which is exactly what
-		 * happened before, when floor and cover both wore the engine grid
-		 * material and measured (156,155,151) against (158,157,153) in the same
-		 * frame. Three levels apart is not cover.
-		 */
-		const FLinearColor Ground(0.046f, 0.051f, 0.028f);
-
-		/** Cover and props: neutral grey, deliberately much lighter than the ground. */
-		const FLinearColor Structure(0.150f, 0.150f, 0.155f);
-
-		/** Ground roughness. Near-matte, so a 400 m plane cannot catch a specular sheet. */
-		constexpr float GroundRoughness = 0.92f;
-
-		/** Cover roughness. Slightly glossier than the ground, which helps the edges catch light. */
-		constexpr float StructureRoughness = 0.75f;
-	}
+	// The palette (ESarkoSurface, Palette::ColourFor, the named constants) lives
+	// in Map/SarkoMapPalette.h, included above: the kind table needs it too, and
+	// it must not have to include the spawner to get a colour.
 
 	/** Spawns floor and cover for a layout using engine primitive meshes. */
 	void SpawnLayout(UWorld& World, const FSarkoMapLayout& Layout);

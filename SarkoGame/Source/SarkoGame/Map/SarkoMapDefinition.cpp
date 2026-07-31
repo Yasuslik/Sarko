@@ -88,17 +88,78 @@ namespace
 	/**
 	 * Reads an optional string field the same way: absent keeps the caller's
 	 * default, present-but-not-a-string is a named error rather than silently
-	 * collapsing to an empty string indistinguishable from "not set".
+	 * collapsing to something indistinguishable from "not set".
+	 *
+	 * The JSON type is checked directly rather than through TryGetStringField,
+	 * for the same reason ReadOptionalId does it (see below): TryGetStringField
+	 * is not a type check. FJsonValueNumber and FJsonValueBoolean both override
+	 * TryGetString and stringify, so `"tier": 7` used to parse as the tier "7"
+	 * and `"name": true` as the extraction called "true" — values that look
+	 * authored, cannot be found by grepping the map file, and change
+	 * representation the moment anyone re-serialises it.
 	 */
 	bool ReadOptionalString(const TSharedPtr<FJsonObject>& Object, const FString& Field, FString& Out, FString& OutError)
 	{
-		if (!Object->HasField(Field))
+		const TSharedPtr<FJsonValue> Value = Object->TryGetField(Field);
+		if (!Value.IsValid())
 		{
 			return true;
 		}
-		if (!Object->TryGetStringField(Field, Out))
+		if (Value->Type != EJson::String)
 		{
 			OutError = FString::Printf(TEXT("'%s' is present but not a string"), *Field);
+			return false;
+		}
+		Out = Value->AsString();
+		return true;
+	}
+
+	/**
+	 * Reads an optional bool with the same discipline: absent keeps the caller's
+	 * default, present-but-not-a-bool is a named error rather than a silent
+	 * false.
+	 *
+	 * Strict on the JSON type, and not via TryGetBoolField, because
+	 * TJsonValueString overrides TryGetBool and runs FString::ToBool() over the
+	 * text. `"blocksMovement": "no"` would therefore succeed and yield false;
+	 * worse, `"blocksMovement": "ture"` would succeed and yield false too — a
+	 * typo that silently deletes a wall's collision and leaves it visible.
+	 */
+	bool ReadOptionalBool(const TSharedPtr<FJsonObject>& Object, const FString& Field, bool& Out, FString& OutError)
+	{
+		const TSharedPtr<FJsonValue> Value = Object->TryGetField(Field);
+		if (!Value.IsValid())
+		{
+			return true;
+		}
+		if (Value->Type != EJson::Boolean)
+		{
+			OutError = FString::Printf(TEXT("'%s' is present but not a boolean"), *Field);
+			return false;
+		}
+		Out = Value->AsBool();
+		return true;
+	}
+
+	/**
+	 * Reads an optional surface name. An unlisted name is an error: falling
+	 * back to grey would turn a typo in "asphalt" into a light highway across a
+	 * dark map, which reads as a lighting bug and not as a data bug.
+	 */
+	bool ReadOptionalSurface(const TSharedPtr<FJsonObject>& Object, ESarkoSurface& Out, FString& OutError)
+	{
+		FString Name;
+		if (!ReadOptionalString(Object, TEXT("surface"), Name, OutError))
+		{
+			return false;
+		}
+		if (Name.IsEmpty())
+		{
+			return true;
+		}
+		if (!SarkoMap::ParseSurfaceName(Name, Out))
+		{
+			OutError = FString::Printf(TEXT("'surface' is not a known surface: '%s'"), *Name);
 			return false;
 		}
 		return true;
@@ -108,28 +169,21 @@ namespace
 	 * Reads an optional stable id. Absent is fine; present-but-empty is not —
 	 * an empty id is a name nothing can be found by, and two of them collide.
 	 *
-	 * Deliberately does NOT go through ReadOptionalString: TryGetStringField is
-	 * not the type check it looks like, because FJsonValueNumber overrides
-	 * TryGetString and stringifies. `"id": 7` therefore parses as the id "7" —
-	 * a name that looks like a string everywhere downstream but cannot be found
-	 * by grepping the map file for it, and that changes representation the
-	 * moment anyone re-serialises the file. The JSON type is checked directly
-	 * instead, so a non-string id is a named error like every other
-	 * malformation in this parser.
+	 * Separate from ReadOptionalString only for the non-empty rule and the
+	 * fixed field name: both check the JSON type directly rather than trusting
+	 * TryGetStringField, which is not the type check it looks like — see
+	 * ReadOptionalString above for why `"id": 7` used to parse as the id "7".
 	 */
 	bool ReadOptionalId(const TSharedPtr<FJsonObject>& Object, FString& Out, FString& OutError)
 	{
-		const TSharedPtr<FJsonValue> Field = Object->TryGetField(TEXT("id"));
-		if (!Field.IsValid())
+		if (!ReadOptionalString(Object, TEXT("id"), Out, OutError))
+		{
+			return false;
+		}
+		if (!Object->HasField(TEXT("id")))
 		{
 			return true;
 		}
-		if (Field->Type != EJson::String)
-		{
-			OutError = TEXT("'id' is present but not a string");
-			return false;
-		}
-		Out = Field->AsString();
 		if (Out.IsEmpty())
 		{
 			OutError = TEXT("'id' is present but empty");
@@ -225,6 +279,14 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 				return false;
 			}
 			Block.Rotation = FRotator(0.f, static_cast<float>(Yaw), 0.f);
+			// Both optional, both defaulted on the struct, so a block written
+			// before surfaces existed keeps the grey cover it always had.
+			if (!ReadOptionalSurface(*Object, Block.Surface, OutError) ||
+				!ReadOptionalBool(*Object, TEXT("blocksMovement"), Block.bBlocksMovement, OutError))
+			{
+				OutError = FString::Printf(TEXT("blocks[%d]: %s"), Index, *OutError);
+				return false;
+			}
 			OutDefinition.Blocks.Add(Block);
 		}
 	}

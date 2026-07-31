@@ -121,6 +121,23 @@ bool FSarkoMapDefinitionRejectsBadInput::RunTest(const FString& Parameters)
 		// fixedItems has its own bad-case table next to its positive case, in
 		// Sarko.Loot.ContainersMayCarryFixedItems — including the empty-list and
 		// fractional-qty rows, which belong beside their siblings rather than here.
+		//
+		// The three optional *string* fields, for the same reason 'id' has its
+		// own row in Sarko.Map.RejectsBadIds: TryGetStringField is not a type
+		// check. FJsonValueNumber and FJsonValueBoolean both override
+		// TryGetString and stringify, so `"tier": 7` used to parse as the tier
+		// FName "7" — a value that looks authored, cannot be found by grepping
+		// the map file, and silently joins whatever loot table happens to be
+		// keyed "7" (today: none, so the container rolls nothing).
+		{ TEXT("tier is a number"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"containers":[{"pos":[250,0,0],"tier":7}]})") },
+		{ TEXT("zone is a number"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"botSpawns":[{"pos":[250,0,0],"zone":3}]})") },
+		{ TEXT("extraction name is a bool"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"extractions":[{"pos":[250,0,0],"name":true}]})") },
 	};
 
 	for (const TPair<FString, FString>& Case : BadCases)
@@ -383,6 +400,110 @@ bool FSarkoShippedMapsMustIdentifyEveryPlaceable::RunTest(const FString& Paramet
 	const bool bBridgeIdentified = SarkoMap::RequireIdentifiedEntries(Bridge, BridgeRequireError);
 	TestTrue(FString::Printf(TEXT("bridge.json identifies every placeable: %s"), *BridgeRequireError),
 		bBridgeIdentified);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBlocksCarrySurfaceAndCollision,
+	"Sarko.Map.BlocksCarrySurfaceAndCollision",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBlocksCarrySurfaceAndCollision::RunTest(const FString& Parameters)
+{
+	// A road and a water strip are flat boxes that must not be walked into, and
+	// a building wall is a coloured box that must be. One block type covers all
+	// of it with two optional fields, which is why there is no separate
+	// "surfaces" section and no second spawn path.
+	const FString Json = TEXT(R"({
+		"id": "test",
+		"extentUU": 20000,
+		"raidDurationSeconds": 900,
+		"playerSpawns": [ { "pos": [0, 0, 100], "yaw": 0 } ],
+		"blocks": [
+			{ "id": "wall", "pos": [0, 0, 175], "extent": [400, 15, 175] },
+			{ "id": "road", "pos": [0, 4000, 2], "extent": [550, 6000, 2], "surface": "asphalt", "blocksMovement": false },
+			{ "id": "creek", "pos": [0, -4000, 5], "extent": [20000, 700, 3], "surface": "water", "blocksMovement": false }
+		]
+	})");
+
+	FSarkoMapDefinition Definition;
+	FString Error;
+	const bool bParsed = SarkoMap::ParseDefinition(Json, Definition, Error);
+	TestTrue(FString::Printf(TEXT("surfaced blocks parse: %s"), *Error), bParsed);
+	if (!bParsed)
+	{
+		return false;
+	}
+	TestEqual(TEXT("three blocks"), Definition.Blocks.Num(), 3);
+
+	// Backward compatibility, stated as an assertion: a block written before
+	// this task means exactly what it meant before.
+	TestEqual(TEXT("an unsurfaced block defaults to Structure"),
+		static_cast<uint8>(Definition.Blocks[0].Surface), static_cast<uint8>(ESarkoSurface::Structure));
+	TestTrue(TEXT("an unsurfaced block still blocks movement"), Definition.Blocks[0].bBlocksMovement);
+
+	TestEqual(TEXT("the road's surface is read"),
+		static_cast<uint8>(Definition.Blocks[1].Surface), static_cast<uint8>(ESarkoSurface::Asphalt));
+	TestFalse(TEXT("the road does not block movement"), Definition.Blocks[1].bBlocksMovement);
+	TestEqual(TEXT("the water's surface is read"),
+		static_cast<uint8>(Definition.Blocks[2].Surface), static_cast<uint8>(ESarkoSurface::Water));
+	TestFalse(TEXT("the water does not block movement"), Definition.Blocks[2].bBlocksMovement);
+
+	// The layout is what the spawner consumes, so the two new fields have to
+	// survive the reduction or a road spawns as grey cover.
+	const FSarkoMapLayout Layout = SarkoMap::ToLayout(Definition);
+	TestEqual(TEXT("all three blocks reach the layout"), Layout.Cover.Num(), 3);
+	TestFalse(TEXT("the road is still non-colliding in the layout"), Layout.Cover[1].bBlocksMovement);
+	TestEqual(TEXT("the water is still water in the layout"),
+		static_cast<uint8>(Layout.Cover[2].Surface), static_cast<uint8>(ESarkoSurface::Water));
+
+	// A non-colliding block is still a first-class entry everywhere that reads
+	// blocks as data — only its physics body is gone. If a road stopped being
+	// id-bearing, Stage C could not reference it in a report.
+	TArray<FString> Ids;
+	FString IdError;
+	TestTrue(FString::Printf(TEXT("ids still collected across surfaces: %s"), *IdError),
+		SarkoMap::CollectIds(Definition, Ids, IdError));
+	TestTrue(TEXT("the non-colliding road keeps its id"), Ids.Contains(TEXT("road")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoRejectsBadSurfaceFields,
+	"Sarko.Map.RejectsBadSurfaceFields",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoRejectsBadSurfaceFields::RunTest(const FString& Parameters)
+{
+	// An unknown or mistyped surface must not silently fall back to grey: a
+	// typo in "asphalt" would produce a light grey highway across a dark map
+	// and look like a lighting bug.
+	const TArray<TPair<FString, FString>> BadCases = {
+		{ TEXT("unknown surface name"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"blocks":[{"pos":[0,0,100],"extent":[100,100,100],"surface":"tarmac"}]})") },
+		{ TEXT("surface is not a string"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"blocks":[{"pos":[0,0,100],"extent":[100,100,100],"surface":3}]})") },
+		{ TEXT("blocksMovement is not a bool"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"blocks":[{"pos":[0,0,100],"extent":[100,100,100],"blocksMovement":"no"}]})") },
+		// The nastier half of the same defect: FString::ToBool() answers "false"
+		// to anything it does not recognise, so a misspelt literal would parse
+		// as a wall with its collision quietly removed.
+		{ TEXT("blocksMovement is a misspelt bool literal"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"blocks":[{"pos":[0,0,100],"extent":[100,100,100],"blocksMovement":"ture"}]})") },
+	};
+
+	for (const TPair<FString, FString>& Case : BadCases)
+	{
+		FSarkoMapDefinition Definition;
+		FString Error;
+		TestFalse(FString::Printf(TEXT("rejected: %s"), *Case.Key),
+			SarkoMap::ParseDefinition(Case.Value, Definition, Error));
+		TestFalse(FString::Printf(TEXT("names the problem: %s"), *Case.Key), Error.IsEmpty());
+	}
 	return true;
 }
 

@@ -77,4 +77,132 @@ bool FSarkoPaletteSeparatesGroundFromCover::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoSurfacePaletteIsReadable,
+	"Sarko.Config.SurfacePaletteIsReadable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * The whole readability argument of ТЗ §14, written down as assertions. These
+ * are not style preferences: a top-down player reads the map by luminance
+ * first, and every relation below was chosen because its opposite made
+ * something unreadable in a real frame.
+ */
+bool FSarkoSurfacePaletteIsReadable::RunTest(const FString& Parameters)
+{
+	using namespace SarkoMap;
+	using namespace SarkoMap::Palette;
+
+	const auto Lum = [](const FLinearColor& C) { return 0.2126f * C.R + 0.7152f * C.G + 0.0722f * C.B; };
+	const auto Spread = [](const FLinearColor& C)
+	{
+		return FMath::Max3(C.R, C.G, C.B) - FMath::Min3(C.R, C.G, C.B);
+	};
+
+	// Every enum value must have a colour, a roughness and a name. The Count
+	// sentinel makes this loop exhaustive: adding a twelfth surface and
+	// forgetting a switch case fails here instead of shipping black geometry.
+	for (uint8 Raw = 0; Raw < static_cast<uint8>(ESarkoSurface::Count); ++Raw)
+	{
+		const ESarkoSurface Surface = static_cast<ESarkoSurface>(Raw);
+		const FString Name = SurfaceName(Surface);
+		TestFalse(FString::Printf(TEXT("surface %d has a name"), Raw), Name.IsEmpty());
+
+		ESarkoSurface RoundTripped = ESarkoSurface::Count;
+		TestTrue(FString::Printf(TEXT("'%s' parses back"), *Name), ParseSurfaceName(Name, RoundTripped));
+		TestEqual(FString::Printf(TEXT("'%s' round-trips"), *Name),
+			static_cast<uint8>(RoundTripped), Raw);
+
+		const FLinearColor Colour = ColourFor(Surface);
+		TestTrue(FString::Printf(TEXT("'%s' is in gamut"), *Name),
+			Colour.R >= 0.f && Colour.G >= 0.f && Colour.B >= 0.f &&
+			Colour.R <= 1.f && Colour.G <= 1.f && Colour.B <= 1.f);
+		TestTrue(FString::Printf(TEXT("'%s' is lit, not black"), *Name), Lum(Colour) > 0.005f);
+		const float Roughness = RoughnessFor(Surface);
+		TestTrue(FString::Printf(TEXT("'%s' has a sane roughness"), *Name),
+			Roughness > 0.f && Roughness <= 1.f);
+	}
+
+	// No two surfaces may be the same colour — two names for one look is a
+	// palette that silently lost a distinction.
+	for (uint8 A = 0; A < static_cast<uint8>(ESarkoSurface::Count); ++A)
+	{
+		for (uint8 B = A + 1; B < static_cast<uint8>(ESarkoSurface::Count); ++B)
+		{
+			const FLinearColor First = ColourFor(static_cast<ESarkoSurface>(A));
+			const FLinearColor Second = ColourFor(static_cast<ESarkoSurface>(B));
+			TestFalse(FString::Printf(TEXT("'%s' and '%s' are not the same colour"),
+				*SurfaceName(static_cast<ESarkoSurface>(A)), *SurfaceName(static_cast<ESarkoSurface>(B))),
+				First.Equals(Second, 0.004f));
+		}
+	}
+
+	const float GroundLum = Lum(ColourFor(ESarkoSurface::Ground));
+
+	// ТЗ §14, clause by clause.
+	TestTrue(TEXT("a dirt road is lighter than the ground it cuts through"),
+		Lum(ColourFor(ESarkoSurface::Dirt)) > GroundLum * 1.6f);
+	TestTrue(TEXT("asphalt is darker than the ground"),
+		Lum(ColourFor(ESarkoSurface::Asphalt)) < GroundLum);
+	TestTrue(TEXT("the bridge deck contrasts hard against its own asphalt"),
+		Lum(ColourFor(ESarkoSurface::Concrete)) > Lum(ColourFor(ESarkoSurface::Asphalt)) * 4.f);
+	{
+		const FLinearColor Water = ColourFor(ESarkoSurface::Water);
+		TestTrue(TEXT("water is blue-grey: blue leads, red trails"), Water.B > Water.G && Water.G > Water.R);
+		TestTrue(TEXT("water is darker than the ground, so the ravine reads as depth"),
+			Lum(Water) < GroundLum);
+	}
+	{
+		const FLinearColor Rust = ColourFor(ESarkoSurface::Rust);
+		TestTrue(TEXT("rust is red-dominant"), Rust.R > Rust.G && Rust.G > Rust.B);
+		TestTrue(TEXT("rust separates from the ground by brightness too"),
+			Lum(Rust) > GroundLum * 1.4f);
+	}
+	{
+		const FLinearColor Timber = ColourFor(ESarkoSurface::Timber);
+		TestTrue(TEXT("the village tone is warm"), Timber.R > Timber.B * 2.f);
+		TestTrue(TEXT("the village tone is brighter than the ground"), Lum(Timber) > GroundLum * 1.8f);
+	}
+	{
+		const FLinearColor Veg = ColourFor(ESarkoSurface::Vegetation);
+		TestTrue(TEXT("vegetation is green-dominant"), Veg.G > Veg.R && Veg.G > Veg.B);
+		TestTrue(TEXT("a treeline is darker than the ground it borders, so it reads as a wall"),
+			Lum(Veg) < GroundLum);
+	}
+	TestTrue(TEXT("the ravine bed is the darkest thing in the sector"),
+		Lum(ColourFor(ESarkoSurface::Ravine)) < Lum(ColourFor(ESarkoSurface::Water)));
+	{
+		const FLinearColor Green = ColourFor(ESarkoSurface::Extraction);
+		TestTrue(TEXT("the extraction is unmistakably green"), Green.G > Green.R * 2.f && Green.G > Green.B * 2.f);
+		TestTrue(TEXT("the extraction is the brightest surface in the sector"), Lum(Green) > 0.3f);
+	}
+
+	// The colour budget belongs to the characters. Every *world* surface stays
+	// muted; the three gameplay tints do not. This is the constraint that lets
+	// §14's palette exist without competing with friend/foe reading.
+	for (uint8 Raw = 0; Raw < static_cast<uint8>(ESarkoSurface::Count); ++Raw)
+	{
+		const ESarkoSurface Surface = static_cast<ESarkoSurface>(Raw);
+		if (Surface == ESarkoSurface::Extraction)
+		{
+			continue; // deliberately loud: it is a gameplay marker, not scenery
+		}
+		const FLinearColor Colour = ColourFor(Surface);
+		TestTrue(FString::Printf(TEXT("'%s' is muted enough not to fight the characters"),
+			*SurfaceName(Surface)),
+			FMath::Max3(Colour.R, Colour.G, Colour.B) < 0.35f && Spread(Colour) < 0.20f);
+	}
+
+	// The two original constants still mean what the previous palette test says
+	// they mean, and the lookup agrees with them.
+	TestTrue(TEXT("ColourFor(Ground) is the Ground constant"), ColourFor(ESarkoSurface::Ground).Equals(Ground, 0.0001f));
+	TestTrue(TEXT("ColourFor(Structure) is the Structure constant"), ColourFor(ESarkoSurface::Structure).Equals(Structure, 0.0001f));
+	TestEqual(TEXT("RoughnessFor(Ground) is GroundRoughness"), RoughnessFor(ESarkoSurface::Ground), GroundRoughness);
+	TestEqual(TEXT("RoughnessFor(Structure) is StructureRoughness"), RoughnessFor(ESarkoSurface::Structure), StructureRoughness);
+
+	ESarkoSurface Unknown = ESarkoSurface::Count;
+	TestFalse(TEXT("an unknown surface name does not parse"), ParseSurfaceName(TEXT("chartreuse"), Unknown));
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

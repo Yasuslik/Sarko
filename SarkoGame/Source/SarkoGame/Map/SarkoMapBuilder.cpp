@@ -181,13 +181,20 @@ void SarkoMap::SpawnLayout(UWorld& World, const FSarkoMapLayout& Layout)
 	}
 
 	// Floor: one flattened cube covering the play area.
-	SpawnMeshBox(World, CubeMesh, FVector(0.f, 0.f, -25.f), FRotator::ZeroRotator, FVector(Layout.Extent, Layout.Extent, 25.f), true,
-		Palette::Ground, Palette::GroundRoughness);
+	SpawnMeshBox(World, CubeMesh, FVector(0.f, 0.f, -25.f), FRotator::ZeroRotator,
+		FVector(Layout.Extent, Layout.Extent, 25.f), true,
+		Palette::ColourFor(ESarkoSurface::Ground), Palette::RoughnessFor(ESarkoSurface::Ground));
 
+	// One loop, one spawn path, for cover *and* for the flat surfaces (roads,
+	// water, the ravine bed) that ТЗ §14 wants — the only difference between
+	// them is a colour lookup and a collision flag, both carried on the block.
+	// A block authored before either field existed is Structure and colliding,
+	// so this is byte-identical to what it replaced for every block on the
+	// shipped map today.
 	for (const FSarkoCoverBlock& Block : Layout.Cover)
 	{
-		SpawnMeshBox(World, CubeMesh, Block.Location, Block.Rotation, Block.Extent, true,
-			Palette::Structure, Palette::StructureRoughness);
+		SpawnMeshBox(World, CubeMesh, Block.Location, Block.Rotation, Block.Extent, Block.bBlocksMovement,
+			Palette::ColourFor(Block.Surface), Palette::RoughnessFor(Block.Surface));
 	}
 }
 
