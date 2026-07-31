@@ -35,6 +35,13 @@ enum class ESarkoSurface : uint8
 	Vegetation,
 	/** The ravine's water. Dark blue-grey and OPAQUE — see the Water constant. */
 	Water,
+	/**
+	 * The ford's «мелкая вода» (ТЗ §6). Lighter than Water and laid on top of it,
+	 * so a crossing reads as a bright band in a dark gorge instead of as a gap in
+	 * a cliff. Also opaque — the limitation Water documents applies here too, and
+	 * this surface is what makes "shallow" expressible at all without a material.
+	 */
+	Shallow,
 	/** The ravine bed. The visual stand-in for depth the map does not physically dig. */
 	Ravine,
 	/** Extraction pads. The one saturated world colour, and it is a gameplay marker. */

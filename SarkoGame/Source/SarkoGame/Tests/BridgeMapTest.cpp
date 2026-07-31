@@ -403,6 +403,10 @@ bool FSarkoBridgeHasReadableGroundSurfaces::RunTest(const FString& Parameters)
 		{
 			case ESarkoSurface::Asphalt:
 			case ESarkoSurface::Dirt:   ++Roads; break;
+			// Shallow is water: ТЗ §6's «мелкая вода» at the ford is a lighter tone
+			// laid on the same bed, and every rule below that keeps a river out of
+			// the fields has to bind it too.
+			case ESarkoSurface::Shallow:
 			case ESarkoSurface::Water:  ++Water; break;
 			case ESarkoSurface::Ravine: ++RavineBed; break;
 			default: break;
@@ -414,6 +418,7 @@ bool FSarkoBridgeHasReadableGroundSurfaces::RunTest(const FString& Parameters)
 		const bool bGroundSurface = Block.Surface == ESarkoSurface::Asphalt
 			|| Block.Surface == ESarkoSurface::Dirt
 			|| Block.Surface == ESarkoSurface::Water
+			|| Block.Surface == ESarkoSurface::Shallow
 			|| Block.Surface == ESarkoSurface::Ravine;
 		if (bGroundSurface)
 		{
@@ -435,7 +440,7 @@ bool FSarkoBridgeHasReadableGroundSurfaces::RunTest(const FString& Parameters)
 	// Water outside the bed is a river running across the map.
 	for (const FSarkoCoverBlock& Block : Map.Blocks)
 	{
-		if (Block.Surface == ESarkoSurface::Water)
+		if (Block.Surface == ESarkoSurface::Water || Block.Surface == ESarkoSurface::Shallow)
 		{
 			TestTrue(FString::Printf(TEXT("water block '%s' stays in the ravine bed"), *Block.Id),
 				FMath::Abs(Block.Location.Y) + Block.Extent.Y <= 900.f);
@@ -453,7 +458,8 @@ bool FSarkoBridgeHasReadableGroundSurfaces::RunTest(const FString& Parameters)
 	// stuck pawns and nav holes on iOS for zero gameplay.
 	for (const FSarkoCoverBlock& Block : Map.Blocks)
 	{
-		if (Block.Surface == ESarkoSurface::Ravine || Block.Surface == ESarkoSurface::Water)
+		if (Block.Surface == ESarkoSurface::Ravine || Block.Surface == ESarkoSurface::Water
+			|| Block.Surface == ESarkoSurface::Shallow)
 		{
 			TestTrue(FString::Printf(TEXT("'%s' sits on the floor rather than digging through it"), *Block.Id),
 				Block.Location.Z - Block.Extent.Z >= 0.f);
@@ -487,12 +493,352 @@ bool FSarkoBridgeStaysInsideTheActorBudget::RunTest(const FString& Parameters)
 	AddInfo(FString::Printf(TEXT("bridge.json spawns %d actors (%d blocks+walls, %d prop actors from %d props)"),
 		Actors, Layout.Cover.Num(), SarkoMap::CountPropActors(Map), Map.Props.Num()));
 
-	// 450 is the ceiling for Stage B. Stage C's full ledger (≈20 buildings, a
-	// treeline border, the north filled per §15) will pass it, and that is the
-	// point at which instanced static meshes stop being premature — see the
-	// Global Constraints. A failure here is not a bug, it is that decision
-	// coming due.
-	TestTrue(FString::Printf(TEXT("the sector spawns at most 450 actors (it spawns %d)"), Actors), Actors <= 450);
+	// 560 is Bridge_West's ceiling, and it is a DECISION rather than a drift.
+	//
+	// Where the number comes from. With the east closure, the world border and
+	// ТЗ §15's fill of the north in, the bill is 459: 1 floor, 32 authored blocks
+	// (12 of them the closure and the border), 32 walls expanded from 5 buildings,
+	// 363 prop actors from 351 authored props (the difference is the composite
+	// kinds — pylons, road signs, trailers), 19 containers, 3 extraction pads, 6
+	// bots, the pawn and two lights. The three camps, the tutorial loot layout and
+	// the landmark pass still to come add ~70 more, which is the ~529 the
+	// Bridge_West plan projects. 560 leaves about thirty of headroom over that:
+	// enough for a crate beside a container, not enough to hide a fill that
+	// doubled.
+	//
+	// Instancing was considered here and deliberately NOT taken. What costs money
+	// is draw calls, and SpawnMeshBox -> PaintFlat gives every actor its own
+	// UMaterialInstanceDynamic — UE only auto-instances primitives that share a
+	// mesh AND a material, so moving these into HISM components would not reduce
+	// the draw count until the per-actor MIDs go away first. The cheap mitigation
+	// is therefore one shared material instance per ESarkoSurface (eleven instead
+	// of five hundred), which is a change to the single spawn path and belongs
+	// with its own before/after measurement, not inside a content stage. The
+	// saving that WAS available here has been taken: the closure is 12 blocks
+	// instead of ~50 tiled treeline props.
+	//
+	// The trigger that reopens this: a PACKAGED iOS build that misses 30 fps in
+	// this sector. Response order is (1) shared per-surface material instances,
+	// measured; (2) HISM per (mesh, surface) pair for the fill kinds only — rock,
+	// bush, log, fence_section, treeline, about 150 of the prop actors; (3)
+	// cutting content. Never (3) first. Nothing this stage added ticks, allocates
+	// per frame or replicates, which is why 500-odd static cubes is not where
+	// ТЗ §16's budget is expected to break.
+	//
+	// A failure here still means what it always meant: not a bug, but this
+	// decision coming due again.
+	TestTrue(FString::Printf(TEXT("the sector spawns at most 560 actors (it spawns %d)"), Actors), Actors <= 560);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBridgeWestLedgerIsAuthored,
+	"Sarko.Map.BridgeWestLedgerIsAuthored",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
+{
+	FSarkoMapDefinition Map;
+	FString Error;
+	if (!LoadBridge(Map, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json failed to load: %s"), *Error));
+		return false;
+	}
+
+	// The owner's Bridge_West numbers, as numbers. The full map's 42/16 move to
+	// docs/design/bridge-full-map-tz.md as the acceptance bar for Stage D; this
+	// is the bar for the sector that ships now.
+	TestEqual(TEXT("nineteen containers"), Map.Containers.Num(), 19);
+	TestEqual(TEXT("six bots"), Map.BotSpawns.Num(), 6);
+	TestEqual(TEXT("four player spawns"), Map.PlayerSpawns.Num(), 4);
+	TestEqual(TEXT("three extractions, one of them reachable"), Map.Extractions.Num(), 3);
+
+	// 3 junk / 7 common / 6 good / 1 med / 2 military.
+	TMap<FName, int32> Tiers;
+	for (const FSarkoLootContainerSpot& Spot : Map.Containers)
+	{
+		Tiers.FindOrAdd(Spot.Tier)++;
+	}
+	TestEqual(TEXT("three junk"), Tiers.FindRef(TEXT("junk")), 3);
+	TestEqual(TEXT("seven common"), Tiers.FindRef(TEXT("common")), 7);
+	TestEqual(TEXT("six good"), Tiers.FindRef(TEXT("good")), 6);
+	TestEqual(TEXT("one med"), Tiers.FindRef(TEXT("med")), 1);
+	TestEqual(TEXT("two military"), Tiers.FindRef(TEXT("military")), 2);
+
+	// The active third: the barrier Task 2 builds runs at x = -6100 north of the
+	// ravine and x = -9100 south of it, so nothing the player is meant to reach
+	// may be authored east of those lines. Checked as data rather than left to
+	// the closure, because a container behind the barrier is loot that exists,
+	// is on the ledger, and can never be picked up.
+	const auto InActiveThird = [](const FVector& P)
+	{
+		return P.Y > 0.f ? P.X <= -6100.f : P.X <= -9100.f;
+	};
+	for (const FSarkoLootContainerSpot& Spot : Map.Containers)
+	{
+		TestTrue(FString::Printf(TEXT("container '%s' is inside the active third"), *Spot.Id),
+			InActiveThird(Spot.Location));
+	}
+	for (const FSarkoBotSpot& Bot : Map.BotSpawns)
+	{
+		TestTrue(FString::Printf(TEXT("bot '%s' is inside the active third"), *Bot.Id),
+			InActiveThird(Bot.Location));
+	}
+	for (const FTransform& Spawn : Map.PlayerSpawns)
+	{
+		TestTrue(TEXT("every player spawn is inside the active third"),
+			InActiveThird(Spawn.GetLocation()));
+	}
+
+	// ТЗ §11: the first fight is one bot. Eight bots that all heard the player
+	// and converged turned a firefight into an execution once already, and the
+	// hearing radius is 1800 uu — so no two bots may be able to hear the same
+	// shot. This is the whole reason six positions were chosen by hand.
+	for (int32 A = 0; A < Map.BotSpawns.Num(); ++A)
+	{
+		for (int32 B = A + 1; B < Map.BotSpawns.Num(); ++B)
+		{
+			const float Distance = FVector2D(
+				Map.BotSpawns[A].Location.X - Map.BotSpawns[B].Location.X,
+				Map.BotSpawns[A].Location.Y - Map.BotSpawns[B].Location.Y).Size();
+			TestTrue(FString::Printf(TEXT("bots '%s' and '%s' are %.0f uu apart (>= 1800)"),
+				*Map.BotSpawns[A].Id, *Map.BotSpawns[B].Id, Distance), Distance >= 1800.f);
+		}
+	}
+
+	// ТЗ §8: "бот не виден при появлении". The nearest bot is a whole zone away.
+	for (const FTransform& Spawn : Map.PlayerSpawns)
+	{
+		for (const FSarkoBotSpot& Bot : Map.BotSpawns)
+		{
+			const float Distance = FVector2D(
+				Spawn.GetLocation().X - Bot.Location.X,
+				Spawn.GetLocation().Y - Bot.Location.Y).Size();
+			TestTrue(FString::Printf(TEXT("bot '%s' is not visible from a spawn (%.0f uu)"),
+				*Bot.Id, Distance), Distance >= 6000.f);
+		}
+	}
+
+	// ТЗ §12's E1, to the unit. This is the one extraction a Bridge_West player
+	// can reach, and the tutorial's last teaching beat is standing in it.
+	const FSarkoExtractionSpot* E1 = Map.Extractions.FindByPredicate(
+		[](const FSarkoExtractionSpot& Spot) { return Spot.Id == TEXT("bridge_extract_north_path"); });
+	TestNotNull(TEXT("E1 exists by id"), E1);
+	if (E1)
+	{
+		TestTrue(TEXT("E1 is at ТЗ §12's (-15500, +19500)"),
+			FMath::IsNearlyEqual(static_cast<float>(E1->Location.X), -15500.f, 1.f) &&
+			FMath::IsNearlyEqual(static_cast<float>(E1->Location.Y), 19500.f, 1.f));
+		TestTrue(TEXT("E1 is inside the active third"), InActiveThird(E1->Location));
+	}
+	// E2 and E3 are data behind the closure, deliberately: ТЗ §12 lists three and
+	// Stage D opens them. They must NOT be inside the active third, or the sector
+	// would ship with three working exits and no reason to learn the route.
+	for (const FSarkoExtractionSpot& Spot : Map.Extractions)
+	{
+		if (Spot.Id != TEXT("bridge_extract_north_path"))
+		{
+			TestFalse(FString::Printf(TEXT("extraction '%s' is behind the closure"), *Spot.Id),
+				InActiveThird(Spot.Location));
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBridgeWestIsEnclosed,
+	"Sarko.Map.BridgeWestIsEnclosed",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBridgeWestIsEnclosed::RunTest(const FString& Parameters)
+{
+	FSarkoMapDefinition Map;
+	FString Error;
+	if (!LoadBridge(Map, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json failed to load: %s"), *Error));
+		return false;
+	}
+
+	const FSarkoMapLayout Layout = SarkoMap::ToLayout(Map);
+	const TArray<FSarkoCoverBlock> Solid = SolidOnly(Layout.Cover);
+
+	// Walk each barrier's centre line at 100 uu — a quarter of the pawn's own
+	// width — and require solid geometry at every sample. Sampling is the only
+	// honest check here: "there are six blocks" says nothing about whether they
+	// meet, and the failure mode of a barrier is a gap, not a missing piece.
+	const auto RequireSolidAlongY = [this, &Solid](float X, float FromY, float ToY, const TCHAR* What)
+	{
+		int32 Holes = 0;
+		float FirstHole = 0.f;
+		for (float Y = FromY; Y <= ToY; Y += 100.f)
+		{
+			if (!SarkoMap::IsPointInsideBlocksXY(FVector2D(X, Y), Solid))
+			{
+				if (Holes == 0) { FirstHole = Y; }
+				++Holes;
+			}
+		}
+		TestEqual(FString::Printf(TEXT("%s is unbroken (first hole at y=%.0f of %d samples)"),
+			What, FirstHole, Holes), Holes, 0);
+	};
+	const auto RequireSolidAlongX = [this, &Solid](float Y, float FromX, float ToX, const TCHAR* What)
+	{
+		int32 Holes = 0;
+		float FirstHole = 0.f;
+		for (float X = FromX; X <= ToX; X += 100.f)
+		{
+			if (!SarkoMap::IsPointInsideBlocksXY(FVector2D(X, Y), Solid))
+			{
+				if (Holes == 0) { FirstHole = X; }
+				++Holes;
+			}
+		}
+		TestEqual(FString::Printf(TEXT("%s is unbroken (first hole at x=%.0f of %d samples)"),
+			What, FirstHole, Holes), Holes, 0);
+	};
+
+	// The east closure. Each run stops at the ravine, where the rim walls close
+	// everything between x = -13600 and -1100 already — so the two runs plus the
+	// rims are one continuous flank, and the step between them is invisible
+	// because it happens inside a gorge nobody can walk along.
+	RequireSolidAlongY(-6100.f, 2100.f, 20000.f, TEXT("the east closure, north of the ravine"));
+	RequireSolidAlongY(-9100.f, -20000.f, -2100.f, TEXT("the east closure, south of the ravine"));
+
+	// The world border. Without it the rail depot at y = -19000 is 1000 uu from
+	// the floor's edge, and walking off a 400 m plane is a fall, a KillZ death and
+	// a lost haul — the worst way to lose a raid, and not one the ТЗ ever asked
+	// for. The ravine's mouth at the map's west edge gets its own piece: the
+	// gorge is reachable through the pipes, and it runs straight off the world.
+	RequireSolidAlongY(-19850.f, -19700.f, -2100.f, TEXT("the west border, south of the ravine"));
+	RequireSolidAlongY(-19850.f, -1500.f, 1500.f, TEXT("the west border across the ravine mouth"));
+	RequireSolidAlongY(-19850.f, 2100.f, 19700.f, TEXT("the west border, north of the ravine"));
+	RequireSolidAlongX(-19850.f, -20000.f, -9300.f, TEXT("the south border"));
+
+	// The north border has exactly one mouth, and it is E1. Both halves are
+	// unbroken; the gap between them contains the extraction and nothing else.
+	RequireSolidAlongX(19850.f, -20000.f, -16100.f, TEXT("the north border west of E1"));
+	RequireSolidAlongX(19850.f, -14900.f, -6300.f, TEXT("the north border east of E1"));
+	TestFalse(TEXT("E1's mouth is open"),
+		SarkoMap::IsPointInsideBlocksXY(FVector2D(-15500.f, 19850.f), Solid));
+
+	// And the mouth is E1's, not a hole beside it: the open span is 1200 uu and
+	// E1's 500 uu radius sits inside it.
+	TestTrue(TEXT("the mouth is where the extraction is"),
+		SarkoMap::IsPointInsideBlocksXY(FVector2D(-16200.f, 19850.f), Solid) &&
+		SarkoMap::IsPointInsideBlocksXY(FVector2D(-14800.f, 19850.f), Solid));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBridgeSpawnsClearTheProps,
+	"Sarko.Map.BridgeSpawnsClearTheProps",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBridgeSpawnsClearTheProps::RunTest(const FString& Parameters)
+{
+	FSarkoMapDefinition Map;
+	FString Error;
+	if (!LoadBridge(Map, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json failed to load: %s"), *Error));
+		return false;
+	}
+
+	// Nobody starts inside a PROP.
+	//
+	// The gap this closes: every other "spawns are not in geometry" invariant in
+	// this file asks about blocks and about expanded building walls, and a prop is
+	// neither. So the ledger could put — and did put — a bot inside a freight car
+	// at (-12300,-15600) with a full green suite, because a 1400 x 300 uu solid
+	// box that happens to be authored in the "props" section was invisible to
+	// every check that existed. The pawn spawns embedded in it, and the first
+	// thing the player meets is an enemy that cannot walk.
+	//
+	// Same shape as Sarko.Map.BridgePropsClearTheWalls, from the other side: each
+	// part is built as the box it will actually be spawned as — the prop's yaw and
+	// PartWorldLocation's rotated offset — so a composite is tested where it
+	// stands rather than where its origin is.
+	TArray<FSarkoCoverBlock> SolidParts;
+	int32 NonCollidingParts = 0;
+	for (const FSarkoMapProp& Prop : Map.Props)
+	{
+		FSarkoPropKind Kind;
+		if (!SarkoMap::FindPropKind(Prop.Kind, Kind))
+		{
+			continue; // Sarko.Map.BridgeMapIsValid is the test that fails for this
+		}
+		for (const FSarkoPropPart& Part : Kind.Parts)
+		{
+			// Walk-through decoration is skipped on purpose: a bush is the one kind
+			// with no collision, and a container standing in one is a container in
+			// a bush. Failing that would be failing correct authoring.
+			if (!Part.bBlocksMovement)
+			{
+				++NonCollidingParts;
+				continue;
+			}
+			FSarkoCoverBlock Box;
+			Box.Id = Prop.Id.IsEmpty() ? Prop.Kind.ToString() : Prop.Id;
+			Box.Location = SarkoMap::PartWorldLocation(Prop.Location, Prop.Yaw, Part);
+			Box.Rotation = FRotator(0.f, Prop.Yaw, 0.f);
+			Box.Extent = Part.Extent;
+			SolidParts.Add(Box);
+		}
+	}
+
+	// A guard against the guard, in two directions: every part of every prop was
+	// classified (so an empty props section or a failed kind lookup fails HERE
+	// rather than passing by checking nothing), and there is a real amount of
+	// solid geometry to be clear of.
+	TestEqual(TEXT("every prop part was classified as solid or walk-through"),
+		SolidParts.Num() + NonCollidingParts, SarkoMap::CountPropActors(Map));
+	TestTrue(FString::Printf(TEXT("there are solid prop parts to clear (%d)"), SolidParts.Num()),
+		SolidParts.Num() >= 200);
+
+	// Named points, because the failure message has to say which prop: "a bot
+	// spawn sits inside a block" sent someone hunting through 21 blocks once.
+	TArray<TPair<FString, FVector2D>> Points;
+	for (int32 Index = 0; Index < Map.PlayerSpawns.Num(); ++Index)
+	{
+		const FVector Location = Map.PlayerSpawns[Index].GetLocation();
+		const FString Id = Map.PlayerSpawnIds.IsValidIndex(Index) && !Map.PlayerSpawnIds[Index].IsEmpty()
+			? Map.PlayerSpawnIds[Index]
+			: FString::Printf(TEXT("playerSpawns[%d]"), Index);
+		Points.Emplace(Id, FVector2D(Location.X, Location.Y));
+	}
+	for (const FSarkoBotSpot& Bot : Map.BotSpawns)
+	{
+		Points.Emplace(Bot.Id, FVector2D(Bot.Location.X, Bot.Location.Y));
+	}
+	for (const FSarkoLootContainerSpot& Spot : Map.Containers)
+	{
+		Points.Emplace(Spot.Id, FVector2D(Spot.Location.X, Spot.Location.Y));
+	}
+
+	int32 Comparisons = 0;
+	for (const TPair<FString, FVector2D>& Point : Points)
+	{
+		for (const FSarkoCoverBlock& Part : SolidParts)
+		{
+			++Comparisons;
+			// One-element array rather than a second predicate: SarkoMap's own
+			// point-in-block test is the one the expander uses, and two copies of
+			// it is exactly how one of them ends up not knowing about yaw.
+			TestFalse(
+				FString::Printf(TEXT("'%s' at (%.0f, %.0f) does not stand inside prop '%s'"),
+					*Point.Key, Point.Value.X, Point.Value.Y, *Part.Id),
+				SarkoMap::IsPointInsideBlocksXY(Point.Value, { Part }));
+		}
+	}
+
+	TestEqual(TEXT("every player spawn, bot spawn and container was checked"), Points.Num(),
+		Map.PlayerSpawns.Num() + Map.BotSpawns.Num() + Map.Containers.Num());
+	TestTrue(FString::Printf(TEXT("the ledger's 4 spawns, 6 bots and 19 containers were checked (%d)"),
+		Points.Num()), Points.Num() >= 29);
+	TestEqual(TEXT("every point was compared against every solid part"),
+		Comparisons, Points.Num() * SolidParts.Num());
 	return true;
 }
 
