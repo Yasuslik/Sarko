@@ -713,12 +713,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FSarkoTutorialModeFallsBackToRollingWhenNothingIsAuthored::RunTest(const FString& Parameters)
 {
 	// The mechanism ships in Stage A.5; the authored layout is Stage C's. Between
-	// the two, `bridge.json` carries no fixedItems at all, and a tutorial raid that
-	// yielded nothing from all 42 containers would be a real regression in a build
-	// that is meant to stay playable. So tutorial mode with nothing authored rolls
-	// normally — and the game mode logs one Warning per raid naming the count, so
-	// the gap is visible rather than assumed. Stage C's acceptance bar is that the
-	// Warning stops appearing.
+	// the two, `bridge.json` carried no fixedItems at all. Stage C authored all
+	// nineteen, so this is now the rule for a container that is added later and
+	// forgotten, and for any future map: tutorial mode with nothing authored still
+	// rolls normally — and the game mode logs one Warning per raid naming the count,
+	// so the gap is visible rather than assumed. Stage C's acceptance bar was that
+	// Warning stopping, and it has.
 	FSarkoLootContainerSpot Unauthored;
 	Unauthored.Tier = SarkoLoot::TierJunk;
 
