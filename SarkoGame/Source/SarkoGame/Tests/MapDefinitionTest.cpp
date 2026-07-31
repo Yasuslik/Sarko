@@ -391,10 +391,13 @@ bool FSarkoPropActorCountIsWithinTheMobileBudget::RunTest(const FString& Paramet
 	TestTrue(FString::Printf(TEXT("props stay inside the mobile actor budget (%d)"), PropActors),
 		PropActors <= 400);
 
-	// The shipped map is all single-box kinds today, so the count must equal the
-	// authored count exactly. This is the assertion that would catch a part
-	// leaking into a legacy kind — a looser >= would not.
-	TestEqual(TEXT("the shipped map is one actor per authored prop"), PropActors, Map.Props.Num());
+	// Was an equality until Stage C: the shipped map used no composite kind, so
+	// actors and authored entries were the same number. Bridge_West places
+	// pylons, road signs and trailers, so the relation is now strictly greater —
+	// asserted, because a *fall back* to equality would mean a composite had
+	// silently collapsed to one box and the pylon had lost its crossarms.
+	TestTrue(FString::Printf(TEXT("composite kinds are in use (%d actors from %d props)"),
+		PropActors, Map.Props.Num()), PropActors > Map.Props.Num());
 
 	// One authored prop of a single-box kind is exactly one actor: this is the
 	// promise that adding parts cost the existing map nothing.
@@ -795,9 +798,10 @@ bool FSarkoNewPropKindsExist::RunTest(const FString& Parameters)
 		TestTrue(TEXT("a road sign is a post and a plate"), Sign.Parts.Num() >= 2);
 	}
 
-	// Adding kinds must not add entries: bridge.json places none of the nine, so
-	// the shipped actor bill is unchanged and the iOS budget has not moved. If a
-	// later task starts placing them, THAT is where the count is allowed to grow.
+	// Stage C places all nine. The assertion inverts: the point of the kinds was
+	// always that a sector would use them, and a kind nothing places is a kind
+	// whose extents have never been seen in a frame (which is why Task 2 of the
+	// Bridge_West plan photographs one of each before authoring the rest).
 	FSarkoMapDefinition Bridge;
 	FString LoadError;
 	if (!SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Bridge, LoadError))
@@ -805,13 +809,31 @@ bool FSarkoNewPropKindsExist::RunTest(const FString& Parameters)
 		AddError(FString::Printf(TEXT("bridge.json failed to load: %s"), *LoadError));
 		return false;
 	}
+	for (const FName& Kind : Required)
+	{
+		const bool bPlaced = Bridge.Props.ContainsByPredicate(
+			[&Kind](const FSarkoMapProp& Prop) { return Prop.Kind == Kind; });
+		TestTrue(FString::Printf(TEXT("bridge.json places '%s'"), *Kind.ToString()), bPlaced);
+	}
+
+	// Composites now cost more actors than they cost authored entries, which is
+	// exactly what they were for. The relation that still has to hold is that
+	// every prop resolves — a kind that did not would silently contribute zero
+	// and make the budget number optimistic in the one case where the map is
+	// broken. The absolute ceiling lives in
+	// Sarko.Map.PropActorCountIsWithinTheMobileBudget.
+	int32 ExpectedActors = 0;
 	for (const FSarkoMapProp& Prop : Bridge.Props)
 	{
-		TestFalse(FString::Printf(TEXT("bridge.json does not yet place '%s'"), *Prop.Kind.ToString()),
-			Required.Contains(Prop.Kind));
+		FSarkoPropKind Resolved;
+		TestTrue(FString::Printf(TEXT("placed kind '%s' resolves"), *Prop.Kind.ToString()),
+			SarkoMap::FindPropKind(Prop.Kind, Resolved));
+		ExpectedActors += Resolved.Parts.Num();
 	}
-	TestEqual(TEXT("the shipped map is still one actor per authored prop"),
-		SarkoMap::CountPropActors(Bridge), Bridge.Props.Num());
+	TestEqual(TEXT("the actor count is the sum of every placed kind's parts"),
+		SarkoMap::CountPropActors(Bridge), ExpectedActors);
+	TestTrue(TEXT("composites are actually in use, so the sum exceeds the entry count"),
+		SarkoMap::CountPropActors(Bridge) > Bridge.Props.Num());
 	return true;
 }
 

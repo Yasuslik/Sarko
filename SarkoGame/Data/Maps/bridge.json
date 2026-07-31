@@ -46,7 +46,29 @@
     { "id": "bridge_road_west_pipes_south", "pos": [-14500, -3600, 3], "extent": [325, 1400, 3], "surface": "dirt", "blocksMovement": false },
     { "id": "bridge_road_west_station", "pos": [-14150, -6450, 3], "extent": [325, 1500, 3], "surface": "dirt", "blocksMovement": false, "yaw": 14 },
     { "note": "The spur along the АЗС's north face into its forecourt, so the station reads as somewhere a road goes rather than a shed in a field. Held clear of the building's north wall (y = -8250) on purpose.",
-      "id": "bridge_road_station_yard", "pos": [-13300, -7950, 3], "extent": [1200, 250, 3], "surface": "dirt", "blocksMovement": false }
+      "id": "bridge_road_station_yard", "pos": [-13300, -7950, 3], "extent": [1200, 250, 3], "surface": "dirt", "blocksMovement": false },
+
+    { "note": "THE EAST CLOSURE, north of the ravine. Bridge_West is the west third; the rest of the sector is physically closed and opens in Stage D by deleting these blocks and their dressing. A BLOCK rather than tiled treeline props because a block takes any extent and a prop does not: this is 3 actors where 15 props would be, and it carries surface 'vegetation' so it is the same colour as the treeline props that straddle it and break its straight edge. 1000 uu tall (extent.z 500), which is 5.7x the pawn — it cuts sight completely. Every joint below BUTTS: two blocks that share a face plane are separated at BlocksOverlapXY's 0.01 slack, and an overlap of one unit fails Sarko.Map.BridgeBuildingsAreEnterable.",
+      "id": "bridge_west_closure_north_a", "pos": [-6100, 5075, 500], "extent": [200, 2975, 500], "surface": "vegetation" },
+    { "id": "bridge_west_closure_north_b", "pos": [-6100, 11000, 500], "extent": [200, 2950, 500], "surface": "vegetation" },
+    { "id": "bridge_west_closure_north_c", "pos": [-6100, 16975, 500], "extent": [200, 3025, 500], "surface": "vegetation" },
+
+    { "note": "THE EAST CLOSURE, south of the ravine, 3000 uu further west so it clears the village's own ledger footprint (ТЗ §9 puts the village at X -9000..+3500) and never cuts through the two walkable houses Stage B authored. The step between the two runs happens inside the ravine, where the rim walls already close x -13600..-1100 — so it is a step nobody can stand at.",
+      "id": "bridge_west_closure_south_a", "pos": [-9100, -5075, 500], "extent": [200, 2975, 500], "surface": "vegetation" },
+    { "id": "bridge_west_closure_south_b", "pos": [-9100, -11000, 500], "extent": [200, 2950, 500], "surface": "vegetation" },
+    { "id": "bridge_west_closure_south_c", "pos": [-9100, -16975, 500], "extent": [200, 3025, 500], "surface": "vegetation" },
+
+    { "note": "THE WORLD BORDER, west edge. Not decoration: the floor is 40000x40000 and ends, the rail depot sits 1000 uu from its southern edge, and walking off a 400 m plane is a KillZ death with the haul in the backpack. Three pieces because the ravine's rim walls reach the map's west edge and nothing may overlap them — the middle piece closes the gorge's mouth, which IS reachable through the pipe crossing.",
+      "id": "bridge_west_border_west_south", "pos": [-19850, -10900, 500], "extent": [150, 8800, 500], "surface": "vegetation" },
+    { "id": "bridge_west_border_west_ravine", "pos": [-19850, 0, 500], "extent": [150, 1500, 500], "surface": "vegetation" },
+    { "id": "bridge_west_border_west_north", "pos": [-19850, 10900, 500], "extent": [150, 8800, 500], "surface": "vegetation" },
+
+    { "note": "THE WORLD BORDER, south edge. Stops at x = -9300, which is closure_south_c's west face: east of that the border is the closure's job and a second block there would overlap it.",
+      "id": "bridge_west_border_south", "pos": [-14650, -19850, 500], "extent": [5350, 150, 500], "surface": "vegetation" },
+
+    { "note": "THE WORLD BORDER, north edge, in two pieces with a 1200 uu mouth between them at x -16100..-14900. That mouth is E1: the only gap in the treeline is the way out of the world, which is exactly what an extraction should look like from above.",
+      "id": "bridge_west_border_north_west", "pos": [-18050, 19850, 500], "extent": [1950, 150, 500], "surface": "vegetation" },
+    { "id": "bridge_west_border_north_east", "pos": [-10600, 19850, 500], "extent": [4300, 150, 500], "surface": "vegetation" }
   ],
 
   "buildings": [
@@ -154,13 +176,13 @@
     { "note": "Moved 400 west and 500 south of where it was authored: ТЗ §8's spawn 03 at (-15000,+17000) stood inside this wreck's footprint. It is now L03's остов.", "kind": "car_wreck", "pos": [-15400, 16700, 75], "yaw": 30 },
     { "kind": "crate", "pos": [-15200, 16000, 70] },
 
-    { "note": "BUS STOP — a landmark on the way east, and the first real cover after spawn.", "kind": "bus", "pos": [-6200, 16400, 160], "yaw": 0 },
-    { "kind": "wall", "pos": [-6200, 17000, 140], "yaw": 0 },
-    { "kind": "wall", "pos": [-7100, 16400, 140], "yaw": 90 },
-    { "kind": "crate", "pos": [-6000, 16750, 70] },
+    { "note": "BUS STOP — a landmark on the way east, and the first real cover after spawn. The bus, its shelter wall and the crate beside it moved 700-800 uu west when the east closure was authored: at x -6200 the bus's 1200 uu body ran straight through the barrier block at x -6300..-5900, and the crate stood 100 uu inside it. At -6900 the bus ends exactly at the barrier's west face and reads as a bus parked against the treeline, which is also the closure's story at this road.", "kind": "bus", "pos": [-6900, 16400, 160], "yaw": 0 },
+    { "kind": "wall", "pos": [-6900, 17000, 140], "yaw": 0 },
+    { "note": "The shelter's west end, moved 700 uu west with the bus. Not in the closure plan's list of four, but the bus's body is 1200 uu long: once the bus stands at -6900 its west face is at -7500 and this wall's old x -7160..-7040 is INSIDE it. It keeps its original 240 uu gap to the bus's west face.", "kind": "wall", "pos": [-7800, 16400, 140], "yaw": 90 },
+    { "kind": "crate", "pos": [-6700, 16750, 70] },
     { "kind": "wall", "pos": [-5300, 16400, 140], "yaw": 90 },
     { "kind": "sandbag", "pos": [-5600, 17200, 55], "yaw": 0 },
-    { "kind": "crate", "pos": [-6800, 16900, 70] },
+    { "note": "Moved 700 uu west with the shelter wall it stands against — at x -6800 the wall's new footprint (-7300..-6500) swallowed it.", "kind": "crate", "pos": [-7500, 16900, 70] },
 
     { "note": "CHECKPOINT — two staggered sandbag lines north of the bridge, so the approach is a weave rather than a straight run. First military loot, first real decision.", "kind": "sandbag", "pos": [-1800, 4200, 55], "yaw": 0 },
     { "kind": "sandbag", "pos": [-1440, 4200, 55], "yaw": 0 },
@@ -234,7 +256,7 @@
     { "kind": "freight_car", "pos": [-13900, -15600, 200], "yaw": 0 },
     { "kind": "freight_car", "pos": [-12300, -15600, 200], "yaw": 0 },
     { "kind": "freight_car", "pos": [-10700, -15600, 200], "yaw": 0 },
-    { "kind": "freight_car", "pos": [-9200, -16400, 200], "yaw": 25 },
+    { "note": "Moved 800 uu west of where it was authored: at yaw 25 this car's footprint reaches x -8502, straight through the east closure's southern run at x -9300..-8900. At -10000 its east corner stops 698 uu short of the barrier's west face.", "kind": "freight_car", "pos": [-10000, -16400, 200], "yaw": 25 },
     { "kind": "wall", "pos": [-16400, -15600, 140], "yaw": 90 },
     { "kind": "crate", "pos": [-14700, -14800, 70] },
     { "kind": "crate", "pos": [-11500, -14800, 70] },
@@ -323,7 +345,55 @@
     { "kind": "freight_car", "pos": [7800, -18000, 200], "yaw": 0 },
     { "kind": "car_wreck", "pos": [5000, -18200, 75], "yaw": 50 },
     { "kind": "crate", "pos": [6800, -17200, 70] },
-    { "kind": "crate", "pos": [7100, -17500, 70] }
+    { "kind": "crate", "pos": [7100, -17500, 70] },
+
+    { "note": "FIRST LIGHT FOR THE NEW KINDS. One of each of Stage B's nine, at the collapsed junction road where the east closure crosses it. Nothing placed these kinds before, so their extents and colours had never been seen in a frame; they are photographed here before the north fill authors a hundred and forty. Each one stays as real content afterwards. Two conventions: a single-box kind carries its own half-height in pos.z, a COMPOSITE carries 0 because each part carries its own height.", "kind": "treeline", "pos": [-6500, 16000, 500] },
+    { "kind": "concrete_barrier", "pos": [-6420, 16700, 55], "yaw": 90 },
+    { "note": "Composite: pos.z = 0, the parts carry the height. Yaw 90 turns the plate's face west, into the player walking east along the junction. Placed on the open shoulder south of the bus stop rather than at (-6800,16400): the bus's 1200 uu body now stands at -6900 and would have swallowed post and plate whole.", "kind": "road_sign", "pos": [-7620, 15400, 0], "yaw": 90 },
+    { "kind": "trailer", "pos": [-6900, 17300, 0], "yaw": 10 },
+    { "kind": "rock", "pos": [-6500, 15600, 65] },
+    { "note": "West of the log rather than east of it: at (-6350,+15300) 85 uu of the bush stood inside the barrier block, and a bush is 90 uu tall against a 1000 uu wall of foliage — half of it would simply not be there.", "kind": "bush", "pos": [-7000, 15100, 45] },
+    { "kind": "log", "pos": [-6600, 15000, 55], "yaw": 100 },
+    { "kind": "fence_section", "pos": [-6800, 14600, 92], "yaw": 90 },
+    { "note": "ЛЭП pylon #3 of the three in the active north, on ТЗ §8's line (-11000,+19000) -> (+4000,+8500): at x = -8200 that line is at y = 17040. The other two are the north fill's. Authored 1400 uu further west along the same line than first drafted — at (-6800,+16060) both of its legs stood INSIDE the treeline prop above, which is 1200 x 400 uu, and a pylon whose legs are buried in a wall of foliage is a pylon nobody can read. Yaw 55, not 0: the crossarms have to sit PERPENDICULAR to the line the wires run along (the §8 line bears -35 degrees), and the same yaw turns the two legs — which are offset along the kind's local X — off the player's east-west axis, so both are visible instead of one hiding the other.", "kind": "pylon", "pos": [-8200, 17040, 0], "yaw": 55 },
+
+    { "note": "TREELINE, north run — the silhouette. The barrier block does the blocking; these break its edge and give the player something with depth to read at eye level. Varied x by +/-100 and yaw by a few degrees on purpose: a line of identical boxes reads as a fence. Each one is 1200 x 400 uu, so at x -6400 it straddles the block at -6300..-5900 and hides its straight face.",
+      "kind": "treeline", "pos": [-6400, 2600, 500], "yaw": 4 },
+    { "kind": "treeline", "pos": [-6550, 4800, 500], "yaw": -3 },
+    { "kind": "treeline", "pos": [-6400, 7000, 500], "yaw": 2 },
+    { "kind": "treeline", "pos": [-6600, 9200, 500], "yaw": -5 },
+    { "kind": "treeline", "pos": [-6400, 11400, 500], "yaw": 3 },
+    { "kind": "treeline", "pos": [-6550, 13600, 500], "yaw": -2 },
+    { "kind": "treeline", "pos": [-6400, 18200, 500], "yaw": 5 },
+    { "kind": "treeline", "pos": [-6600, 19400, 500], "yaw": -4 },
+
+    { "note": "TREELINE, south run. The clump at y -16200 was moved to -17300 and one added at -15300: at -16200 it stood inside the jack-knifed freight car's new footprint, and without the extra the run had a 3900 uu stretch of bare barrier face.",
+      "kind": "treeline", "pos": [-9400, -2700, 500], "yaw": -3 },
+    { "kind": "treeline", "pos": [-9550, -5200, 500], "yaw": 4 },
+    { "kind": "treeline", "pos": [-9400, -7800, 500], "yaw": -2 },
+    { "kind": "treeline", "pos": [-9600, -10600, 500], "yaw": 3 },
+    { "kind": "treeline", "pos": [-9400, -13400, 500], "yaw": -5 },
+    { "kind": "treeline", "pos": [-9350, -15300, 500] },
+    { "kind": "treeline", "pos": [-9550, -17300, 500], "yaw": 2 },
+    { "kind": "treeline", "pos": [-9400, -18800, 500], "yaw": -3 },
+
+    { "note": "THE COLLAPSED JUNCTION ROAD (north) — the closure needs a cause, not just a wall. Three jersey barriers butted end to end across the carriageway 120 uu short of the barrier's west face, a wreck shoved onto the shoulder, and the bus stop beside them. Authored at x -6420 rather than -6500: at -6500 each barrier's west end clipped the bus shelter's wall, which moved 700 uu west with the bus.",
+      "kind": "concrete_barrier", "pos": [-6420, 17000, 55], "yaw": 90 },
+    { "kind": "concrete_barrier", "pos": [-6420, 17300, 55], "yaw": 90 },
+    { "note": "Shoved onto the north shoulder beside the trailer. Not at (-6700,+16900): that point is inside both the bus shelter's wall and the crate against it.",
+      "kind": "car_wreck", "pos": [-7650, 17300, 75], "yaw": 80 },
+
+    { "note": "THE COLLAPSED SOUTH ROAD — the same story on the southern run, where the village lane used to come through. The two barriers butt at y -11250; the wreck sits 500 uu west of them and the sign 900 uu north, both clear of the treeline clump at (-9600,-10600), which the first draft buried them in.",
+      "kind": "concrete_barrier", "pos": [-9400, -11100, 55], "yaw": 90 },
+    { "kind": "concrete_barrier", "pos": [-9400, -11400, 55], "yaw": 90 },
+    { "kind": "car_wreck", "pos": [-9900, -11200, 75], "yaw": 15 },
+    { "kind": "road_sign", "pos": [-9500, -10100, 0], "yaw": 90 },
+
+    { "note": "SCATTER along both runs, so the treeline has an understorey rather than a hem. The southern bush moved from y -15000 to -12200 to stay out of the added treeline clump.",
+      "kind": "rock", "pos": [-6700, 12000, 65] },
+    { "kind": "rock", "pos": [-9500, -6000, 65] },
+    { "kind": "bush", "pos": [-6800, 8000, 45] },
+    { "kind": "bush", "pos": [-9700, -12200, 45] }
   ],
 
   "containers": [
