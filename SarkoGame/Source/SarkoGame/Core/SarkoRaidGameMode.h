@@ -113,6 +113,15 @@ private:
 	 */
 	void BeginBackendSession();
 
+	/**
+	 * Everything after auth: start, confirm and ActivateRaid. Split out of
+	 * BeginBackendSession because auth is now skipped whenever the player arrived
+	 * from the shelter with a live JWT (the client and its token ride
+	 * USarkoGameInstance across the travel), so the rest of the chain has two
+	 * entry points — one synchronous, one from the auth completion.
+	 */
+	void OnAuthenticated();
+
 	/** Everything after a failed call: log, use the local seed, keep playing (spec §4.6). */
 	void FallBackToOfflineRaid(const FString& Reason);
 

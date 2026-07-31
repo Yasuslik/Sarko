@@ -23,7 +23,14 @@ public class SarkoGame : ModuleRules
 			"DeveloperSettings",
 			"Json",
 			"JsonUtilities",
-			"HTTP"
+			"HTTP",
+			// The shelter menu is Slate built in C++ (SNew), which is code rather
+			// than an asset — UMG widgets are .uasset and this project ships none.
+			// Both are already reachable transitively through Engine's public
+			// dependencies; listing them means an Engine change cannot silently
+			// take them away.
+			"Slate",
+			"SlateCore"
 		});
 	}
 }

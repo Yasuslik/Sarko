@@ -1,6 +1,7 @@
 #include "Core/SarkoRaidGameMode.h"
 
 #include "AI/SarkoEnemyCharacter.h"
+#include "Core/SarkoGameInstance.h"
 #include "Core/SarkoPlayerController.h"
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
@@ -148,11 +149,31 @@ void ASarkoRaidGameMode::StartPlay()
 
 void ASarkoRaidGameMode::BeginBackendSession()
 {
-	Backend = MakeShared<FSarkoBackendClient>();
+	USarkoGameInstance* GameInstance = GetGameInstance<USarkoGameInstance>();
+	if (!GameInstance)
+	{
+		// Loud rather than fatal: the raid still plays offline. This means
+		// GameInstanceClass is missing from DefaultEngine.ini (or is in
+		// DefaultGame.ini, where UGameMapsSettings does not read it), which is
+		// exactly the silent-default failure that once left the raid game mode
+		// itself unloaded.
+		FallBackToOfflineRaid(TEXT("no USarkoGameInstance — check GameInstanceClass in DefaultEngine.ini"));
+		return;
+	}
+	Backend = GameInstance->EnsureBackend();
 
 	// TWeakObjectPtr through every hop: an HTTP completion can land after the
 	// level has been torn down, and this game mode is the first thing to go.
 	TWeakObjectPtr<ASarkoRaidGameMode> WeakThis(this);
+
+	// Already authenticated when the player came from the shelter — the client and
+	// its JWT ride the game instance across the travel, so this saves a round trip
+	// on every raid after the first of a launch.
+	if (Backend->IsAuthenticated())
+	{
+		OnAuthenticated();
+		return;
+	}
 
 	Backend->Authenticate([WeakThis](bool bAuthenticated, const FString& AuthError)
 	{
@@ -166,80 +187,91 @@ void ASarkoRaidGameMode::BeginBackendSession()
 			Self->FallBackToOfflineRaid(AuthError);
 			return;
 		}
-
-		// The loadout goes out **empty**, and it must stay empty until in-raid
-		// weapons and ammo are real items.
-		//
-		// /v1/raid/start debits the loadout from the stash; nothing credits it back
-		// except the raid result, and the result submits the backpack alone. So the
-		// pistol and 60 rounds this used to send were a one-way withdrawal: the first
-		// raid spent the starter kit and every raid after it got 409
-		// insufficient_items, which fell through to the offline path permanently —
-		// the online loop worked exactly once per install. Nothing in the raid even
-		// reads the loadout: the weapon is abstract with infinite reloads, so the
-		// debit was risk with no matching stake, which is dishonest rather than hard.
-		//
-		// An empty loadout means a PvE raid risks only the loot it finds, which is
-		// the intended economy for the tutorial sector. Restore the debit — together
-		// with crediting a survivor's kit back in the result — when losing a weapon
-		// on death is a real consequence.
-		const FString MapId = GetDefault<USarkoRaidSettings>()->BackendMapId;
-		Self->Backend->StartRaid(MapId, SarkoBackend::WireLoadout(),
-			[WeakThis](bool bStarted, const FSarkoRaidSession& NewSession, const FString& StartError)
-			{
-				ASarkoRaidGameMode* Inner = WeakThis.Get();
-				if (!Inner || !Inner->Backend)
-				{
-					return;
-				}
-				if (!bStarted)
-				{
-					Inner->FallBackToOfflineRaid(StartError);
-					return;
-				}
-				Inner->Session = NewSession;
-
-				// Confirm immediately. Until it lands the session is `pending`
-				// and the sweeper hands the loadout back after PENDING_TTL (60 s
-				// on the deployed service), which would leave a raid running
-				// against a session that no longer accepts a result.
-				Inner->Backend->ConfirmRaid(NewSession,
-					[WeakThis](bool bConfirmed, const FDateTime& ExpiresAt, const FString& ConfirmError)
-					{
-						ASarkoRaidGameMode* Confirmed = WeakThis.Get();
-						if (!Confirmed)
-						{
-							return;
-						}
-						if (!bConfirmed)
-						{
-							Confirmed->FallBackToOfflineRaid(ConfirmError);
-							return;
-						}
-
-						const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
-						const double SecondsLeft = (ExpiresAt - FDateTime::UtcNow()).GetTotalSeconds();
-						const float Clock = SarkoBackend::ClockSecondsFromDeadline(
-							Confirmed->CachedDefinition.RaidDurationSeconds, SecondsLeft,
-							Settings.BackendGraceMarginSeconds);
-
-						if (Confirmed->MapClockSeconds() > Clock + 1.f)
-						{
-							// Loud, because it is a configuration mismatch a
-							// player would experience as "the raid was shorter
-							// than the map says". RAID_TTL is 20m on the deployed
-							// service against a 15-minute map, so this line
-							// should never appear — if it does, RAID_TTL was
-							// lowered and raising it is the fix.
-							UE_LOG(LogTemp, Warning,
-								TEXT("SarkoRaidGameMode: the map asks for %.0fs but the server's deadline allows %.0fs — raising RAID_TTL is the fix"),
-								Confirmed->MapClockSeconds(), Clock);
-						}
-
-						Confirmed->ActivateRaid(Confirmed->Session.Seed, Clock);
-					});
-			});
+		Self->OnAuthenticated();
 	});
+}
+
+void ASarkoRaidGameMode::OnAuthenticated()
+{
+	// Weak again, and for a second reason now: the client is owned by the game
+	// instance and therefore outlives every world, so a completion is guaranteed
+	// to run — on a live client, with a dead game mode — after the player has
+	// travelled back to the shelter. The weak check is what turns that into a
+	// dropped reply instead of a write into a torn-down world.
+	TWeakObjectPtr<ASarkoRaidGameMode> WeakThis(this);
+
+	// The loadout goes out **empty**, and it must stay empty until in-raid
+	// weapons and ammo are real items.
+	//
+	// /v1/raid/start debits the loadout from the stash; nothing credits it back
+	// except the raid result, and the result submits the backpack alone. So the
+	// pistol and 60 rounds this used to send were a one-way withdrawal: the first
+	// raid spent the starter kit and every raid after it got 409
+	// insufficient_items, which fell through to the offline path permanently —
+	// the online loop worked exactly once per install. Nothing in the raid even
+	// reads the loadout: the weapon is abstract with infinite reloads, so the
+	// debit was risk with no matching stake, which is dishonest rather than hard.
+	//
+	// An empty loadout means a PvE raid risks only the loot it finds, which is
+	// the intended economy for the tutorial sector. Restore the debit — together
+	// with crediting a survivor's kit back in the result — when losing a weapon
+	// on death is a real consequence.
+	const FString MapId = GetDefault<USarkoRaidSettings>()->BackendMapId;
+	Backend->StartRaid(MapId, SarkoBackend::WireLoadout(),
+		[WeakThis](bool bStarted, const FSarkoRaidSession& NewSession, const FString& StartError)
+		{
+			ASarkoRaidGameMode* Inner = WeakThis.Get();
+			if (!Inner || !Inner->Backend)
+			{
+				return;
+			}
+			if (!bStarted)
+			{
+				Inner->FallBackToOfflineRaid(StartError);
+				return;
+			}
+			Inner->Session = NewSession;
+
+			// Confirm immediately. Until it lands the session is `pending`
+			// and the sweeper hands the loadout back after PENDING_TTL (60 s
+			// on the deployed service), which would leave a raid running
+			// against a session that no longer accepts a result.
+			Inner->Backend->ConfirmRaid(NewSession,
+				[WeakThis](bool bConfirmed, const FDateTime& ExpiresAt, const FString& ConfirmError)
+				{
+					ASarkoRaidGameMode* Confirmed = WeakThis.Get();
+					if (!Confirmed)
+					{
+						return;
+					}
+					if (!bConfirmed)
+					{
+						Confirmed->FallBackToOfflineRaid(ConfirmError);
+						return;
+					}
+
+					const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+					const double SecondsLeft = (ExpiresAt - FDateTime::UtcNow()).GetTotalSeconds();
+					const float Clock = SarkoBackend::ClockSecondsFromDeadline(
+						Confirmed->CachedDefinition.RaidDurationSeconds, SecondsLeft,
+						Settings.BackendGraceMarginSeconds);
+
+					if (Confirmed->MapClockSeconds() > Clock + 1.f)
+					{
+						// Loud, because it is a configuration mismatch a
+						// player would experience as "the raid was shorter
+						// than the map says". RAID_TTL is 20m on the deployed
+						// service against a 15-minute map, so this line
+						// should never appear — if it does, RAID_TTL was
+						// lowered and raising it is the fix.
+						UE_LOG(LogTemp, Warning,
+							TEXT("SarkoRaidGameMode: the map asks for %.0fs but the server's deadline allows %.0fs — raising RAID_TTL is the fix"),
+							Confirmed->MapClockSeconds(), Clock);
+					}
+
+					Confirmed->ActivateRaid(Confirmed->Session.Seed, Clock);
+				});
+		});
 }
 
 void ASarkoRaidGameMode::FallBackToOfflineRaid(const FString& Reason)
