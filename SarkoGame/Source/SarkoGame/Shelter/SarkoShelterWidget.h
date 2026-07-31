@@ -54,6 +54,27 @@ public:
 	 */
 	static float UiScaleForViewport(FVector2D ViewportSize);
 
+#if !UE_BUILD_SHIPPING
+	/**
+	 * Test-only: fires the raid button's **own** OnClicked handler, and only while
+	 * that button is genuinely enabled — so nothing can start a raid the player
+	 * could not have started by pressing it. Returns false while it is disabled
+	 * (i.e. before the first /v1/profile has landed), which is what lets a caller
+	 * poll instead of guessing at a delay.
+	 *
+	 * It exists because a headless run has no fingers: pressing a Slate button for
+	 * real needs hit-testing against live geometry, and the shelter → raid hop is
+	 * otherwise the one edge of the loop no automated run can cross. It is
+	 * deliberately not a "travel to the raid" helper — going through the button's
+	 * enabled state and its delegate is the whole point.
+	 *
+	 * SButton::SimulateClick is itself declared `#if !UE_BUILD_SHIPPING` in the
+	 * engine, so this cannot survive into a shipping build even if this guard were
+	 * removed: it would fail to link.
+	 */
+	bool SimulateEnterRaidClickIfEnabled();
+#endif
+
 private:
 	/** UiScaleForViewport of the live viewport, or 1 when there is no viewport. */
 	float UiScale() const;

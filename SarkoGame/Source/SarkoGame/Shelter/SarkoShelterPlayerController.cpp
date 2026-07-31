@@ -12,6 +12,28 @@
 #include "Shelter/SarkoShelterWidget.h"
 #include "TimerManager.h"
 
+#if !UE_BUILD_SHIPPING
+namespace
+{
+	/**
+	 * One automated raid per process, so the shelter the raid *returns* to is left
+	 * alone. BeginPlay runs on every shelter entry, including that one, and firing
+	 * again there would bounce straight back into a second raid — hiding the return
+	 * screen, which is the one that carries the outcome and the credited haul.
+	 *
+	 * Prefixed and long-named on purpose: a unity build puts this file in the same
+	 * translation unit as whatever else the blob happens to contain, and a short
+	 * file-scope name here has already collided with a local in another file.
+	 */
+	bool GSarkoAutoRaidFired = false;
+
+	/** 60 half-second polls = 30 s, which is far longer than auth + /v1/profile
+	 *  and short enough that a broken run fails loudly instead of hanging. */
+	constexpr int32 GSarkoAutoRaidMaxAttempts = 60;
+	constexpr float GSarkoAutoRaidPollSeconds = 0.5f;
+}
+#endif
+
 ASarkoShelterPlayerController::ASarkoShelterPlayerController()
 {
 	// A menu wants a cursor on desktop; on a phone Slate routes touches as
@@ -69,6 +91,15 @@ void ASarkoShelterPlayerController::BeginPlay()
 	if (FParse::Value(FCommandLine::Get(), TEXT("SarkoShelterShot="), AutoShotDelay))
 	{
 		SarkoShelterShot(AutoShotDelay);
+	}
+
+	// `-SarkoAutoRaid=<seconds>` presses the raid button, for a run with no fingers.
+	// Read on every shelter entry for the same reason as the shot switch above, and
+	// then rate-limited to once per process by GSarkoAutoRaidFired.
+	float AutoRaidDelay = 0.f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SarkoAutoRaid="), AutoRaidDelay))
+	{
+		StartAutoRaid(AutoRaidDelay);
 	}
 #endif
 }
@@ -195,6 +226,48 @@ void ASarkoShelterPlayerController::EnterRaid()
 	// default offline). ?Seed= stays a command-line tool for reproducing a raid.
 	SarkoTravel::TravelTo(this, SarkoTravel::RaidOptions(/*SeedOverride*/ 0));
 }
+
+#if !UE_BUILD_SHIPPING
+void ASarkoShelterPlayerController::StartAutoRaid(float DelaySeconds)
+{
+	if (GSarkoAutoRaidFired)
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("SarkoShelter: -SarkoAutoRaid already fired once in this process; this shelter entry is left alone."));
+		return;
+	}
+	AutoRaidAttempts = 0;
+	GetWorldTimerManager().SetTimer(AutoRaidTimer,
+		FTimerDelegate::CreateWeakLambda(this, [this]() { TryAutoRaid(); }),
+		GSarkoAutoRaidPollSeconds, /*bLoop*/ true, FMath::Max(DelaySeconds, 0.05f));
+}
+
+void ASarkoShelterPlayerController::TryAutoRaid()
+{
+	++AutoRaidAttempts;
+	if (!Widget.IsValid())
+	{
+		GetWorldTimerManager().ClearTimer(AutoRaidTimer);
+		return;
+	}
+	if (Widget->SimulateEnterRaidClickIfEnabled())
+	{
+		GSarkoAutoRaidFired = true;
+		GetWorldTimerManager().ClearTimer(AutoRaidTimer);
+		UE_LOG(LogTemp, Display,
+			TEXT("SarkoShelter: -SarkoAutoRaid pressed 'В РЕЙД' on poll %d (the button was enabled)."),
+			AutoRaidAttempts);
+		return;
+	}
+	if (AutoRaidAttempts >= GSarkoAutoRaidMaxAttempts)
+	{
+		GetWorldTimerManager().ClearTimer(AutoRaidTimer);
+		UE_LOG(LogTemp, Error,
+			TEXT("SarkoShelter: -SarkoAutoRaid gave up after %d polls — 'В РЕЙД' never became enabled, so the profile never landed."),
+			AutoRaidAttempts);
+	}
+}
+#endif
 
 void ASarkoShelterPlayerController::SarkoShelterShot(float DelaySeconds)
 {

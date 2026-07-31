@@ -324,6 +324,23 @@ void SSarkoShelterWidget::SetView(const FSarkoShelterView& View)
 	Fill(StashBox, View.StashLines, 15.f);
 }
 
+#if !UE_BUILD_SHIPPING
+bool SSarkoShelterWidget::SimulateEnterRaidClickIfEnabled()
+{
+	// IsEnabled() is checked here and not left to SimulateClick: the engine's
+	// SimulateClick calls ExecuteOnClick() directly and does *not* consult the
+	// enabled state, so without this a scripted press would happily start a raid
+	// while the button was still greyed out waiting for the profile — proving the
+	// opposite of what it is there to prove.
+	if (!RaidButton.IsValid() || !RaidButton->IsEnabled())
+	{
+		return false;
+	}
+	RaidButton->SimulateClick();
+	return true;
+}
+#endif
+
 TSharedPtr<SWidget> SSarkoShelterWidget::WidgetToFocus() const
 {
 	return RaidButton;

@@ -55,6 +55,26 @@ private:
 
 	void EnterRaid();
 
+#if !UE_BUILD_SHIPPING
+	/**
+	 * `-SarkoAutoRaid=<seconds>`: presses "В РЕЙД" for a run that has no fingers.
+	 *
+	 * Debug-only and test-only, and it does not travel by itself — it polls the
+	 * widget's own button until that button is enabled and then fires the button's
+	 * OnClicked, so a headless run crosses the shelter → raid hop through exactly
+	 * the path a player's thumb uses. What it still cannot prove is Slate
+	 * hit-testing: that a press landing on those pixels reaches this button.
+	 *
+	 * Polls rather than firing once at DelaySeconds because the button is gated on
+	 * the first /v1/profile, and a fixed delay would race the network.
+	 */
+	void StartAutoRaid(float DelaySeconds);
+	void TryAutoRaid();
+
+	FTimerHandle AutoRaidTimer;
+	int32 AutoRaidAttempts = 0;
+#endif
+
 	TSharedPtr<class SSarkoShelterWidget> Widget;
 
 	/** The last failure, shown verbatim. Empty when everything is current. */
