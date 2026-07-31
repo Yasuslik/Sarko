@@ -403,6 +403,10 @@ bool FSarkoBridgeHasReadableGroundSurfaces::RunTest(const FString& Parameters)
 		{
 			case ESarkoSurface::Asphalt:
 			case ESarkoSurface::Dirt:   ++Roads; break;
+			// Shallow is water: ТЗ §6's «мелкая вода» at the ford is a lighter tone
+			// laid on the same bed, and every rule below that keeps a river out of
+			// the fields has to bind it too.
+			case ESarkoSurface::Shallow:
 			case ESarkoSurface::Water:  ++Water; break;
 			case ESarkoSurface::Ravine: ++RavineBed; break;
 			default: break;
@@ -414,6 +418,7 @@ bool FSarkoBridgeHasReadableGroundSurfaces::RunTest(const FString& Parameters)
 		const bool bGroundSurface = Block.Surface == ESarkoSurface::Asphalt
 			|| Block.Surface == ESarkoSurface::Dirt
 			|| Block.Surface == ESarkoSurface::Water
+			|| Block.Surface == ESarkoSurface::Shallow
 			|| Block.Surface == ESarkoSurface::Ravine;
 		if (bGroundSurface)
 		{
@@ -435,7 +440,7 @@ bool FSarkoBridgeHasReadableGroundSurfaces::RunTest(const FString& Parameters)
 	// Water outside the bed is a river running across the map.
 	for (const FSarkoCoverBlock& Block : Map.Blocks)
 	{
-		if (Block.Surface == ESarkoSurface::Water)
+		if (Block.Surface == ESarkoSurface::Water || Block.Surface == ESarkoSurface::Shallow)
 		{
 			TestTrue(FString::Printf(TEXT("water block '%s' stays in the ravine bed"), *Block.Id),
 				FMath::Abs(Block.Location.Y) + Block.Extent.Y <= 900.f);
@@ -453,7 +458,8 @@ bool FSarkoBridgeHasReadableGroundSurfaces::RunTest(const FString& Parameters)
 	// stuck pawns and nav holes on iOS for zero gameplay.
 	for (const FSarkoCoverBlock& Block : Map.Blocks)
 	{
-		if (Block.Surface == ESarkoSurface::Ravine || Block.Surface == ESarkoSurface::Water)
+		if (Block.Surface == ESarkoSurface::Ravine || Block.Surface == ESarkoSurface::Water
+			|| Block.Surface == ESarkoSurface::Shallow)
 		{
 			TestTrue(FString::Printf(TEXT("'%s' sits on the floor rather than digging through it"), *Block.Id),
 				Block.Location.Z - Block.Extent.Z >= 0.f);

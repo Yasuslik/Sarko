@@ -356,10 +356,23 @@ bool FSarkoPropKindsAreComplete::RunTest(const FString& Parameters)
 		// keeps every number in this table true and still changes the map.
 		TestTrue(FString::Printf(TEXT("kind '%s' keeps a basic-shape mesh"), *Expected.Key.ToString()),
 			Resolved.Parts[0].Mesh.ToString().StartsWith(TEXT("/Engine/BasicShapes/")));
-		// Every legacy kind was painted Palette::Structure before surfaces
-		// existed, so anything else here repaints the shipped map.
-		TestEqual(FString::Printf(TEXT("kind '%s' keeps the structure surface"), *Expected.Key.ToString()),
-			static_cast<uint8>(Resolved.Parts[0].Surface), static_cast<uint8>(ESarkoSurface::Structure));
+		// Every legacy kind was painted Palette::Structure before surfaces existed,
+		// so anything else here repaints the shipped map — with ONE deliberate
+		// exception, named rather than excluded by a loosened rule. ТЗ §5 asks for
+		// a dark deck with light rails and the sector had a pale deck with rails
+		// that vanished into it; bridge_deck is therefore asphalt, and the pale
+		// tone moved to the new bridge_rail kind. The extents are untouched, which
+		// is what kept all twenty-seven bridge props exactly where they were.
+		if (Expected.Key == TEXT("bridge_deck"))
+		{
+			TestEqual(TEXT("bridge_deck is asphalt-dark (ТЗ §5)"),
+				static_cast<uint8>(Resolved.Parts[0].Surface), static_cast<uint8>(ESarkoSurface::Asphalt));
+		}
+		else
+		{
+			TestEqual(FString::Printf(TEXT("kind '%s' keeps the structure surface"), *Expected.Key.ToString()),
+				static_cast<uint8>(Resolved.Parts[0].Surface), static_cast<uint8>(ESarkoSurface::Structure));
+		}
 	}
 
 	FSarkoPropKind Unknown;
@@ -926,7 +939,8 @@ bool FSarkoPropKindScaleMatchesThePawn::RunTest(const FString& Parameters)
 	const TArray<FName> AllKinds = {
 		TEXT("wall"), TEXT("car_wreck"), TEXT("bus"), TEXT("house"), TEXT("fuel_pump"),
 		TEXT("freight_car"), TEXT("water_tower"), TEXT("sandbag"), TEXT("crate"), TEXT("pipe"),
-		TEXT("bridge_deck"), TEXT("rock"), TEXT("bush"), TEXT("log"), TEXT("fence_section"),
+		TEXT("bridge_deck"), TEXT("bridge_rail"), TEXT("house_timber"), TEXT("house_industrial"),
+		TEXT("rock"), TEXT("bush"), TEXT("log"), TEXT("fence_section"),
 		TEXT("road_sign"), TEXT("concrete_barrier"), TEXT("trailer"), TEXT("pylon"), TEXT("treeline")
 	};
 	for (const FName& Name : AllKinds)

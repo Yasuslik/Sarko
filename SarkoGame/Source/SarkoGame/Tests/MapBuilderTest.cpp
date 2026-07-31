@@ -157,6 +157,20 @@ bool FSarkoSurfacePaletteIsReadable::RunTest(const FString& Parameters)
 			Lum(Water) < GroundLum);
 	}
 	{
+		// ТЗ §6's «мелкая вода» at the ford. The deep water had no lighter tone to
+		// be shallow against, which is why the ford read as a gap in the cliff and
+		// nothing else. Still opaque — a translucent material needs an authored
+		// asset and this project authors none (spec §5.2).
+		const FLinearColor Shallow = ColourFor(ESarkoSurface::Shallow);
+		const FLinearColor Water = ColourFor(ESarkoSurface::Water);
+		TestTrue(TEXT("shallow water is still blue-grey: blue leads, red trails"),
+			Shallow.B > Shallow.G && Shallow.G > Shallow.R);
+		TestTrue(TEXT("shallow water is visibly lighter than deep water"),
+			Lum(Shallow) > Lum(Water) * 1.8f);
+		TestTrue(TEXT("shallow water is lighter than the ground it interrupts, so a ford reads as a bright band"),
+			Lum(Shallow) > GroundLum);
+	}
+	{
 		const FLinearColor Rust = ColourFor(ESarkoSurface::Rust);
 		TestTrue(TEXT("rust is red-dominant"), Rust.R > Rust.G && Rust.G > Rust.B);
 		TestTrue(TEXT("rust separates from the ground by brightness too"),

@@ -46,6 +46,12 @@ namespace
 			// tone depended on where the sun happened to be. A gloss you cannot
 			// control across 400 m is worse than no gloss.
 			/* Water      */ { FLinearColor(0.018f, 0.028f, 0.046f),    0.90f },
+			// Lighter than the deep water and lighter than the GROUND — a shallow
+			// over pale stones is the one water tone that should read bright, which
+			// is what makes a ford legible from a top-down camera 20000 uu up.
+			// Near-matte for the same reason Water is: a gloss you cannot control
+			// across 400 m is worse than no gloss.
+			/* Shallow    */ { FLinearColor(0.045f, 0.062f, 0.085f),    0.90f },
 			/* Ravine     */ { FLinearColor(0.013f, 0.013f, 0.010f),    0.93f },
 			// Mirrors ASarkoExtractionZone's pad tint so the two cannot drift.
 			/* Extraction */ { FLinearColor(0.160f, 0.620f, 0.240f),    0.70f },
@@ -65,8 +71,8 @@ namespace
 	/** JSON names, in enum order. Lower snake case, like every other key. */
 	const TCHAR* const SurfaceNames[static_cast<int32>(ESarkoSurface::Count)] = {
 		TEXT("ground"), TEXT("dirt"), TEXT("asphalt"), TEXT("concrete"), TEXT("structure"),
-		TEXT("rust"), TEXT("timber"), TEXT("vegetation"), TEXT("water"), TEXT("ravine"),
-		TEXT("extraction")
+		TEXT("rust"), TEXT("timber"), TEXT("vegetation"), TEXT("water"), TEXT("shallow"),
+		TEXT("ravine"), TEXT("extraction")
 	};
 }
 

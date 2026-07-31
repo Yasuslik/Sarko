@@ -85,7 +85,12 @@ namespace
 			{ TEXT("sandbag"),     Box(Cube,     FVector(180.f, 70.f, 55.f),   true, ESarkoSurface::Structure) },
 			{ TEXT("crate"),       Box(Cube,     FVector(70.f, 70.f, 70.f),    true, ESarkoSurface::Structure) },
 			{ TEXT("pipe"),        Box(Cylinder, FVector(90.f, 90.f, 600.f),   true, ESarkoSurface::Structure) },
-			{ TEXT("bridge_deck"), Box(Cube,     FVector(900.f, 300.f, 30.f),  true, ESarkoSurface::Structure) },
+			// ТЗ §5's «тёмный асфальт»: the ONE legacy kind that is not Structure,
+			// and it is a deliberate exception rather than a drift. The deck and the
+			// parapets were both grey, which made the deck the pale thing and the
+			// rails invisible against it — the inverse of what §5 asks for. The
+			// extents are untouched, so not one of the nine deck props moved.
+			{ TEXT("bridge_deck"), Box(Cube,     FVector(900.f, 300.f, 30.f),  true, ESarkoSurface::Asphalt) },
 
 			// ---- ТЗ §15 / §32: filling the world. Large forms, not hundreds of
 			// small ones — every entry below is one actor except the three
@@ -157,6 +162,19 @@ namespace
 			// deep, 1000 uu (10 m, 5.7x the pawn) tall, dark green, impassable.
 			// This is what closes off the east until Stage C builds it.
 			{ TEXT("treeline"),         Box(Cube,     FVector(600.f, 200.f, 500.f), true,  ESarkoSurface::Vegetation) },
+
+			// ТЗ §5's «светлые борта». A wall's exact twin — 400x60x140 — so the
+			// eighteen parapet and approach-rail props are re-kinded in place
+			// without one of them moving; only the colour differs, and that is the
+			// whole point: the deck went dark, so the rails have to go pale or the
+			// crossing loses its silhouette from above.
+			{ TEXT("bridge_rail"),      Box(Cube,     FVector(400.f, 60.f, 140.f),  true, ESarkoSurface::Concrete) },
+			// ТЗ §14's «деревня тёплая» / «промзона ржавая». house's exact extents
+			// (500x400x300), so a cluster is re-kinded in place. Sixteen identical
+			// grey boxes made the village and the промзона differ only by how the
+			// boxes were arranged; hue is the cheapest cluster identity there is.
+			{ TEXT("house_timber"),     Box(Cube,     FVector(500.f, 400.f, 300.f), true, ESarkoSurface::Timber) },
+			{ TEXT("house_industrial"), Box(Cube,     FVector(500.f, 400.f, 300.f), true, ESarkoSurface::Rust) },
 		};
 		return Table;
 	}
