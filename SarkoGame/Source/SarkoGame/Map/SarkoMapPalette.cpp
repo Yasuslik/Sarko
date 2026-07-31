@@ -22,7 +22,12 @@ namespace
 		static const FSurfaceStyle Styles[static_cast<int32>(ESarkoSurface::Count)] = {
 			/* Ground     */ { SarkoMap::Palette::Ground,               SarkoMap::Palette::GroundRoughness },
 			/* Dirt       */ { FLinearColor(0.115f, 0.098f, 0.062f),    0.95f },
-			/* Asphalt    */ { FLinearColor(0.022f, 0.022f, 0.025f),    0.80f },
+			// 0.90 rather than a glossier 0.80: measured in the Task 8 overview,
+			// glossy asphalt caught the same broad specular sheet the ground
+			// roughness exists to avoid, and the highway came out 123/255 against
+			// a 141/255 ground — a ribbon you had to look for. Matte asphalt is
+			// lit by its base colour instead, which is what §14's "dark" means.
+			/* Asphalt    */ { FLinearColor(0.022f, 0.022f, 0.025f),    0.90f },
 			/* Concrete   */ { FLinearColor(0.235f, 0.232f, 0.222f),    0.78f },
 			/* Structure  */ { SarkoMap::Palette::Structure,            SarkoMap::Palette::StructureRoughness },
 			/* Rust       */ { FLinearColor(0.160f, 0.070f, 0.036f),    0.85f },
@@ -31,7 +36,16 @@ namespace
 			// Opaque, and that is a shipped limitation rather than a choice: a
 			// translucent material cannot exist here without authoring an asset
 			// (spec §5.2). Dark and blue is enough for the read from above.
-			/* Water      */ { FLinearColor(0.018f, 0.028f, 0.046f),    0.55f },
+			//
+			// NEAR-MATTE (0.90), which is not what water looks like and is the
+			// point. At 0.55 the 40000 uu water slab behaved exactly like the
+			// specular sheet Palette::GroundRoughness exists to prevent: in the
+			// Task 8 overview it measured (178,182,188) at x=+10000 — the
+			// BRIGHTEST large surface in the frame and no longer blue — while
+			// reading correctly at (105,119,138) in the west, i.e. the ravine's
+			// tone depended on where the sun happened to be. A gloss you cannot
+			// control across 400 m is worse than no gloss.
+			/* Water      */ { FLinearColor(0.018f, 0.028f, 0.046f),    0.90f },
 			/* Ravine     */ { FLinearColor(0.013f, 0.013f, 0.010f),    0.93f },
 			// Mirrors ASarkoExtractionZone's pad tint so the two cannot drift.
 			/* Extraction */ { FLinearColor(0.160f, 0.620f, 0.240f),    0.70f },

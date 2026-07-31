@@ -23,7 +23,30 @@
     { "note": "RAVINE — south rim, y = -1800. Gaps aligned with the north rim, or a crossing would end in a wall.", "kind": "wall", "pos": [-17200, -1800, 500], "extent": [2800, 300, 500] },
     { "kind": "wall", "pos": [-7350, -1800, 500], "extent": [6250, 300, 500] },
     { "kind": "wall", "pos": [6550, -1800, 500], "extent": [5450, 300, 500] },
-    { "kind": "wall", "pos": [17000, -1800, 500], "extent": [3000, 300, 500] }
+    { "kind": "wall", "pos": [17000, -1800, 500], "extent": [3000, 300, 500] },
+
+    { "note": "RAVINE BED — the VISUAL stand-in for a 400-700 uu dig (spec §5.2), not a pit. Flat, non-colliding, 4 uu thick, sitting ON the floor: cliffs plus a dark bed plus water read identically from a top-down camera, and a real hole buys fall damage, stuck pawns and nav holes on iOS for zero gameplay. Crossability is still the eight rim walls above, exactly as before — nothing here digs, and nothing here stops anyone.",
+      "id": "bridge_ravine_bed", "pos": [0, 0, 2], "extent": [20000, 2200, 2], "surface": "ravine", "blocksMovement": false },
+    { "note": "WATER — y = -700..+700 per ТЗ §5, on top of the bed (z 4..10). OPAQUE: a translucent material needs an authored asset and this project authors none (spec §5.2). Dark blue-grey on the darker bed reads as water from above; it will NOT read as water in a close-up, and the ford's 'мелкая вода' is this same tone rather than a lighter shallow. That is a shipped limitation, not a bug.",
+      "id": "bridge_ravine_water", "pos": [0, 0, 7], "extent": [20000, 700, 3], "surface": "water", "blocksMovement": false },
+
+    { "note": "HIGHWAY (ТЗ §7). Authored under the traffic jam that already exists rather than on §7's (-1500,+20000) -> (0,0) line: the 28 wrecks, the checkpoint and the bridge approach rails were all placed on a straight x~0 centreline, and asphalt on the §7 diagonal would leave the whole jam standing in the grass — which is also what breaks the firing line (§7). So: straight from the bridge deck to y=+16500, then a westward bend toward the north edge. Roads are z 0..6, i.e. 2 uu above the ravine bed, so the two never z-fight where they meet. 1200 wide, inside §7's 900-1300.",
+      "id": "bridge_road_highway_north", "pos": [0, 9600, 3], "extent": [600, 6900, 3], "surface": "asphalt", "blocksMovement": false },
+    { "note": "The bend toward §7's north end. Stops at x=-600 rather than -1500 so the northernmost wrecks stay ON the asphalt.",
+      "id": "bridge_road_highway_north_bend", "pos": [-300, 18250, 3], "extent": [600, 1775, 3], "surface": "asphalt", "blocksMovement": false, "yaw": 10 },
+    { "note": "South of the ravine the §7 line (0,0) -> (+1000,-10000) fits the existing content, so it is used verbatim: the wreck at (600,-9900) and the sandbags at y=-7200 sit on it.",
+      "id": "bridge_road_highway_south", "pos": [635, -6350, 3], "extent": [600, 3670, 3], "surface": "asphalt", "blocksMovement": false, "yaw": 6 },
+    { "note": "The village/промзона fork at (+1000,-10000) — an east-west bar, kept north of the house at (1000,-11200) so no road runs under a building.",
+      "id": "bridge_road_highway_fork", "pos": [400, -10350, 3], "extent": [1400, 350, 3], "surface": "asphalt", "blocksMovement": false },
+
+    { "note": "WEST DIRT ROAD (ТЗ §7): (-18000,+17000) -> (-15500,+11000) -> (-14500,+3000) -> pipes -> (-14500,-5000) -> АЗС. 650 wide (§7 wants 500-800) and LIGHTER than the ground (§14). This is Bridge_West's actual route, which is why it is the road that exists now; the east road, the village lanes and the ford's shallows are Stage C. Both pipe-crossing segments stop at the ravine bed's edge (y = +/-2200): the crossing itself is a walkway between pipes, not a road, and asphalt over the bed would z-fight a darker surface.",
+      "id": "bridge_road_west_spawn", "pos": [-16750, 14000, 3], "extent": [325, 3250, 3], "surface": "dirt", "blocksMovement": false, "yaw": 23 },
+    { "id": "bridge_road_west_upper", "pos": [-15000, 7000, 3], "extent": [325, 4030, 3], "surface": "dirt", "blocksMovement": false, "yaw": 7 },
+    { "id": "bridge_road_west_pipes_north", "pos": [-14500, 2600, 3], "extent": [325, 400, 3], "surface": "dirt", "blocksMovement": false },
+    { "id": "bridge_road_west_pipes_south", "pos": [-14500, -3600, 3], "extent": [325, 1400, 3], "surface": "dirt", "blocksMovement": false },
+    { "id": "bridge_road_west_station", "pos": [-14150, -6450, 3], "extent": [325, 1500, 3], "surface": "dirt", "blocksMovement": false, "yaw": 14 },
+    { "note": "The spur along the АЗС's north face into its forecourt, so the station reads as somewhere a road goes rather than a shed in a field. Held clear of the building's north wall (y = -8250) on purpose.",
+      "id": "bridge_road_station_yard", "pos": [-13300, -7950, 3], "extent": [1200, 250, 3], "surface": "dirt", "blocksMovement": false }
   ],
 
   "buildings": [
