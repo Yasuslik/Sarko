@@ -279,6 +279,22 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 			}
 			if (FixedItems)
 			{
+				// An empty list is a named error, not "no fixed items". Written to
+				// mean "this container is empty during the tutorial" it would do the
+				// opposite: FSarkoLootContainerSpot::FixedItems would be empty,
+				// indistinguishable from an absent key, so SarkoLoot::RollContainerFor
+				// falls through to a seeded roll and the container hands out random
+				// loot. It would also cost Stage C its acceptance signal —
+				// SetTutorialLoot counts containers with Num() > 0, so the "none of N
+				// containers carries fixedItems" Warning would keep firing for a map
+				// that had in fact been authored.
+				if (FixedItems->Num() == 0)
+				{
+					OutError = FString::Printf(
+						TEXT("containers[%d]: 'fixedItems' is present but empty — an empty list cannot mean 'holds nothing' (the container would roll against the raid seed instead); omit the key to roll, or list what it holds"),
+						Index);
+					return false;
+				}
 				for (int32 ItemIndex = 0; ItemIndex < FixedItems->Num(); ++ItemIndex)
 				{
 					const TSharedPtr<FJsonObject>* ItemObject = nullptr;
@@ -301,6 +317,17 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 						OutError = FString::Printf(
 							TEXT("containers[%d].fixedItems[%d] ('%s'): 'qty' is missing or less than 1"),
 							Index, ItemIndex, *ItemId);
+						return false;
+					}
+					// JSON has one number type, so 1.7 sails through the check above
+					// and is then truncated to 1 by the cast below — the author asks
+					// for one thing and the tutorial hands out another, with nothing
+					// logged. Every other malformation here is named; this one is too.
+					if (Quantity != FMath::TruncToDouble(Quantity))
+					{
+						OutError = FString::Printf(
+							TEXT("containers[%d].fixedItems[%d] ('%s'): 'qty' must be a whole number, not %g — a fraction would be silently truncated"),
+							Index, ItemIndex, *ItemId, Quantity);
 						return false;
 					}
 					// Checked here, at load, and not at loot time: the backend's

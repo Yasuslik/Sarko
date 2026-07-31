@@ -148,6 +148,20 @@ public:
 	 * *and* OnRep_Seed, either of which may land first; without the guard a
 	 * repeat OnRep (or simply both of them) would spawn a duplicate floor and
 	 * cover set.
+	 *
+	 * "Either of which may land first" is not a free property of replication — it
+	 * holds only because ASarkoRaidGameMode::ActivateRaid writes Seed and
+	 * bSessionReady in the *same frame*. They therefore travel in one bunch, and
+	 * the engine applies every property in a bunch before it calls any of that
+	 * bunch's RepNotifies, so whichever notify runs first already sees
+	 * bSessionReady == true and passes SarkoRaid::ShouldSpawnClientLayout.
+	 *
+	 * Split those two writes across frames and Seed arrives alone: on a client
+	 * OnRep_Seed's build is refused by that gate and becomes a silent no-op, so
+	 * the map's arrival depends entirely on bSessionReady turning up afterwards —
+	 * and if anything ever keeps it from replicating, the client sits in an empty
+	 * world with a perfectly good seed and nothing in any log to explain it. Keep
+	 * the two writes together, or make OnRep_Seed's gate say so.
 	 */
 	void BuildAndSpawnLayout();
 
@@ -184,6 +198,22 @@ public:
 	ESarkoRaidOutcome Outcome = ESarkoRaidOutcome::InProgress;
 
 	bool IsRaidFinished() const { return Outcome != ESarkoRaidOutcome::InProgress; }
+
+	/**
+	 * True once ASarkoRaidGameMode::ReturnToShelter has actually scheduled the trip
+	 * back — not merely once the raid ended.
+	 *
+	 * It exists because the two are not the same thing: ReturnToShelter returns
+	 * early, having scheduled nothing, when there is no USarkoGameInstance to
+	 * record the outcome on. The HUD's "ПОВЕРНЕННЯ ДО УКРИТТЯ..." line is a promise
+	 * about the next few seconds, so it reads this rather than the outcome — a
+	 * frozen dimmed world that promises a return it will never make is worse than
+	 * one that admits it is stuck. Replicated because the HUD is drawn on each
+	 * client and the decision is the server's; it lands in the same bunch as
+	 * Outcome, since FinishRaid writes both in one frame.
+	 */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Raid")
+	bool bReturningToShelter = false;
 
 	/**
 	 * True once the raid's authoritative seed is in place — either because

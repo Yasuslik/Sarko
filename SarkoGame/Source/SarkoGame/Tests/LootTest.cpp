@@ -613,6 +613,17 @@ bool FSarkoContainersMayCarryFixedItems::RunTest(const FString& Parameters)
 		// domain.ValidateRaidItems at result time — fifteen minutes into a raid,
 		// having already been shown to the player. Caught at load instead.
 		{ TEXT("unknown item id"),     TEXT(R"("fixedItems": [{ "item": "unobtanium", "qty": 1 }])") },
+		// An empty list is the one malformation that looks like success. It parses
+		// to the same empty FixedItems as an absent key, so RollContainerFor falls
+		// through to a seeded roll: an author writing [] to mean "this crate is
+		// empty during the tutorial" gets random loot instead. It also costs
+		// Stage C its acceptance signal, since SetTutorialLoot counts containers
+		// with Num() > 0 and would keep warning that nothing is authored.
+		{ TEXT("empty list"),          TEXT(R"("fixedItems": [])") },
+		// JSON has a single number type, so 1.7 clears the "less than 1" check
+		// above and is then truncated to 1 by the cast — the only malformation
+		// here that used to change what the player receives without saying so.
+		{ TEXT("fractional qty"),      TEXT(R"("fixedItems": [{ "item": "scrap_metal", "qty": 1.7 }])") },
 	};
 
 	for (const TPair<FString, FString>& Case : BadCases)

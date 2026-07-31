@@ -119,9 +119,15 @@ void ASarkoRaidGameMode::StartPlay()
 			// The server already has the layout and definition from InitGame,
 			// so it hands them over directly instead of reloading. The
 			// server never receives its own OnRep notify, so it must trigger
-			// the spawn explicitly; clients build and spawn their own copy
-			// via OnRep_Seed once the replicated value arrives, since they
-			// have no game mode instance to hand them a precomputed layout.
+			// the spawn explicitly.
+			//
+			// A client has no game mode instance to hand it a precomputed layout, so
+			// it loads the same file itself — but *not* from here and not yet. Its
+			// trigger is OnRep_SessionReady, i.e. ActivateRaid one HTTP round trip
+			// below, because that is the honest "the raid has begun" edge. OnRep_Seed
+			// calls the same idempotent builder, but off the authority that build is
+			// gated by SarkoRaid::ShouldSpawnClientLayout, so on a client it does
+			// nothing at all unless bSessionReady is already set.
 			RaidState->SpawnPrebuiltLayout(CachedLayout, CachedDefinition);
 			CachedLayout = RaidState->GetLayout();
 		}
@@ -548,11 +554,16 @@ void ASarkoRaidGameMode::FinishRaid(ESarkoRaidOutcome NewOutcome)
 	// Both per-pawn effects run *before* Outcome is written, and on the server's
 	// own copy of every player pawn.
 	//
-	// The order is the point for the haul: the HUD's summary reads the backpack and
-	// says "the server emptied the backpack before the outcome was set", so that
-	// has to be true for every losing outcome rather than only for the one that
-	// happens to run through a death path. Input freeze does not care about the
-	// order, and is here so there is one loop rather than two.
+	// The order is the point for the haul. Its consumers are no longer the HUD —
+	// that summary moved to the shelter — but two things downstream of this very
+	// function: the Haul array assembled below (submitted to sarko-api and handed
+	// to USarkoGameInstance::RecordRaidOutcome) and SarkoShelter::BuildHaulLines,
+	// which itemises that recorded array on the shelter screen. Both read the
+	// backpack as it stood when Outcome was written, so "the server emptied the
+	// backpack before the outcome was set" has to be true for every losing outcome
+	// rather than only for the one that happens to run through a death path.
+	// Input freeze does not care about the order, and is here so there is one loop
+	// rather than two.
 	const bool bLosesHaul = SarkoRaid::OutcomeLosesHaul(NewOutcome);
 	if (UWorld* World = GetWorld())
 	{
@@ -617,6 +628,21 @@ void ASarkoRaidGameMode::FinishRaid(ESarkoRaidOutcome NewOutcome)
 	// shelter now needs the haul on the offline path too, to show it under a "НЕ
 	// ЗБЕРЕЖЕНО" label rather than showing nothing and letting the player conclude
 	// the raid was pointless.
+	//
+	// SINGLE-PLAYER-SLICE ASSUMPTION, recorded because it is now load-bearing in
+	// two more places than it used to be. The loop below takes the *first* player
+	// controller with a live pawn and breaks — it is not the pawn that extracted,
+	// and nothing here knows which one that was (ExtractTick calls FinishRaid
+	// without naming the pawn, and Outcome is one value for the whole raid). With
+	// one player the two are always the same pawn, so this is correct today.
+	//
+	// With a second player it stops being correct in three ways at once: the wrong
+	// backpack can be submitted to sarko-api under this session, the wrong haul can
+	// be credited to USarkoGameInstance::LastRaid and itemised in the shelter, and
+	// one player's extraction ends the raid for everyone. The fix is not a better
+	// loop — it is FinishRaid taking the extracting pawn (or a per-player outcome),
+	// which is a design decision, not a tidy-up. Whoever adds the second player
+	// owns it.
 	TArray<FSarkoItemStack> Haul;
 	if (NewOutcome == ESarkoRaidOutcome::Extracted)
 	{
@@ -714,6 +740,15 @@ void ASarkoRaidGameMode::ReturnToShelter(ESarkoRaidOutcome Outcome, const TArray
 		// where bAbsolute=true lives.
 		SarkoTravel::TravelTo(this, SarkoTravel::ShelterOptions());
 	}), Delay, /*bLoop*/ false);
+
+	// Only now, with a timer that exists, does the HUD get to promise a return.
+	// Deliberately not written next to Outcome: the early return above leaves a
+	// finished raid with no trip scheduled, and a banner keyed on the outcome would
+	// promise one anyway.
+	if (ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>())
+	{
+		RaidState->bReturningToShelter = true;
+	}
 
 	UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: returning to the shelter in %.1fs"), Delay);
 }

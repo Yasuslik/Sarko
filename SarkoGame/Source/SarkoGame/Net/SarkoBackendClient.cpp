@@ -360,6 +360,16 @@ FString SarkoBackend::DeviceIdFilePath()
 	// as one player against one stash. Harmless for the listen-server slice, but
 	// testing two independent players on one machine needs separate -userdir values
 	// (or project copies) rather than two windows.
+	//
+	// WARNING for headless runs: do NOT pass `-csvCaptureFrames` on the command
+	// line. FCsvProfiler::PreInit runs *before* the project path is resolved and
+	// poisons FPaths::ProjectSavedDir(), so this function returns the engine's own
+	// saved directory instead — ~/Library/Application Support/Epic/UnrealEngine/5.8/
+	// Saved/SarkoDevice.txt — and the run silently authenticates as a *different*
+	// player with a different stash and a different tutorial flag. Nothing logs it;
+	// the raid just looks wrong. The same flag's trace screenshot channel also
+	// swallows `Shot showui`, so the evidence you were capturing does not appear
+	// either. Start the profiler after init instead: -ExecCmds="CsvProfile Start".
 	return FPaths::ProjectSavedDir() / TEXT("SarkoDevice.txt");
 }
 

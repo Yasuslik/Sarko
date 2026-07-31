@@ -425,10 +425,22 @@ void ASarkoHUD::DrawOutcomeSummary()
 	// in the place the raid ended, plus a line saying where the player is about to
 	// go — without it, PostRaidReturnSeconds of a dimmed frozen world reads as a
 	// hang rather than as a beat.
-	const FString Returning = TEXT("ПОВЕРНЕННЯ ДО УКРИТТЯ...");
+	//
+	// Keyed on bReturningToShelter, not on the outcome: ASarkoRaidGameMode::
+	// ReturnToShelter returns without scheduling anything when there is no
+	// USarkoGameInstance, and then the dimmed world really is where the player
+	// stays. Promising a return that is not coming is the one thing this line must
+	// not do, so the stuck case says so instead — the Error log explains it, and
+	// this tells the player to go look.
+	const FString Returning = RaidState->bReturningToShelter
+		? TEXT("ПОВЕРНЕННЯ ДО УКРИТТЯ...")
+		: TEXT("ПОВЕРНЕННЯ НЕДОСТУПНЕ — ДИВ. ЛОГ");
 	float Width = 0.f;
 	float Height = 0.f;
 	GetTextSize(Returning, Width, Height, GEngine->GetLargeFont(), 1.f);
-	DrawText(Returning, FLinearColor(0.8f, 0.8f, 0.8f), (Canvas->SizeX - Width) * 0.5f, Y,
+	const FLinearColor ReturningColour = RaidState->bReturningToShelter
+		? FLinearColor(0.8f, 0.8f, 0.8f)
+		: FLinearColor(1.f, 0.65f, 0.2f);
+	DrawText(Returning, ReturningColour, (Canvas->SizeX - Width) * 0.5f, Y,
 		GEngine->GetLargeFont(), 1.f);
 }

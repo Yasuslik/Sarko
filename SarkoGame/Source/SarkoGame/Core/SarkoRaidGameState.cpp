@@ -46,6 +46,7 @@ void ASarkoRaidGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(ASarkoRaidGameState, LootedContainers);
 	DOREPLIFETIME(ASarkoRaidGameState, Outcome);
 	DOREPLIFETIME(ASarkoRaidGameState, bSessionReady);
+	DOREPLIFETIME(ASarkoRaidGameState, bReturningToShelter);
 }
 
 void ASarkoRaidGameState::OnRep_Seed()
