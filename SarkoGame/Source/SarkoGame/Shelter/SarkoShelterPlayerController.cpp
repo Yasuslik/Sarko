@@ -5,6 +5,8 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "Loot/SarkoItemCatalog.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Net/SarkoBackendClient.h"
 #include "Shelter/SarkoShelterView.h"
 #include "Shelter/SarkoShelterWidget.h"
@@ -54,6 +56,21 @@ void ASarkoShelterPlayerController::BeginPlay()
 	// outcome, and the previous profile if there is one — then refresh behind it.
 	RefreshWidget();
 	FetchProfile();
+
+#if !UE_BUILD_SHIPPING
+	// `-SarkoShelterShot=<seconds>` photographs the shelter on *every* entry,
+	// including the one the raid travels back to. -ExecCmds cannot do that:
+	// UnrealEngine.cpp queues those commands exactly once at engine init
+	// (ParseExecCommands::QueueDeferredCommands), so a SarkoShelterShot issued on
+	// the command line runs in whichever world booted and never again — and the
+	// shelter-after-a-raid is precisely the screen that has to be looked at, since
+	// it is the only one that has an outcome banner and a haul on it.
+	float AutoShotDelay = 0.f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SarkoShelterShot="), AutoShotDelay))
+	{
+		SarkoShelterShot(AutoShotDelay);
+	}
+#endif
 }
 
 void ASarkoShelterPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)

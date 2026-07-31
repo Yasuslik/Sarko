@@ -29,13 +29,39 @@ DELAY="${SHELTER_DELAY:-6}"
 
 rm -rf "$SHOT_DIR"
 
+# SHELTER_AFTER_RAID=1 photographs the shelter the *raid returns to* — the only
+# state that has an outcome banner and a haul on it. It boots the raid game mode
+# instead of the menu, teleports the pawn onto extraction zone 0 (-14500 18600 is
+# its centre in Data/Maps/bridge.json, and the nearest bot spawn is thousands of
+# uu away) with the engine's own BugItGo, and lets the 5 s dwell, the raid result
+# and PostRaidReturnSeconds run unattended.
+#
+# The shot is requested with `-SarkoShelterShot=<delay>` and NOT with -ExecCmds:
+# UnrealEngine.cpp queues -ExecCmds exactly once at engine init, so a command
+# issued that way runs in the raid world and never in the shelter the travel
+# loads. The switch is read by ASarkoShelterPlayerController::BeginPlay, which
+# runs on every shelter entry.
+#
+# A raid takes ~15 s to reach the dwell, so the default timeout is raised.
+if [[ -n "${SHELTER_AFTER_RAID:-}" ]]; then
+	MAP="/Engine/Maps/Entry?game=/Script/SarkoGame.SarkoRaidGameMode"
+	EXEC_CMDS="EnableCheats, t.MaxFPS 10, BugItGo -14500 18600 200"
+	SHOT_ARGS=("-SarkoShelterShot=$DELAY")
+	TIMEOUT="${SHELTER_TIMEOUT:-180}"
+else
+	MAP="/Engine/Maps/Entry"
+	EXEC_CMDS="t.MaxFPS 10, SarkoShelterShot $DELAY"
+	SHOT_ARGS=()
+fi
+
 # -windowed -ForceRes, or -ResX/-ResY are quietly ignored and the offscreen
 # window comes up at the desktop's size — a landscape PNG for a portrait game,
 # which is exactly the case that hides text clipping.
-"$UE/Engine/Binaries/Mac/UnrealEditor-Cmd" "$PROJECT" /Engine/Maps/Entry \
+"$UE/Engine/Binaries/Mac/UnrealEditor-Cmd" "$PROJECT" "$MAP" \
 	-game -RenderOffscreen -unattended -nosplash \
 	-windowed -ForceRes -ResX="$RES_X" -ResY="$RES_Y" \
-	-ExecCmds="t.MaxFPS 10, SarkoShelterShot $DELAY" > /dev/null 2>&1 &
+	"${SHOT_ARGS[@]+"${SHOT_ARGS[@]}"}" \
+	-ExecCmds="$EXEC_CMDS" > /dev/null 2>&1 &
 PID=$!
 
 ELAPSED=0

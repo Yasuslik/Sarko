@@ -69,13 +69,19 @@ namespace
 	 * 0.05 for the background and rendered as a flat grey slab with barely any
 	 * contrast against the text. Every constant here is chosen in linear space for
 	 * the sRGB result named beside it.
+	 *
+	 * Suffixed "Colour" rather than named Ink/Body/Warn: these are file-scope in an
+	 * anonymous namespace, and a unity build puts this file in the same translation
+	 * unit as whatever else the blob happens to contain — a plain `Body` here made
+	 * a local `Body` in BackendClientTest.cpp a -Wshadow error (and -Werror) purely
+	 * because a test file grew and the blobs regrouped.
 	 */
-	const FSlateColor Ink(FLinearColor(0.011f, 0.013f, 0.017f));   // ~#1c1f22, near-black
-	const FSlateColor Bright(FLinearColor(0.92f, 0.92f, 0.88f));   // ~#f7f7f3, the title
-	const FSlateColor Body(FLinearColor(0.62f, 0.64f, 0.66f));     // ~#d0d3d5, stash rows
-	const FSlateColor Label(FLinearColor(0.22f, 0.23f, 0.25f));    // ~#8b8f94, section labels
-	const FSlateColor Warn(FLinearColor(1.f, 0.55f, 0.06f));       // ~#ffc16a, the status line
-	const FSlateColor Rule(FLinearColor(0.055f, 0.06f, 0.07f));    // ~#454a50, the hairlines
+	const FSlateColor InkColour(FLinearColor(0.011f, 0.013f, 0.017f));   // ~#1c1f22, near-black
+	const FSlateColor BrightColour(FLinearColor(0.92f, 0.92f, 0.88f));   // ~#f7f7f3, the title
+	const FSlateColor BodyColour(FLinearColor(0.62f, 0.64f, 0.66f));     // ~#d0d3d5, stash rows
+	const FSlateColor LabelColour(FLinearColor(0.22f, 0.23f, 0.25f));    // ~#8b8f94, section labels
+	const FSlateColor WarnColour(FLinearColor(1.f, 0.55f, 0.06f));       // ~#ffc16a, the status line
+	const FSlateColor RuleColour(FLinearColor(0.055f, 0.06f, 0.07f));    // ~#454a50, the hairlines
 
 	/** A hairline, so the sections do not read as one blob. Hand-rolled rather
 	 *  than SSeparator: FCoreStyle registers its "Separator" brush inside the
@@ -87,7 +93,7 @@ namespace
 			[
 				SNew(SBorder)
 				.BorderImage(FillBrush())
-				.BorderBackgroundColor(Rule)
+				.BorderBackgroundColor(RuleColour)
 			];
 	}
 }
@@ -154,7 +160,7 @@ void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 			// and a translucent menu over it reads as a rendering fault.
 			SNew(SBorder)
 			.BorderImage(FillBrush())
-			.BorderBackgroundColor(Ink)
+			.BorderBackgroundColor(InkColour)
 			.Padding(FMargin(18.f, 22.f, 18.f, ButtonBottomInset))
 			.HAlign(HAlign_Center)
 			[
@@ -167,7 +173,7 @@ void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 				[
 					SAssignNew(TitleText, STextBlock)
 					.Font(ShelterFont(30.f))
-					.ColorAndOpacity(Bright)
+					.ColorAndOpacity(BrightColour)
 					.Text(FText::FromString(TEXT("УКРИТТЯ")))
 				]
 
@@ -180,7 +186,7 @@ void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 				[
 					SAssignNew(OutcomeText, STextBlock)
 					.Font(ShelterFont(17.f))
-					.ColorAndOpacity(Bright)
+					.ColorAndOpacity(BrightColour)
 				]
 
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 10.f)
@@ -192,7 +198,7 @@ void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 				[
 					SAssignNew(GarageText, STextBlock)
 					.Font(ShelterFont(17.f))
-					.ColorAndOpacity(Bright)
+					.ColorAndOpacity(BrightColour)
 				]
 
 				// A static section label. Not part of FSarkoShelterView because it
@@ -202,7 +208,7 @@ void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 				[
 					SNew(STextBlock)
 					.Font(ShelterFont(11.f))
-					.ColorAndOpacity(Label)
+					.ColorAndOpacity(LabelColour)
 					.Text(FText::FromString(TEXT("СХОВОК")))
 				]
 
@@ -229,7 +235,7 @@ void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 					// it runs straight off the edge.
 					SAssignNew(StatusText, STextBlock)
 					.Font(ShelterFont(12.f))
-					.ColorAndOpacity(Warn)
+					.ColorAndOpacity(WarnColour)
 					.AutoWrapText(true)
 				]
 
@@ -308,7 +314,7 @@ void SSarkoShelterWidget::SetView(const FSarkoShelterView& View)
 			[
 				SNew(STextBlock)
 				.Font(ShelterFont(Size))
-				.ColorAndOpacity(Body)
+				.ColorAndOpacity(BodyColour)
 				.Text(FText::FromString(Line))
 			];
 		}

@@ -37,6 +37,11 @@ public:
 	 * UFUNCTION(Exec) cannot live inside an #if — UHT rejects it — so it is
 	 * declared unconditionally and the body is guarded (ASarkoPlayerController's
 	 * SarkoOverview is the precedent).
+	 *
+	 * BeginPlay also calls this itself when the command line carries
+	 * `-SarkoShelterShot=<seconds>`, which is the only way to photograph the
+	 * shelter the *raid returns to*: -ExecCmds is queued once at engine init and
+	 * never re-run for the world a travel loads.
 	 */
 	UFUNCTION(Exec)
 	void SarkoShelterShot(float DelaySeconds = 6.f);

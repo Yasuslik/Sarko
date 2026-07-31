@@ -1,5 +1,9 @@
 #include "Shelter/SarkoShelterView.h"
 
+// For SarkoRaid::OutcomeLosesHaul. Reached transitively through the game
+// instance header too, but named here because this file depends on it directly.
+#include "Core/SarkoRaidGameState.h"
+
 TArray<FSarkoItemStack> SarkoShelter::BicycleRecipe()
 {
 	// Verbatim from garage.go's recipes[TierBicycle]. Quantities included: the
@@ -9,6 +13,52 @@ TArray<FSarkoItemStack> SarkoShelter::BicycleRecipe()
 		FSarkoItemStack{ FName(TEXT("wheel_small")), 2 },
 		FSarkoItemStack{ FName(TEXT("chain")), 1 },
 	};
+}
+
+FString SarkoShelter::BuildOutcomeTitle(ESarkoRaidOutcome Outcome, bool bPersisted)
+{
+	switch (Outcome)
+	{
+	case ESarkoRaidOutcome::Extracted:
+		return bPersisted ? FString(TEXT("ВИНЕСЕНО")) : FString(TEXT("ВИНЕСЕНО — НЕ ЗБЕРЕЖЕНО"));
+	case ESarkoRaidOutcome::Died:
+		return TEXT("ЗАГИНУВ");
+	case ESarkoRaidOutcome::MIA:
+		return TEXT("ЗНИК БЕЗВІСТИ");
+	default:
+		// InProgress is the "no raid yet" value: nothing is drawn.
+		return FString();
+	}
+}
+
+TArray<FString> SarkoShelter::BuildHaulLines(const FSarkoLastRaid& LastRaid, const FSarkoItemCatalog& Catalog)
+{
+	TArray<FString> Lines;
+	if (LastRaid.Outcome == ESarkoRaidOutcome::InProgress)
+	{
+		return Lines;
+	}
+
+	// By outcome, not by "is the array empty". SarkoRaid::OutcomeLosesHaul is the
+	// same rule FinishRaid consults before it clears the backpack, so the shelter
+	// and the server agree on what a losing raid keeps by construction rather than
+	// by both happening to be right.
+	if (SarkoRaid::OutcomeLosesHaul(LastRaid.Outcome) || LastRaid.Haul.Num() == 0)
+	{
+		Lines.Add(TEXT("НІЧОГО НЕ ВИНЕСЕНО"));
+		return Lines;
+	}
+
+	Lines.Reserve(LastRaid.Haul.Num());
+	for (const FSarkoItemStack& Stack : LastRaid.Haul)
+	{
+		const FSarkoItemDef* Def = Catalog.Find(Stack.Item);
+		// The id is the fallback, not the label: an id on screen means items.json
+		// and the backend have drifted, and that should be visible.
+		Lines.Add(FString::Printf(TEXT("%s  x%d"),
+			Def ? *Def->Name : *Stack.Item.ToString(), Stack.Quantity));
+	}
+	return Lines;
 }
 
 TArray<FString> SarkoShelter::BuildStashLines(const FSarkoProfile& Profile, const FSarkoItemCatalog& Catalog)
@@ -64,9 +114,8 @@ FSarkoShelterView SarkoShelter::BuildView(const FSarkoLastRaid& LastRaid, const 
 	FSarkoShelterView View;
 	View.Title = TEXT("УКРИТТЯ");
 
-	// Task 5 fills OutcomeTitle and HaulLines from LastRaid. Referenced here so
-	// the signature is stable and the parameter is not "unused" in a warning.
-	(void)LastRaid;
+	View.OutcomeTitle = BuildOutcomeTitle(LastRaid.Outcome, LastRaid.bPersisted);
+	View.HaulLines = BuildHaulLines(LastRaid, Catalog);
 
 	View.GarageLine = BuildGarageLine(Profile);
 

@@ -109,6 +109,22 @@ public:
 	float ExtractDwellSeconds = 5.f;
 
 	/**
+	 * How long the raid's outcome banner stays on screen before the game travels
+	 * back to the shelter (spec §6.5).
+	 *
+	 * Not zero: the player has to see EXTRACTED/KIA/MIA where it happened, in the
+	 * place they died or extracted from, before the screen changes. Not long
+	 * either — the itemised haul is in the shelter now, so there is nothing to
+	 * read here.
+	 *
+	 * The raid result is submitted independently of this timer, and both the game
+	 * instance and the submission lambda hold the backend client, so travelling
+	 * mid-request cannot lose the result — only the log line about it moves worlds.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Raid")
+	float PostRaidReturnSeconds = 5.f;
+
+	/**
 	 * Whether the raid talks to sarko-api at all. Off means the raid runs on a
 	 * local seed and nothing persists — useful on a plane, and the only way to
 	 * iterate on gameplay while the backend is down.

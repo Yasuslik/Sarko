@@ -5,12 +5,14 @@
 #include "Core/SarkoPlayerController.h"
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
+#include "Core/SarkoTravel.h"
 #include "Kismet/GameplayStatics.h"
 #include "Loot/SarkoBackpack.h"
 #include "Loot/SarkoExtractionZone.h"
 #include "Map/SarkoMapBuilder.h"
 #include "Pawn/SarkoCharacter.h"
 #include "Pawn/SarkoHealthComponent.h"
+#include "TimerManager.h"
 #include "UI/SarkoHUD.h"
 
 ASarkoRaidGameMode::ASarkoRaidGameMode()
@@ -502,27 +504,27 @@ void ASarkoRaidGameMode::FinishRaid(ESarkoRaidOutcome NewOutcome)
 	// net for a dropped connection — not a licence to send twice. CanFinishRaid
 	// above already makes this unreachable a second time; the flag is the belt to
 	// that braces, because the cost of being wrong is a double-credited haul.
+	//
+	// This is also the one return below the outcome write that does *not* schedule
+	// a trip back to the shelter, and it is safe: reaching it means an earlier
+	// FinishRaid already submitted and already scheduled that trip, so the player
+	// is not stranded on the banner. CanFinishRaid makes it unreachable anyway.
 	if (bSessionSubmitted)
 	{
 		return;
 	}
 	bSessionSubmitted = true;
 
-	if (!Backend || Session.SessionId.IsEmpty())
-	{
-		// The offline path: no token, so no result. Logged at Error once, never per
-		// tick, and the raid has already ended locally with its summary on screen.
-		UE_LOG(LogTemp, Error,
-			TEXT("SarkoRaidGameMode: raid ended '%s' with no backend session — nothing was saved"),
-			SarkoBackend::OutcomeToWire(NewOutcome));
-		return;
-	}
-
 	// Only an extraction carries anything out, and this reads the backpack on the
 	// same tick the outcome settled: the loop above cleared it for every losing
 	// outcome *before* Outcome was written, so a died/MIA haul is empty by
 	// construction and an extracted one is intact. Sending an explicitly empty
 	// array for the losing outcomes makes the intent independent of that ordering.
+	//
+	// Assembled *before* the offline branch, not after it as it used to be: the
+	// shelter now needs the haul on the offline path too, to show it under a "НЕ
+	// ЗБЕРЕЖЕНО" label rather than showing nothing and letting the player conclude
+	// the raid was pointless.
 	TArray<FSarkoItemStack> Haul;
 	if (NewOutcome == ESarkoRaidOutcome::Extracted)
 	{
@@ -540,17 +542,30 @@ void ASarkoRaidGameMode::FinishRaid(ESarkoRaidOutcome NewOutcome)
 		}
 	}
 
+	if (!Backend || Session.SessionId.IsEmpty())
+	{
+		// The offline path: no token, so no result. Logged at Error once, never per
+		// tick, and the raid has already ended locally with its banner on screen.
+		UE_LOG(LogTemp, Error,
+			TEXT("SarkoRaidGameMode: raid ended '%s' with no backend session — nothing was saved"),
+			SarkoBackend::OutcomeToWire(NewOutcome));
+		// bPersisted = false, so the shelter says "НЕ ЗБЕРЕЖЕНО" over the haul
+		// instead of showing it above a stash that does not contain it.
+		ReturnToShelter(NewOutcome, Haul);
+		return;
+	}
+
 	// The client is captured by *strong* reference on purpose, unlike every other
-	// hop in this file. A raid can end moments before the world goes away; a weak
-	// capture would let this game mode's TSharedPtr be the only owner, and the
-	// completion would then be dropped unlogged at exactly the moment a player most
-	// needs to know whether their haul was saved. The lambda dies with the request,
-	// so the client outlives the raid by one round trip and no longer.
+	// hop in this file. A raid can end moments before the world goes away — and
+	// after this task, it always does: ReturnToShelter travels away a few seconds
+	// later. The game instance is now a second owner, so this capture is belt to
+	// those braces; it stays because the lambda must survive even engine shutdown,
+	// where the game instance goes too. Nothing here touches the game mode.
 	Backend->SubmitResult(Session, SarkoBackend::OutcomeToWire(NewOutcome), Haul,
-		[Keep = Backend, Wire = FString(SarkoBackend::OutcomeToWire(NewOutcome))](bool bSuccess, const FString& Error)
+		[Keep = Backend, Wire = FString(SarkoBackend::OutcomeToWire(NewOutcome)),
+		 WeakInstance = TWeakObjectPtr<USarkoGameInstance>(GetGameInstance<USarkoGameInstance>())]
+		(bool bSuccess, const FString& Error)
 		{
-			// Nothing here touches the game mode, precisely so a result landing
-			// after teardown is still logged.
 			if (bSuccess)
 			{
 				UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: result '%s' submitted"), *Wire);
@@ -561,5 +576,52 @@ void ASarkoRaidGameMode::FinishRaid(ESarkoRaidOutcome NewOutcome)
 					TEXT("SarkoRaidGameMode: the raid result '%s' was NOT saved: %s. The session expires on the server and closes as died."),
 					*Wire, *Error);
 			}
+			// The shelter's "НЕ ЗБЕРЕЖЕНО" label is corrected here if the submission
+			// beat the travel, which it normally does. The game instance survives
+			// the travel, so this lands whichever world is current.
+			if (USarkoGameInstance* Instance = WeakInstance.Get())
+			{
+				Instance->LastRaid.bPersisted = bSuccess;
+			}
 		});
+
+	// Recorded as not-yet-persisted and corrected by the completion above. The
+	// pessimistic direction on purpose: a label that says "saved" about a haul
+	// that was lost is the one mistake this screen must not make.
+	ReturnToShelter(NewOutcome, Haul);
+}
+
+void ASarkoRaidGameMode::ReturnToShelter(ESarkoRaidOutcome Outcome, const TArray<FSarkoItemStack>& Haul)
+{
+	if (USarkoGameInstance* Instance = GetGameInstance<USarkoGameInstance>())
+	{
+		// bPersisted starts false and is raised by SubmitResult's completion. An
+		// offline raid never raises it, which is exactly right.
+		Instance->RecordRaidOutcome(Outcome, Haul, /*bPersisted*/ false);
+	}
+	else
+	{
+		// Without a game instance there is nowhere to put the outcome and no
+		// shelter to travel to. Loud, and the raid simply stops here.
+		UE_LOG(LogTemp, Error,
+			TEXT("SarkoRaidGameMode: no USarkoGameInstance, so no return to the shelter — check GameInstanceClass in DefaultEngine.ini"));
+		return;
+	}
+
+	const float Delay = FMath::Max(0.5f, GetDefault<USarkoRaidSettings>()->PostRaidReturnSeconds);
+	FTimerHandle Handle;
+	// CreateWeakLambda: this game mode is destroyed by the travel it is about to
+	// start, and a strong delegate on a timer that the world outlives is how a
+	// travel turns into a crash.
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this, [this]()
+	{
+		// ShelterOptions() is empty on purpose and the travel is ABSOLUTE: a
+		// relative return would inherit `game=…SarkoRaidGameMode` from the outbound
+		// URL (FURL copies Base->Op for TRAVEL_Relative) and start another raid,
+		// forever, with nothing in any log to explain it. SarkoTravel::TravelTo is
+		// where bAbsolute=true lives.
+		SarkoTravel::TravelTo(this, SarkoTravel::ShelterOptions());
+	}), Delay, /*bLoop*/ false);
+
+	UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: returning to the shelter in %.1fs"), Delay);
 }

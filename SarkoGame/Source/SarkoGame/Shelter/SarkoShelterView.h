@@ -59,6 +59,32 @@ namespace SarkoShelter
 	TArray<FSarkoItemStack> BicycleRecipe();
 
 	/**
+	 * The banner for the raid that just ended, or empty before the first raid.
+	 *
+	 * MIA is named separately from death even though spec §4.5 makes them the
+	 * same *mechanically* (both lose the haul, both submit as `died`): the player
+	 * needs to know whether they were shot or ran out of clock, because those are
+	 * different mistakes.
+	 *
+	 * An extraction that was not persisted is labelled, so a haul shown above a
+	 * stash that does not contain it is explained rather than mysterious. A lost
+	 * haul had nothing to persist, so it carries no such label.
+	 */
+	FString BuildOutcomeTitle(ESarkoRaidOutcome Outcome, bool bPersisted);
+
+	/**
+	 * The haul, one "<UA name>  x<qty>" line per stack — the list that spec §6.5
+	 * moves out of the raid HUD and into the shelter.
+	 *
+	 * Empty (no block at all) before the first raid. Exactly one line, "НІЧОГО НЕ
+	 * ВИНЕСЕНО", for every losing outcome **and** for an extraction that carried
+	 * nothing. Losing outcomes are refused by outcome rather than by an empty
+	 * array, so a haul that reached this struct by some future path still cannot
+	 * be shown as banked.
+	 */
+	TArray<FString> BuildHaulLines(const FSarkoLastRaid& LastRaid, const FSarkoItemCatalog& Catalog);
+
+	/**
 	 * One "<UA name>  x<qty>" line per stash row, in the server's order, with the
 	 * item id as the fallback label for an id the catalog does not know — an id on
 	 * screen is the visible symptom of items.json drifting from the backend, and

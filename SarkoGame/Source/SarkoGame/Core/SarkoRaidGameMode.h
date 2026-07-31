@@ -129,6 +129,18 @@ private:
 	void ActivateRaid(int32 AuthoritativeSeed, float ClockSeconds);
 
 	/**
+	 * Hands the outcome and haul to the game instance and schedules the trip back
+	 * to the shelter. Called once, from the tail of FinishRaid, on every path that
+	 * writes an outcome — a path that writes one and does not call this strands the
+	 * player on the outcome banner forever.
+	 *
+	 * The travel is on a timer rather than immediate so the outcome banner is
+	 * visible where the raid ended, and the timer is a weak-lambda delegate
+	 * because it is scheduled on a game mode that a travel is about to destroy.
+	 */
+	void ReturnToShelter(ESarkoRaidOutcome Outcome, const TArray<FSarkoItemStack>& Haul);
+
+	/**
 	 * The map file's own raid duration, or the settings default when the map
 	 * carried none (a bridge.json that failed to load reads as zero, and a
 	 * zero-second clock is a raid that expires into MIA on the spawn frame).

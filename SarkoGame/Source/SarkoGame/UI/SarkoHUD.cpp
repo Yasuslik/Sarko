@@ -7,7 +7,6 @@
 #include "Engine/Canvas.h"
 #include "Loot/SarkoBackpack.h"
 #include "Loot/SarkoExtractionZone.h"
-#include "Loot/SarkoItemCatalog.h"
 #include "Loot/SarkoLootContainer.h"
 #include "Map/SarkoMapDefinition.h"
 #include "Pawn/SarkoCharacter.h"
@@ -420,36 +419,16 @@ void ASarkoHUD::DrawOutcomeSummary()
 	DrawText(Title, Colour, (Canvas->SizeX - TitleWidth) * 0.5f, Y, GEngine->GetLargeFont(), 2.5f);
 	Y += TitleHeight + 24.f;
 
-	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
-	const USarkoBackpackComponent* Backpack = Pawn ? Pawn->BackpackComponent : nullptr;
-	if (!Backpack || Backpack->GetUsedSlots() == 0)
-	{
-		// Died and MIA both arrive here: the server emptied the backpack before
-		// the outcome was set, so "nothing" is the honest and correct summary.
-		// Enforced rather than assumed — ASarkoRaidGameMode::FinishRaid clears
-		// every losing outcome's haul before it writes Outcome, and
-		// SarkoRaid::OutcomeLosesHaul is the rule it consults.
-		const FString Empty = TEXT("НІЧОГО НЕ ВИНЕСЕНО");
-		float Width = 0.f;
-		float Height = 0.f;
-		GetTextSize(Empty, Width, Height, GEngine->GetLargeFont(), 1.f);
-		DrawText(Empty, FLinearColor(0.8f, 0.8f, 0.8f), (Canvas->SizeX - Width) * 0.5f, Y, GEngine->GetLargeFont(), 1.f);
-		return;
-	}
-
-	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
-	for (const FSarkoItemStack& Stack : Backpack->GetSlots())
-	{
-		const FSarkoItemDef* Def = Catalog.Find(Stack.Item);
-		// The id is the fallback, not the label: an id on screen means the
-		// catalog and the loot table have drifted, and it should be visible.
-		const FString Line = FString::Printf(TEXT("%s  x%d"),
-			Def ? *Def->Name : *Stack.Item.ToString(), Stack.Quantity);
-
-		float Width = 0.f;
-		float Height = 0.f;
-		GetTextSize(Line, Width, Height, GEngine->GetLargeFont(), 1.f);
-		DrawText(Line, FLinearColor::White, (Canvas->SizeX - Width) * 0.5f, Y, GEngine->GetLargeFont(), 1.f);
-		Y += Height + 6.f;
-	}
+	// The itemised haul used to be drawn here and now lives in the shelter (spec
+	// §6.5: "вынесено: …" moves there, where it sits above the stash it was just
+	// credited into and can be compared with it). What stays is the outcome itself,
+	// in the place the raid ended, plus a line saying where the player is about to
+	// go — without it, PostRaidReturnSeconds of a dimmed frozen world reads as a
+	// hang rather than as a beat.
+	const FString Returning = TEXT("ПОВЕРНЕННЯ ДО УКРИТТЯ...");
+	float Width = 0.f;
+	float Height = 0.f;
+	GetTextSize(Returning, Width, Height, GEngine->GetLargeFont(), 1.f);
+	DrawText(Returning, FLinearColor(0.8f, 0.8f, 0.8f), (Canvas->SizeX - Width) * 0.5f, Y,
+		GEngine->GetLargeFont(), 1.f);
 }
