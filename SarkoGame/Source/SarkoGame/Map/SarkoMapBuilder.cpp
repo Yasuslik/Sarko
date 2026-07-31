@@ -228,9 +228,9 @@ void SarkoMap::SpawnProps(UWorld& World, const FSarkoMapDefinition& Definition)
 			}
 			// The part's offset is authored in the prop's own frame, so it
 			// rotates with the prop: a road sign's plate stays over its post at
-			// any yaw. Rotating the offset and not the part would shear the
-			// composite apart at every angle except zero.
-			const FVector PartLocation = Prop.Location + Rotation.RotateVector(Part.Offset);
+			// any yaw. The arithmetic lives in PartWorldLocation so it can be
+			// asserted under -nullrhi, where there is no world to spawn into.
+			const FVector PartLocation = PartWorldLocation(Prop.Location, Prop.Yaw, Part);
 			// Colour comes from the part's surface rather than a per-prop choice:
 			// the read the player needs from above is "ground versus thing
 			// standing on it", and every legacy kind is Structure, which is the

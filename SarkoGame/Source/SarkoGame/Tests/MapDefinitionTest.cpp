@@ -151,6 +151,17 @@ bool FSarkoMapDefinitionRejectsBadInput::RunTest(const FString& Parameters)
 		{ TEXT("radiusUU is a quoted numeral"),
 			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
 				"extractions":[{"pos":[250,0,0],"radiusUU":"400"}]})") },
+		// And the same defect on the two REQUIRED root numbers, which the optional
+		// tightening above did not reach. Both values below are the map's real ones,
+		// so the wrong behaviour is a completely silent success: the sector still
+		// comes out 400 m across and the raid still lasts fifteen minutes, and the
+		// only evidence is a pair of quotes nobody would think to grep for. A map
+		// file that holds strings where numbers belong breaks the first time
+		// anything reads it strictly, long after the quotes were introduced.
+		{ TEXT("extentUU is a quoted numeral"),
+			TEXT(R"({"id":"x","extentUU":"20000","raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}]})") },
+		{ TEXT("raidDurationSeconds is a quoted numeral"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":"900","playerSpawns":[{"pos":[0,0,0],"yaw":0}]})") },
 	};
 
 	for (const TPair<FString, FString>& Case : BadCases)
@@ -658,6 +669,349 @@ bool FSarkoRejectsBadSurfaceFields::RunTest(const FString& Parameters)
 		TestFalse(FString::Printf(TEXT("rejected: %s"), *Case.Key),
 			SarkoMap::ParseDefinition(Case.Value, Definition, Error));
 		TestFalse(FString::Printf(TEXT("names the problem: %s"), *Case.Key), Error.IsEmpty());
+	}
+	return true;
+}
+
+namespace
+{
+	/**
+	 * How far above the floor a kind's tallest part reaches, in unreal units.
+	 *
+	 * The arithmetic differs by authoring convention and that is the whole trap
+	 * (see FSarkoPropPart::Offset). A SINGLE-BOX kind is placed in the map file
+	 * with pos.z equal to its own half-height, so its top is 2 * Extent.Z above the
+	 * floor. A COMPOSITE is placed with pos.z = 0 and each part carries its own
+	 * centre height, so its top is Offset.Z + Extent.Z.
+	 *
+	 * Using the composite formula for both — which reads naturally and is wrong —
+	 * halves every single-box kind's height, and then "a fence blocks sight" is a
+	 * claim about 92 uu instead of 184 and every threshold below means nothing.
+	 * That is exactly how car_wreck came to be described as chest-high cover at
+	 * 0.85x the pawn's own height.
+	 *
+	 * bOnlyColliding restricts the measurement to parts that actually stop the
+	 * player, because "is this cover" is a question about collision, not paint.
+	 */
+	float TopOfKindUU(const FSarkoPropKind& Kind, bool bOnlyColliding)
+	{
+		const bool bComposite = Kind.Parts.Num() > 1;
+		float Top = 0.f;
+		for (const FSarkoPropPart& Part : Kind.Parts)
+		{
+			if (bOnlyColliding && !Part.bBlocksMovement)
+			{
+				continue;
+			}
+			const float PartTop = bComposite
+				? static_cast<float>(Part.Offset.Z + Part.Extent.Z)
+				: 2.f * static_cast<float>(Part.Extent.Z);
+			Top = FMath::Max(Top, PartTop);
+		}
+		return Top;
+	}
+
+	/** How far above the floor a part's BOTTOM sits, by the same two conventions. */
+	float BottomOfPartUU(const FSarkoPropKind& Kind, const FSarkoPropPart& Part)
+	{
+		return Kind.Parts.Num() > 1
+			? static_cast<float>(Part.Offset.Z - Part.Extent.Z)
+			: 0.f;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoNewPropKindsExist,
+	"Sarko.Map.NewPropKindsExist",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoNewPropKindsExist::RunTest(const FString& Parameters)
+{
+	// Spec §5.3's vocabulary, by name. A missing kind here is a Stage C author
+	// discovering mid-sector that the thing the ТЗ asked for does not exist.
+	const TArray<FName> Required = {
+		TEXT("rock"), TEXT("bush"), TEXT("log"), TEXT("fence_section"), TEXT("road_sign"),
+		TEXT("concrete_barrier"), TEXT("trailer"), TEXT("pylon"), TEXT("treeline")
+	};
+
+	for (const FName& Kind : Required)
+	{
+		FSarkoPropKind Resolved;
+		const bool bFound = SarkoMap::FindPropKind(Kind, Resolved);
+		TestTrue(FString::Printf(TEXT("kind '%s' resolves"), *Kind.ToString()), bFound);
+		if (!bFound)
+		{
+			continue;
+		}
+		TestTrue(FString::Printf(TEXT("kind '%s' has parts"), *Kind.ToString()), Resolved.Parts.Num() >= 1);
+		for (int32 Index = 0; Index < Resolved.Parts.Num(); ++Index)
+		{
+			const FSarkoPropPart& Piece = Resolved.Parts[Index];
+			TestTrue(FString::Printf(TEXT("'%s' part %d has a positive extent"), *Kind.ToString(), Index),
+				Piece.Extent.GetMin() > 0.f);
+			TestTrue(FString::Printf(TEXT("'%s' part %d names an engine mesh"), *Kind.ToString(), Index),
+				Piece.Mesh.ToString().StartsWith(TEXT("/Engine/BasicShapes/")));
+			// Gated deliberately. Offset is measured from the PROP's origin, and
+			// it is the JSON `pos.z` that carries a single-box kind's half-height
+			// (the authoring convention this task documents). Ungated, this line
+			// fails for every single-box kind: 0 - 140 < -1.
+			TestTrue(FString::Printf(TEXT("'%s' part %d is on or above the floor"), *Kind.ToString(), Index),
+				Resolved.Parts.Num() == 1
+					? Piece.Offset.IsNearlyZero()
+					: Piece.Offset.Z - Piece.Extent.Z >= -1.f);
+		}
+	}
+
+	// The two composites are the reason parts exist. If either collapses back to
+	// one box, the abstraction bought nothing.
+	FSarkoPropKind Pylon;
+	if (SarkoMap::FindPropKind(TEXT("pylon"), Pylon))
+	{
+		TestTrue(TEXT("a pylon is composite"), Pylon.Parts.Num() >= 4);
+	}
+	FSarkoPropKind Sign;
+	if (SarkoMap::FindPropKind(TEXT("road_sign"), Sign))
+	{
+		TestTrue(TEXT("a road sign is a post and a plate"), Sign.Parts.Num() >= 2);
+	}
+
+	// Adding kinds must not add entries: bridge.json places none of the nine, so
+	// the shipped actor bill is unchanged and the iOS budget has not moved. If a
+	// later task starts placing them, THAT is where the count is allowed to grow.
+	FSarkoMapDefinition Bridge;
+	FString LoadError;
+	if (!SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Bridge, LoadError))
+	{
+		AddError(FString::Printf(TEXT("bridge.json failed to load: %s"), *LoadError));
+		return false;
+	}
+	for (const FSarkoMapProp& Prop : Bridge.Props)
+	{
+		TestFalse(FString::Printf(TEXT("bridge.json does not yet place '%s'"), *Prop.Kind.ToString()),
+			Required.Contains(Prop.Kind));
+	}
+	TestEqual(TEXT("the shipped map is still one actor per authored prop"),
+		SarkoMap::CountPropActors(Bridge), Bridge.Props.Num());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoPropKindScaleMatchesThePawn,
+	"Sarko.Map.PropKindScaleMatchesThePawn",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoPropKindScaleMatchesThePawn::RunTest(const FString& Parameters)
+{
+	// The pawn is ~176 uu tall. Whether a prop is shootable-over cover or a
+	// sight blocker is a gameplay fact, so it is asserted rather than left to
+	// whoever next edits a number in the table.
+	constexpr float PawnHeightUU = 176.f;
+
+	const auto TopOf = [this](FName Name, float& OutTop) -> bool
+	{
+		FSarkoPropKind Kind;
+		if (!SarkoMap::FindPropKind(Name, Kind) || Kind.Parts.Num() == 0)
+		{
+			AddError(FString::Printf(TEXT("kind '%s' does not resolve"), *Name.ToString()));
+			return false;
+		}
+		OutTop = TopOfKindUU(Kind, /*bOnlyColliding*/ true);
+		return true;
+	};
+
+	// Cover you shoot over: below the pawn's full height, above its knees.
+	float ShortestCoverUU = TNumericLimits<float>::Max();
+	for (const FName& Name : { FName(TEXT("car_wreck")), FName(TEXT("sandbag")),
+		FName(TEXT("concrete_barrier")), FName(TEXT("log")), FName(TEXT("rock")) })
+	{
+		float Top = 0.f;
+		if (TopOf(Name, Top))
+		{
+			TestTrue(FString::Printf(TEXT("'%s' can be shot over (%.0f uu)"), *Name.ToString(), Top),
+				Top < PawnHeightUU);
+			TestTrue(FString::Printf(TEXT("'%s' is tall enough to be cover (%.0f uu)"), *Name.ToString(), Top),
+				Top > 60.f);
+			ShortestCoverUU = FMath::Min(ShortestCoverUU, Top);
+		}
+	}
+
+	// Sight blockers: taller than the pawn, so they cut line of sight outright.
+	for (const FName& Name : { FName(TEXT("house")), FName(TEXT("wall")),
+		FName(TEXT("treeline")), FName(TEXT("fence_section")) })
+	{
+		float Top = 0.f;
+		if (TopOf(Name, Top))
+		{
+			TestTrue(FString::Printf(TEXT("'%s' blocks sight (%.0f uu)"), *Name.ToString(), Top),
+				Top >= PawnHeightUU);
+		}
+	}
+
+	// A bush the player cannot walk through is a snag, not decoration.
+	FSarkoPropKind Bush;
+	if (SarkoMap::FindPropKind(TEXT("bush"), Bush))
+	{
+		for (const FSarkoPropPart& Piece : Bush.Parts)
+		{
+			TestFalse(TEXT("a bush never blocks movement"), Piece.bBlocksMovement);
+		}
+		TestEqual(TEXT("a bush is vegetation"),
+			static_cast<uint8>(Bush.Parts[0].Surface), static_cast<uint8>(ESarkoSurface::Vegetation));
+	}
+
+	// A treeline is the map's boundary: impassable, dark green, and taller than
+	// anything the player can climb (there is no climbing).
+	FSarkoPropKind Treeline;
+	if (SarkoMap::FindPropKind(TEXT("treeline"), Treeline))
+	{
+		TestTrue(TEXT("a treeline blocks movement"), Treeline.Parts[0].bBlocksMovement);
+		TestEqual(TEXT("a treeline is vegetation"),
+			static_cast<uint8>(Treeline.Parts[0].Surface), static_cast<uint8>(ESarkoSurface::Vegetation));
+		TestTrue(TEXT("a treeline is long enough to tile into a border"),
+			Treeline.Parts[0].Extent.X >= 400.f);
+	}
+
+	// Nothing may be a skyscraper: the top-down camera frames the whole sector
+	// from 20000+ uu, and a 50 m prop is a smear across the frame.
+	const TArray<FName> AllKinds = {
+		TEXT("wall"), TEXT("car_wreck"), TEXT("bus"), TEXT("house"), TEXT("fuel_pump"),
+		TEXT("freight_car"), TEXT("water_tower"), TEXT("sandbag"), TEXT("crate"), TEXT("pipe"),
+		TEXT("bridge_deck"), TEXT("rock"), TEXT("bush"), TEXT("log"), TEXT("fence_section"),
+		TEXT("road_sign"), TEXT("concrete_barrier"), TEXT("trailer"), TEXT("pylon"), TEXT("treeline")
+	};
+	for (const FName& Name : AllKinds)
+	{
+		FSarkoPropKind Kind;
+		if (!SarkoMap::FindPropKind(Name, Kind))
+		{
+			AddError(FString::Printf(TEXT("kind '%s' does not resolve"), *Name.ToString()));
+			continue;
+		}
+		const float Top = TopOfKindUU(Kind, /*bOnlyColliding*/ false);
+		TestTrue(FString::Printf(TEXT("'%s' is under 25 m tall (%.0f uu)"), *Name.ToString(), Top),
+			Top <= 2500.f);
+		for (const FSarkoPropPart& Piece : Kind.Parts)
+		{
+			TestTrue(FString::Printf(TEXT("'%s' is under 20 m wide"), *Name.ToString()),
+				Piece.Extent.X <= 1000.f && Piece.Extent.Y <= 1000.f);
+
+			// The bush defect, generalised so it cannot come back under another
+			// name: a part that stands ON the floor and does NOT collide is a lie
+			// the player can only discover by walking into it, so it must not be
+			// tall enough to read as cover from above. Parts held overhead — a
+			// sign's plate, a pylon's crossarms — are exempt, because nobody takes
+			// cover behind something two and a half metres off the ground.
+			if (Piece.bBlocksMovement || BottomOfPartUU(Kind, Piece) > 60.f || ShortestCoverUU > 1e5f)
+			{
+				continue;
+			}
+			const bool bComposite = Kind.Parts.Num() > 1;
+			const float PartTop = bComposite
+				? static_cast<float>(Piece.Offset.Z + Piece.Extent.Z)
+				: 2.f * static_cast<float>(Piece.Extent.Z);
+			TestTrue(FString::Printf(
+				TEXT("'%s' is walk-through, so it must be shorter than real cover (%.0f uu vs %.0f uu)"),
+				*Name.ToString(), PartTop, ShortestCoverUU), PartTop < ShortestCoverUU);
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoCompositePartsRotateWithTheProp,
+	"Sarko.Map.CompositePartsRotateWithTheProp",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoCompositePartsRotateWithTheProp::RunTest(const FString& Parameters)
+{
+	// Until this task nothing in the table had a non-zero part offset, so the
+	// rotation in SpawnProps was dead arithmetic that no test could reach: every
+	// offset was zero, and zero is invariant under every yaw. The pylon's legs and
+	// the trailer's tow bar are the first offsets a yaw can act on, and getting
+	// the frame wrong here does not crash — it quietly slides half of every
+	// composite off the other half, at every angle except zero.
+	const FVector Origin(1000.f, -2000.f, 0.f);
+
+	FSarkoPropKind Pylon;
+	if (!SarkoMap::FindPropKind(TEXT("pylon"), Pylon) || Pylon.Parts.Num() < 2)
+	{
+		AddError(TEXT("the pylon must be composite for this test to mean anything"));
+		return false;
+	}
+	// Authored: leg at local (-140, 0, 900) — the west leg of an unrotated pylon.
+	const FSarkoPropPart& WestLeg = Pylon.Parts[0];
+	TestTrue(TEXT("the first pylon part is the offset leg this test assumes"),
+		WestLeg.Offset.Equals(FVector(-140.f, 0.f, 900.f), 0.01f));
+
+	// Yaw 0 is the identity, which is the promise that keeps every prop authored
+	// before parts existed at exactly its old transform.
+	TestTrue(TEXT("at yaw 0 a part sits at its raw offset"),
+		SarkoMap::PartWorldLocation(Origin, 0.f, WestLeg).Equals(Origin + WestLeg.Offset, 0.01f));
+
+	// Yaw 90 turns local +X into world +Y, so a leg 140 uu local-west lands 140 uu
+	// world-south. An inverse rotation — the easy mistake — puts it 140 uu north
+	// instead, which looks plausible until a second part disagrees.
+	TestTrue(TEXT("at yaw 90 the west leg swings to world -Y"),
+		SarkoMap::PartWorldLocation(Origin, 90.f, WestLeg)
+			.Equals(Origin + FVector(0.f, -140.f, 900.f), 0.01f));
+	TestTrue(TEXT("at yaw 180 the west leg swings to world +X"),
+		SarkoMap::PartWorldLocation(Origin, 180.f, WestLeg)
+			.Equals(Origin + FVector(140.f, 0.f, 900.f), 0.01f));
+
+	// Height is never touched by yaw: a rotation that leaked into Z would bury or
+	// float half a composite.
+	for (const float Yaw : { 0.f, 37.f, 90.f, 180.f, -45.f, 315.f })
+	{
+		for (const FSarkoPropPart& Part : Pylon.Parts)
+		{
+			const FVector World = SarkoMap::PartWorldLocation(Origin, Yaw, Part);
+			TestEqual(FString::Printf(TEXT("yaw %.0f does not change a part's height"), Yaw),
+				static_cast<float>(World.Z), static_cast<float>(Origin.Z + Part.Offset.Z), 0.01f);
+			// Rigid body, not a free-for-all: every part keeps its distance from
+			// the prop's origin, so the composite turns rather than deforming.
+			TestEqual(FString::Printf(TEXT("yaw %.0f preserves a part's distance from the origin"), Yaw),
+				static_cast<float>((World - Origin).Size()), static_cast<float>(Part.Offset.Size()), 0.01f);
+		}
+	}
+
+	// The design claim spelled out: the plate stays over the post at any yaw,
+	// because both are on the prop's own vertical axis.
+	FSarkoPropKind Sign;
+	if (SarkoMap::FindPropKind(TEXT("road_sign"), Sign) && Sign.Parts.Num() >= 2)
+	{
+		const FVector Post = SarkoMap::PartWorldLocation(Origin, 63.f, Sign.Parts[0]);
+		const FVector Plate = SarkoMap::PartWorldLocation(Origin, 63.f, Sign.Parts[1]);
+		TestEqual(TEXT("a road sign's plate stays directly over its post"),
+			static_cast<float>(FVector2D(Plate - Post).Size()), 0.f, 0.01f);
+		TestTrue(TEXT("and above it"), Plate.Z > Post.Z);
+	}
+
+	// An off-axis offset at an off-axis yaw, checked against arithmetic done by
+	// hand: the trailer's tow bar is 440 uu local-west, so at yaw 45 it is
+	// 440/sqrt(2) uu west and the same distance south.
+	FSarkoPropKind Trailer;
+	if (SarkoMap::FindPropKind(TEXT("trailer"), Trailer) && Trailer.Parts.Num() >= 2)
+	{
+		const FSarkoPropPart& TowBar = Trailer.Parts[1];
+		const float Diagonal = 440.f / FMath::Sqrt(2.f);
+		TestTrue(TEXT("the tow bar is the 440 uu offset this test assumes"),
+			FMath::IsNearlyEqual(static_cast<float>(TowBar.Offset.X), -440.f, 0.01f));
+		TestTrue(TEXT("at yaw 45 the tow bar lands on the diagonal"),
+			SarkoMap::PartWorldLocation(Origin, 45.f, TowBar).Equals(
+				Origin + FVector(-Diagonal, -Diagonal, static_cast<float>(TowBar.Offset.Z)), 0.05f));
+	}
+
+	// A single-box kind has a zero offset, so no yaw can move it at all — this is
+	// the assertion that pins that the 238 shipped props are untouched by any of
+	// the above.
+	FSarkoPropKind Crate;
+	if (SarkoMap::FindPropKind(TEXT("crate"), Crate) && Crate.Parts.Num() == 1)
+	{
+		for (const float Yaw : { 0.f, 35.f, 137.f, -90.f })
+		{
+			TestTrue(FString::Printf(TEXT("a single-box prop does not move at yaw %.0f"), Yaw),
+				SarkoMap::PartWorldLocation(Origin, Yaw, Crate.Parts[0]).Equals(Origin, 0.0001f));
+		}
 	}
 	return true;
 }

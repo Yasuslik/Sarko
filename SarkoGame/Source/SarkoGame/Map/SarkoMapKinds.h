@@ -76,6 +76,21 @@ namespace SarkoMap
 	bool FindPropKind(FName Kind, FSarkoPropKind& OutKind);
 
 	/**
+	 * Where one part of a prop stands in world space.
+	 *
+	 * A part's Offset is authored in the prop's OWN frame, so it has to rotate
+	 * with the prop: rotating the part but not its offset (or the reverse) shears
+	 * a composite apart at every yaw except zero, and a road sign's plate ends up
+	 * hanging in the air beside its post.
+	 *
+	 * Pulled out of SpawnProps purely so it can be asserted: automation runs under
+	 * -nullrhi with no world to spawn into, and until composites existed no kind
+	 * had a non-zero offset for a yaw to act on. This is not a second spawn path —
+	 * SpawnMeshBox remains the only one.
+	 */
+	FVector PartWorldLocation(const FVector& PropLocation, float PropYawDegrees, const FSarkoPropPart& Part);
+
+	/**
 	 * How many actors the props section of a definition will spawn — the sum of
 	 * every resolved kind's part count. Unknown kinds contribute nothing,
 	 * exactly as SpawnProps skips them. This is the ТЗ §16 budget number, and a

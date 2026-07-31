@@ -99,6 +99,38 @@ namespace
 	}
 
 	/**
+	 * Reads a REQUIRED numeric field, with the same JSON-type strictness as
+	 * ReadOptionalNumber and for the same reason: TryGetNumberField is not a type
+	 * check. `"extentUU": "20000"` and `"qty": "3"` used to parse as 20000 and 3,
+	 * because TJsonValueString overrides TryGetNumber and runs the text through
+	 * LexTryParseString. That is the silent half of the defect — the sector really
+	 * did come out 400 m across and the container really did hand out three
+	 * items — so nothing warned, nothing was greppable, and the map file quietly
+	 * held strings where numbers belong until something read it strictly.
+	 *
+	 * The only difference from the optional form is that absence is an error here.
+	 * Context prefixes the message so a nested field can name its path; callers
+	 * pass an empty string for a root field.
+	 */
+	bool ReadRequiredNumber(const TSharedPtr<FJsonObject>& Object, const FString& Field,
+		const FString& Context, double& Out, FString& OutError)
+	{
+		const TSharedPtr<FJsonValue> Value = Object->TryGetField(Field);
+		if (!Value.IsValid())
+		{
+			OutError = FString::Printf(TEXT("%s'%s' is missing"), *Context, *Field);
+			return false;
+		}
+		if (Value->Type != EJson::Number)
+		{
+			OutError = FString::Printf(TEXT("%s'%s' is present but not a number"), *Context, *Field);
+			return false;
+		}
+		Out = Value->AsNumber();
+		return true;
+	}
+
+	/**
 	 * Reads an optional string field the same way: absent keeps the caller's
 	 * default, present-but-not-a-string is a named error rather than silently
 	 * collapsing to something indistinguishable from "not set".
@@ -233,17 +265,25 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 	}
 
 	double Extent = 0.0;
-	if (!Root->TryGetNumberField(TEXT("extentUU"), Extent) || Extent <= 0.0)
+	if (!ReadRequiredNumber(Root, TEXT("extentUU"), FString(), Extent, OutError))
 	{
-		OutError = TEXT("'extentUU' is missing or not positive");
+		return false;
+	}
+	if (Extent <= 0.0)
+	{
+		OutError = TEXT("'extentUU' is not positive");
 		return false;
 	}
 	OutDefinition.ExtentUU = static_cast<float>(Extent);
 
 	double Duration = 0.0;
-	if (!Root->TryGetNumberField(TEXT("raidDurationSeconds"), Duration) || Duration <= 0.0)
+	if (!ReadRequiredNumber(Root, TEXT("raidDurationSeconds"), FString(), Duration, OutError))
 	{
-		OutError = TEXT("'raidDurationSeconds' is missing or not positive");
+		return false;
+	}
+	if (Duration <= 0.0)
+	{
+		OutError = TEXT("'raidDurationSeconds' is not positive");
 		return false;
 	}
 	OutDefinition.RaidDurationSeconds = static_cast<float>(Duration);
@@ -436,11 +476,15 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 						return false;
 					}
 					double Quantity = 0.0;
-					if (!(*ItemObject)->TryGetNumberField(TEXT("qty"), Quantity) || Quantity < 1.0)
+					const FString QuantityContext = FString::Printf(
+						TEXT("containers[%d].fixedItems[%d] ('%s'): "), Index, ItemIndex, *ItemId);
+					if (!ReadRequiredNumber(*ItemObject, TEXT("qty"), QuantityContext, Quantity, OutError))
 					{
-						OutError = FString::Printf(
-							TEXT("containers[%d].fixedItems[%d] ('%s'): 'qty' is missing or less than 1"),
-							Index, ItemIndex, *ItemId);
+						return false;
+					}
+					if (Quantity < 1.0)
+					{
+						OutError = FString::Printf(TEXT("%s'qty' is less than 1"), *QuantityContext);
 						return false;
 					}
 					// JSON has one number type, so 1.7 sails through the check above

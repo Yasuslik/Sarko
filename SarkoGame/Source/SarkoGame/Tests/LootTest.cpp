@@ -624,6 +624,14 @@ bool FSarkoContainersMayCarryFixedItems::RunTest(const FString& Parameters)
 		// above and is then truncated to 1 by the cast — the only malformation
 		// here that used to change what the player receives without saying so.
 		{ TEXT("fractional qty"),      TEXT(R"("fixedItems": [{ "item": "scrap_metal", "qty": 1.7 }])") },
+		// The silent half of the same defect. TJsonValueString overrides
+		// TryGetNumber and runs the text through LexTryParseString, so a quoted
+		// numeral used to parse as that number: the container really did hand out
+		// three pieces of scrap and nothing anywhere said the file was malformed.
+		// The row deliberately uses a *valid* quantity — "qty": "abc" was already
+		// rejected because the text does not parse, which is why that case proves
+		// nothing about the type check.
+		{ TEXT("qty is a quoted numeral"), TEXT(R"("fixedItems": [{ "item": "scrap_metal", "qty": "3" }])") },
 	};
 
 	for (const TPair<FString, FString>& Case : BadCases)
