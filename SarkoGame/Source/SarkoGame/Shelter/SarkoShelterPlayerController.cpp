@@ -87,6 +87,24 @@ void ASarkoShelterPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRe
 		}
 		Widget.Reset();
 	}
+
+	// And hand the input mode back, for the same reason the widget is removed
+	// here: the UI-only mode set in BeginPlay is *not* world state.
+	// FInputModeUIOnly::ApplyInputMode calls UGameViewportClient::SetIgnoreInput
+	// (true), the viewport client belongs to the ULocalPlayer, and UEngine::LoadMap
+	// destroys this controller while keeping that local player — so bIgnoreInput
+	// rode into the raid, where UGameViewportClient::InputKey/InputAxis/InputTouch
+	// each early-return on it. The raid then spawned, ran its clock and ignored
+	// every stick, shot and loot press until it ended MIA.
+	//
+	// Belt and braces with ASarkoPlayerController::BeginPlay, which asserts
+	// game-only input on its own: this end covers travel to anything that is not
+	// the raid, and that end covers a raid entered from anywhere that is not the
+	// shelter.
+	if (IsLocalController())
+	{
+		SetInputMode(FInputModeGameOnly());
+	}
 	Super::EndPlay(EndPlayReason);
 }
 

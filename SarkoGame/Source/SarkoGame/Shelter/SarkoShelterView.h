@@ -27,7 +27,9 @@ struct FSarkoShelterView
 	/** The haul, one line per stack. Task 5. */
 	TArray<FString> HaulLines;
 
-	/** "ГАРАЖ: ВЕЛОСИПЕД 1/3". */
+	/** "ГАРАЖ: ВЕЛОСИПЕД 1/3", or "ГАРАЖ: ВЕЛОСИПЕД —/3" while the profile is
+	 *  unknown — the count comes out of the stash, so it is exactly as unknown as
+	 *  the stash is. */
 	FString GarageLine;
 
 	/** One line per stash row, or a single "СХОВОК ПОРОЖНІЙ". **Empty** — not the
@@ -98,9 +100,31 @@ namespace SarkoShelter
 	 * "ГАРАЖ: ВЕЛОСИПЕД n/3", counting recipe *entries* whose full required
 	 * quantity is in the stash — one wheel of two does not count, because the
 	 * craft call would refuse and a shelter that disagrees with the backend is
-	 * worse than one that says less. Past TierNone it reports the tier as built.
+	 * worse than one that says less.
+	 *
+	 * Past TierNone it reports **the bicycle** as built, whatever the tier is:
+	 * the ladder is cumulative (domain.UnlockedMaps walks tierOrder, and this
+	 * stage's ladder is `none → bicycle → …`), so any tier above none owns one,
+	 * and the bicycle is the only recipe this file mirrors.
+	 *
+	 * Only ever called with a profile that was actually fetched — see
+	 * UnknownGarageLine and the gate in BuildView.
 	 */
 	FString BuildGarageLine(const FSarkoProfile& Profile);
+
+	/**
+	 * The garage row while the profile is unknown: "ГАРАЖ: ВЕЛОСИПЕД —/3".
+	 *
+	 * An unfetched profile carries an empty stash and an empty tier, which
+	 * BuildGarageLine would happily read as a truthful "0/3" — told to the player
+	 * as fact underneath a "З'ЄДНАННЯ..." status, and worse after a raid, where
+	 * RecordRaidOutcome clears bProfileLoaded but keeps CachedProfile: the player
+	 * who just extracted the third part would be shown yesterday's 2/3, and a
+	 * failed re-fetch would leave it wrong for the whole visit. The row is kept
+	 * (rather than dropped like the stash lines) because its shape is what tells
+	 * the player the garage exists at all; only the number is withheld.
+	 */
+	FString UnknownGarageLine();
 
 	/** Assembles the whole screen. Pure. */
 	FSarkoShelterView BuildView(const FSarkoLastRaid& LastRaid, const FSarkoProfile& Profile,

@@ -333,6 +333,16 @@ bool SarkoBackend::ParseErrorResponse(const FString& Json, FSarkoBackendError& O
 	return !OutError.Code.IsEmpty();
 }
 
+bool SarkoBackend::ShouldDropTokenOnResponse(bool bAuthenticatedRequest, int32 HttpCode, const FString& ErrorCode)
+{
+	if (!bAuthenticatedRequest || HttpCode != 401)
+	{
+		return false;
+	}
+	// The raid's own session token, not the Bearer token — see the header.
+	return ErrorCode != TEXT("bad_session_token");
+}
+
 int32 SarkoBackend::SeedToInt32(int64 Seed)
 {
 	// Truncate to 32 bits, then reinterpret. Well-defined both ways, and the
@@ -480,9 +490,10 @@ void FSarkoBackendClient::Send(const TCHAR* Verb, const FString& Path, const FSt
 	// client with it — has been torn down.
 	TWeakPtr<FSarkoBackendClient> WeakSelf = AsShared();
 	Request->OnProcessRequestComplete().BindLambda(
-		[WeakSelf, Path, OnComplete](FHttpRequestPtr, FHttpResponsePtr Response, bool bConnected)
+		[WeakSelf, Path, bAuthenticated, OnComplete](FHttpRequestPtr, FHttpResponsePtr Response, bool bConnected)
 		{
-			if (!WeakSelf.IsValid())
+			const TSharedPtr<FSarkoBackendClient> Self = WeakSelf.Pin();
+			if (!Self)
 			{
 				UE_LOG(LogTemp, Warning, TEXT("SarkoBackend: %s completed after the client was destroyed; ignored"), *Path);
 				return;
@@ -507,6 +518,23 @@ void FSarkoBackendClient::Send(const TCHAR* Verb, const FString& Path, const FSt
 				// raid's worth of persistence, and the log is the only place it
 				// is visible.
 				UE_LOG(LogTemp, Error, TEXT("SarkoBackend: %s"), *Error);
+
+				// A rejected token must not outlive the request that was rejected.
+				// One client and one JWT now ride the whole launch (the game
+				// instance owns them), so keeping a token the server has refused
+				// makes every later request fail forever — a rotated JWT_SECRET or
+				// a dropped player row used to heal itself on the next raid and
+				// silently stopped doing so. Dropped rather than refreshed here:
+				// the next caller already asks IsAuthenticated() first
+				// (ASarkoShelterPlayerController::FetchProfile,
+				// ASarkoRaidGameMode::BeginBackendSession), so re-auth happens on
+				// its own, exactly once, with no retry loop to get wrong.
+				if (SarkoBackend::ShouldDropTokenOnResponse(bAuthenticated, Code, Parsed.Code))
+				{
+					Self->Jwt.Reset();
+					UE_LOG(LogTemp, Warning,
+						TEXT("SarkoBackend: the token was refused, so it has been dropped — the next request will authenticate again"));
+				}
 				OnComplete(false, ResponseBody, Error);
 				return;
 			}

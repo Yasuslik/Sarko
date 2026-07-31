@@ -586,4 +586,49 @@ bool FSarkoProfileRejectsBadInput::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoARejectedTokenIsDropped,
+	"Sarko.Backend.ARejectedTokenIsDropped",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoARejectedTokenIsDropped::RunTest(const FString& Parameters)
+{
+	// One client and one JWT now ride the whole app launch (USarkoGameInstance owns
+	// them), and both callers skip authentication whenever IsAuthenticated(). So a
+	// token kept after a 401 is a token that fails every request until the app is
+	// relaunched: a rotated JWT_SECRET or a deleted player row used to heal itself
+	// on the next raid, and silently stopped doing so.
+	TestTrue(TEXT("a 401 on an authenticated request drops the token"),
+		SarkoBackend::ShouldDropTokenOnResponse(/*bAuthenticatedRequest*/ true, 401, TEXT("unauthorized")));
+
+	// A 401 whose body is not this backend's error envelope at all — a proxy's own,
+	// say — drops it too. One extra anonymous auth is one cheap round trip; a
+	// permanently dead token costs every raid after it.
+	TestTrue(TEXT("an unparseable 401 body drops the token as well"),
+		SarkoBackend::ShouldDropTokenOnResponse(true, 401, FString()));
+
+	// The one 401 that must NOT: bad_session_token is /v1/raid/result comparing the
+	// RAID's session token, which means the Bearer token in front of it was
+	// accepted. Dropping it here would spend a re-auth on a fault re-authenticating
+	// cannot fix, and would do it on every result submitted with a stale session.
+	TestFalse(TEXT("a rejected raid session token leaves the JWT alone"),
+		SarkoBackend::ShouldDropTokenOnResponse(true, 401, TEXT("bad_session_token")));
+
+	// Nothing else touches the token. A 403/409/500 says the request was wrong, not
+	// the identity behind it, and 409 insufficient_items in particular is a normal
+	// answer that must not cost an auth round trip.
+	for (const int32 Code : { 200, 400, 403, 404, 409, 422, 429, 500, 503 })
+	{
+		TestFalse(FString::Printf(TEXT("HTTP %d leaves the token alone"), Code),
+			SarkoBackend::ShouldDropTokenOnResponse(true, Code, TEXT("unauthorized")));
+	}
+
+	// And an unauthenticated request has no token of its own to invalidate:
+	// /v1/auth/anonymous is the call that MAKES one, so reacting to its status here
+	// could only ever throw away a token that had just arrived.
+	TestFalse(TEXT("an unauthenticated request never drops a token"),
+		SarkoBackend::ShouldDropTokenOnResponse(/*bAuthenticatedRequest*/ false, 401, TEXT("unauthorized")));
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

@@ -45,12 +45,12 @@ public:
 	TSharedPtr<SWidget> WidgetToFocus() const;
 
 	/**
-	 * Every size below is authored against a 720x1280 portrait canvas and scaled
-	 * to the real viewport by this factor. Exposed so a test could pin the phone
-	 * case without a viewport.
+	 * Every size in the .cpp is authored against a 390x844 portrait canvas — a
+	 * phone in **logical points**, not pixels — and scaled to the real viewport by
+	 * this factor. Exposed so a test could pin the phone case without a viewport.
 	 *
-	 * min(W/720, H/1280) so the whole canvas always fits: taking height alone
-	 * would overflow a landscape window sideways.
+	 * min(W/390, H/844) so the whole canvas always fits: taking height alone would
+	 * overflow a landscape window sideways.
 	 */
 	static float UiScaleForViewport(FVector2D ViewportSize);
 

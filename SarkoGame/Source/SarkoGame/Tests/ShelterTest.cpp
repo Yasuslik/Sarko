@@ -148,11 +148,22 @@ bool FSarkoGarageLineCountsBicycleParts::RunTest(const FString& Parameters)
 	TestEqual(TEXT("all three entries held is 3/3"), SarkoShelter::BuildGarageLine(Profile),
 		FString(TEXT("ГАРАЖ: ВЕЛОСИПЕД 3/3")));
 
-	// Past the bicycle, the line names the tier the player has rather than
-	// counting parts they no longer need.
+	// Past `none` the line reports the BICYCLE as built rather than counting parts
+	// the player no longer needs. It names the bicycle and not the player's tier on
+	// purpose: the ladder is cumulative, so every tier above none owns one, and the
+	// bicycle is the only recipe this file mirrors. A future `motorcycle` therefore
+	// reads "ВЕЛОСИПЕД ГОТОВИЙ" too — true, and the honest limit of what this
+	// screen knows until GET /v1/garage/recipe exists.
 	Profile.VehicleTier = TEXT("bicycle");
 	TestEqual(TEXT("an owned bicycle is reported as owned"), SarkoShelter::BuildGarageLine(Profile),
 		FString(TEXT("ГАРАЖ: ВЕЛОСИПЕД ГОТОВИЙ")));
+	Profile.VehicleTier = TEXT("motorcycle");
+	TestEqual(TEXT("a tier past the bicycle still reports the bicycle as built"),
+		SarkoShelter::BuildGarageLine(Profile), FString(TEXT("ГАРАЖ: ВЕЛОСИПЕД ГОТОВИЙ")));
+
+	// And the unknown-profile line is a dash, never a count — see the view test.
+	TestEqual(TEXT("an unknown profile withholds the count and keeps the row"),
+		SarkoShelter::UnknownGarageLine(), FString(TEXT("ГАРАЖ: ВЕЛОСИПЕД —/3")));
 	return true;
 }
 
@@ -178,6 +189,11 @@ bool FSarkoShelterViewSeparatesUnknownFromEmpty::RunTest(const FString& Paramete
 	TestEqual(TEXT("an unfetched profile draws no stash lines at all"), Loading.StashLines.Num(), 0);
 	TestEqual(TEXT("and says it is connecting"), Loading.StatusLine, FString(TEXT("З'ЄДНАННЯ...")));
 	TestFalse(TEXT("the raid button is disabled until the profile lands"), Loading.bRaidEnabled);
+	// The garage count comes out of that same unknown stash, so it is withheld with
+	// it. "0/3" here would be a fact stated underneath "З'ЄДНАННЯ...", which is the
+	// same lie as an empty stash — the row survives, only the number is withheld.
+	TestEqual(TEXT("an unfetched profile withholds the garage count"), Loading.GarageLine,
+		FString(TEXT("ГАРАЖ: ВЕЛОСИПЕД —/3")));
 
 	// Fetched and genuinely empty.
 	const FSarkoShelterView Loaded = SarkoShelter::BuildView(NoRaidYet, Profile, /*bProfileLoaded*/ true,
@@ -195,6 +211,45 @@ bool FSarkoShelterViewSeparatesUnknownFromEmpty::RunTest(const FString& Paramete
 	TestEqual(TEXT("the error is shown, not swallowed"), Failed.StatusLine,
 		FString(TEXT("ОФЛАЙН: /v1/profile: HTTP 401 unauthorized")));
 	TestTrue(TEXT("an offline shelter can still start a raid"), Failed.bRaidEnabled);
+
+	// The shape that made this matter: back from a raid, USarkoGameInstance has
+	// cleared bProfileLoaded but deliberately KEPT CachedProfile so the screen can
+	// draw instantly, so a stale-but-populated profile arrives here every single
+	// time. The player who just extracted the third bicycle part must not be shown
+	// the pre-raid 2/3 as fact — and if the re-fetch then fails, that wrong number
+	// would have stayed on screen for the whole visit.
+	FSarkoProfile Yesterday;
+	Yesterday.PlayerId = TEXT("p");
+	Yesterday.VehicleTier = TEXT("none");
+	Yesterday.Stash = {
+		FSarkoItemStack{ FName(TEXT("bike_frame")), 1 },
+		FSarkoItemStack{ FName(TEXT("wheel_small")), 2 },
+	};
+	TestEqual(TEXT("that same stale profile would otherwise read 2/3"),
+		SarkoShelter::BuildGarageLine(Yesterday), FString(TEXT("ГАРАЖ: ВЕЛОСИПЕД 2/3")));
+
+	FSarkoLastRaid JustExtracted;
+	JustExtracted.Outcome = ESarkoRaidOutcome::Extracted;
+	JustExtracted.bPersisted = true;
+	JustExtracted.Haul = { FSarkoItemStack{ FName(TEXT("chain")), 1 } };
+
+	const FSarkoShelterView AfterRaid = SarkoShelter::BuildView(JustExtracted, Yesterday,
+		/*bProfileLoaded*/ false, FString(), Catalog);
+	TestEqual(TEXT("a stale profile draws no garage count after a raid"), AfterRaid.GarageLine,
+		FString(TEXT("ГАРАЖ: ВЕЛОСИПЕД —/3")));
+	TestEqual(TEXT("nor a stale stash"), AfterRaid.StashLines.Num(), 0);
+	// The haul is not stale — it came from the raid that just ended, not from the
+	// profile — so it is still drawn, and that is the whole reason the stale
+	// profile is kept around at all.
+	TestEqual(TEXT("the haul is still drawn, being the one fresh thing here"),
+		AfterRaid.HaulLines.Num(), 1);
+
+	// And a failed re-fetch keeps withholding it rather than falling back to the
+	// stale number, which is the case that used to be wrong for the whole visit.
+	const FSarkoShelterView AfterRaidOffline = SarkoShelter::BuildView(JustExtracted, Yesterday,
+		/*bProfileLoaded*/ false, TEXT("/v1/profile: HTTP 500"), Catalog);
+	TestEqual(TEXT("a failed re-fetch still withholds the count"), AfterRaidOffline.GarageLine,
+		FString(TEXT("ГАРАЖ: ВЕЛОСИПЕД —/3")));
 	return true;
 }
 

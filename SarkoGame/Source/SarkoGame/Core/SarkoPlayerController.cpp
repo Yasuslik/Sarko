@@ -30,6 +30,25 @@ ASarkoPlayerController::ASarkoPlayerController()
 	DefaultMouseCursor = EMouseCursor::None;
 }
 
+void ASarkoPlayerController::BeginPlay()
+{
+	Super::BeginPlay();
+
+	// See the header. The shelter's FInputModeUIOnly lives on the ULocalPlayer's
+	// viewport client, which outlives the travel, so a raid entered from the
+	// shelter starts with bIgnoreInput still set and every input path dead. This
+	// is the raid's own claim on its input mode, made regardless of what the
+	// previous screen left behind.
+	//
+	// Local only: a remote controller has no viewport to set a mode on. Also the
+	// reason this is a no-op in a headless automation run, where the local
+	// player's viewport client has no game viewport widget at all.
+	if (IsLocalController())
+	{
+		SetInputMode(FInputModeGameOnly());
+	}
+}
+
 void ASarkoPlayerController::PlayerTick(float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);

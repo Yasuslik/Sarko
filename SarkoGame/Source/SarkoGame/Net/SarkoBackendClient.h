@@ -145,6 +145,33 @@ namespace SarkoBackend
 	bool ParseErrorResponse(const FString& Json, FSarkoBackendError& OutError);
 
 	/**
+	 * Whether a finished request means this client's JWT is dead and must be
+	 * dropped, so the next call authenticates again.
+	 *
+	 * The whole point is that a rejected token must not outlive the request that
+	 * was rejected. Before the game instance existed every raid authenticated from
+	 * scratch, so a rotated JWT_SECRET or a deleted player row healed itself on the
+	 * next trip; now one client and one token ride the whole launch, and a token
+	 * that is kept after a 401 makes *every* later request fail with nothing to
+	 * explain it but a first 401 scrolled off the top of the log.
+	 *
+	 * `bad_session_token` is the one 401 that must **not** drop it: that code comes
+	 * from /v1/raid/result comparing the raid's own session token
+	 * (api/raid_handler.go), which means the Bearer token in front of it was
+	 * accepted — dropping it there would burn a re-auth on a fault it cannot fix.
+	 * `unauthorized` is what auth/middleware.go answers for a bad Bearer token.
+	 *
+	 * Any other 401 — including one whose body is not this backend's error envelope
+	 * at all, such as a proxy's own — drops the token too. One extra anonymous auth
+	 * is a single cheap round trip; a token that is permanently dead and never
+	 * replaced costs the player every raid until they relaunch.
+	 *
+	 * ErrorCode is the parsed envelope's `code`, or empty when the body was not an
+	 * envelope.
+	 */
+	bool ShouldDropTokenOnResponse(bool bAuthenticatedRequest, int32 HttpCode, const FString& ErrorCode);
+
+	/**
 	 * Wraps the backend's seed into int32, preserving every bit.
 	 *
 	 * StartRaid returns `int64(rand.Uint32())`, so values above INT32_MAX arrive

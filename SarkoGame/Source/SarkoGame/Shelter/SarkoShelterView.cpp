@@ -80,13 +80,22 @@ TArray<FString> SarkoShelter::BuildStashLines(const FSarkoProfile& Profile, cons
 	return Lines;
 }
 
+FString SarkoShelter::UnknownGarageLine()
+{
+	// An em dash where the count goes. The recipe's entry count is a client-side
+	// constant and stays real; only the held-parts number depends on a stash this
+	// client has not seen.
+	return FString::Printf(TEXT("ГАРАЖ: ВЕЛОСИПЕД —/%d"), BicycleRecipe().Num());
+}
+
 FString SarkoShelter::BuildGarageLine(const FSarkoProfile& Profile)
 {
-	// Anything past the starting tier already owns the bicycle: the garage ladder
-	// is cumulative (domain.UnlockedMaps walks tierOrder), so "not none" means
-	// built. Compared against the literal "none" rather than an enum because
-	// vehicle_tier is a string on the wire and an unknown future tier must not
-	// crash this readout.
+	// Anything past the starting tier already owns the bicycle — and the line says
+	// "ВЕЛОСИПЕД" rather than naming the tier, because the ladder is cumulative
+	// (domain.UnlockedMaps walks tierOrder) so "not none" means the bicycle is
+	// built, and the bicycle is the only recipe mirrored here. Compared against the
+	// literal "none" rather than an enum because vehicle_tier is a string on the
+	// wire and an unknown future tier must not crash this readout.
 	if (!Profile.VehicleTier.IsEmpty() && Profile.VehicleTier != TEXT("none"))
 	{
 		return TEXT("ГАРАЖ: ВЕЛОСИПЕД ГОТОВИЙ");
@@ -117,15 +126,26 @@ FSarkoShelterView SarkoShelter::BuildView(const FSarkoLastRaid& LastRaid, const 
 	View.OutcomeTitle = BuildOutcomeTitle(LastRaid.Outcome, LastRaid.bPersisted);
 	View.HaulLines = BuildHaulLines(LastRaid, Catalog);
 
-	View.GarageLine = BuildGarageLine(Profile);
-
-	// The stash is drawn only when it is known. An unfetched profile has an empty
-	// Stash array, which is indistinguishable from a genuinely empty stash unless
-	// this branch exists — and telling a player their haul vanished is the single
-	// worst thing this screen can do.
+	// The stash *and* the garage count are drawn only when they are known. An
+	// unfetched profile has an empty Stash array, which is indistinguishable from a
+	// genuinely empty stash unless this branch exists — and telling a player their
+	// haul vanished is the single worst thing this screen can do.
+	//
+	// The garage count is the same fact read a second way (it counts recipe entries
+	// against that same stash), so it is gated by the same flag. Ungated it stated
+	// "ВЕЛОСИПЕД 0/3" as fact under a "З'ЄДНАННЯ..." status on first boot, and
+	// showed the pre-raid count after a raid — RecordRaidOutcome clears
+	// bProfileLoaded but deliberately keeps CachedProfile so the screen can draw
+	// immediately, so the player who just extracted the third part read 2/3, and a
+	// failed re-fetch left it that way for the whole visit.
 	if (bProfileLoaded)
 	{
+		View.GarageLine = BuildGarageLine(Profile);
 		View.StashLines = BuildStashLines(Profile, Catalog);
+	}
+	else
+	{
+		View.GarageLine = UnknownGarageLine();
 	}
 
 	if (!Error.IsEmpty())
