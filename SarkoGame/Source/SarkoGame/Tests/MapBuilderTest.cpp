@@ -290,6 +290,8 @@ bool FSarkoEngineMeshPathsResolve::RunTest(const FString& Parameters)
 		TEXT("/Engine/BasicShapes/Cube.Cube"),
 		TEXT("/Engine/BasicShapes/Cylinder.Cylinder"),
 		TEXT("/Engine/BasicShapes/Sphere.Sphere"),
+		// The conifer canopy, and the only thing that uses it.
+		TEXT("/Engine/BasicShapes/Cone.Cone"),
 		TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"),
 		TEXT("/Engine/MapTemplates/Sky/DaylightAmbientCubemap.DaylightAmbientCubemap"),
 	};

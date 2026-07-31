@@ -7,6 +7,16 @@ namespace
 	const FString Cube = TEXT("/Engine/BasicShapes/Cube.Cube");
 	const FString Cylinder = TEXT("/Engine/BasicShapes/Cylinder.Cylinder");
 	const FString Sphere = TEXT("/Engine/BasicShapes/Sphere.Sphere");
+	/**
+	 * The fourth primitive, and it exists in this table for exactly one job: a
+	 * conifer canopy. From the game's camera (a 1400 uu boom at -70 degrees, so
+	 * 20 degrees off vertical) a sphere and a cone have the same circular
+	 * silhouette, and the 20 degrees is all the difference there is to work with
+	 * — which is precisely why it is worth having both. A stand of nothing but
+	 * spheres reads as a field of green bubbles; one cone in three gives the
+	 * skyline the notches that say "trees".
+	 */
+	const FString Cone = TEXT("/Engine/BasicShapes/Cone.Cone");
 
 	/** One box, centred on the prop's origin. The shape of every legacy kind. */
 	FSarkoPropKind Box(const FString& Mesh, const FVector& Extent, bool bBlocks, ESarkoSurface Surface)
@@ -36,6 +46,25 @@ namespace
 		Result.Offset = Offset;
 		Result.bBlocksMovement = bBlocks;
 		Result.Surface = Surface;
+		return Result;
+	}
+
+	/**
+	 * The leafy part of a tree. The only place FSarkoPropPart::bCanopy is set,
+	 * and it hard-wires the two properties a canopy must have alongside it:
+	 * NEVER colliding (the fade changes visibility only, so collision must not
+	 * depend on it — see the field's own comment) and always Vegetation, because
+	 * a canopy that is not green is not a canopy.
+	 */
+	FSarkoPropPart Canopy(const FString& Mesh, const FVector& Extent, const FVector& Offset)
+	{
+		FSarkoPropPart Result;
+		Result.Mesh = FSoftObjectPath(Mesh);
+		Result.Extent = Extent;
+		Result.Offset = Offset;
+		Result.bBlocksMovement = false;
+		Result.Surface = ESarkoSurface::Vegetation;
+		Result.bCanopy = true;
 		return Result;
 	}
 
@@ -156,11 +185,83 @@ namespace
 				Part(Cube, FVector(300.f, 25.f, 20.f),  FVector(0.f, 0.f, 1780.f),   false, ESarkoSurface::Structure),
 			}) },
 
-			// The forest, as a border. NOT trees: a canopy hides the player from
-			// a top-down camera, which is a gameplay defect and not a look
-			// (spec §5.3). Tile these along an edge — 1200 uu long each, 400 uu
-			// deep, 1000 uu (10 m, 5.7x the pawn) tall, dark green, impassable.
-			// This is what closes off the east until Stage C builds it.
+			// ---- THE FOREST. Four kinds, each a trunk the player can hide behind
+			// with a canopy held clear over its head.
+			//
+			// The shape of every one of them is the same argument. COLLISION IS THE
+			// TRUNK AND ONLY THE TRUNK: a canopy is four to eight metres up, nobody
+			// can reach it, and a bullet or a pawn stopped by leaves the player
+			// cannot see the underside of is the most infuriating kind of invisible
+			// wall. So the canopies are authored through SarkoMap::Canopy, which
+			// hard-wires bBlocksMovement = false, and the trunk is what the fight
+			// actually happens around.
+			//
+			// The trunks are deliberately fat — 80 to 110 uu across, against a pawn
+			// roughly 70 uu wide. A realistically thin tree is not cover on a
+			// top-down map; it is a post you die beside. Every trunk also clears the
+			// 176 uu pawn (350 uu at the shortest), so a tree breaks line of sight
+			// outright rather than being something to shoot over.
+			//
+			// Three living sizes and one dead one, because a stand built from one
+			// kind reads as a stamp. Variation here is the entire difference between
+			// "a forest" and "an array".
+			//
+			// These replace nothing: `treeline` below stays exactly what it was, the
+			// impassable dark-green wall that closes the sector. The distinction is
+			// now meaningful rather than an apology — a treeline is the edge of the
+			// world, a tree is cover you walk into.
+
+			// The default deciduous tree. Trunk 110 uu across running 0..520 uu
+			// (3.0x the pawn); canopy a 600 uu ball hanging 420..860 uu, so its
+			// underside is 2.4x the pawn's height and there is a clear storey to
+			// walk and fight in beneath it. Canopy and trunk overlap by 100 uu, so
+			// when the canopy fades out the trunk is not left with a gap over it.
+			{ TEXT("tree"),             Composite({
+				Part(Cylinder, FVector(55.f, 55.f, 260.f),   FVector(0.f, 0.f, 260.f), true, ESarkoSurface::Bark),
+				Canopy(Sphere, FVector(300.f, 300.f, 220.f), FVector(0.f, 0.f, 640.f)),
+			}) },
+
+			// The conifer, and the tallest thing in the forest: trunk 90 uu across
+			// running 0..680 uu (3.9x the pawn), cone canopy 540 uu across from 570
+			// to 1230 uu (7.0x). The cone is the reason this kind exists — see the
+			// Cone constant above. Its canopy floor is the highest of the four, so a
+			// stand of these is the most open one to fight in.
+			{ TEXT("tree_tall"),        Composite({
+				Part(Cylinder, FVector(45.f, 45.f, 340.f),   FVector(0.f, 0.f, 340.f), true, ESarkoSurface::Bark),
+				Canopy(Cone,   FVector(270.f, 270.f, 330.f), FVector(0.f, 0.f, 900.f)),
+			}) },
+
+			// The undergrowth tree. Trunk 80 uu across, 0..350 uu (2.0x the pawn),
+			// canopy 430 uu across from 300 to 620 uu. 300 uu is the tightest
+			// headroom in the table and it is still 1.7x the pawn — a player walking
+			// under one is never touching it, which is what keeps the fade a purely
+			// visual event.
+			{ TEXT("tree_small"),       Composite({
+				Part(Cylinder, FVector(40.f, 40.f, 175.f),   FVector(0.f, 0.f, 175.f), true, ESarkoSurface::Bark),
+				Canopy(Sphere, FVector(215.f, 215.f, 160.f), FVector(0.f, 0.f, 460.f)),
+			}) },
+
+			// A dead trunk with its top snapped off: 100 uu across from 0 to 460 uu,
+			// then a 56 uu spar from 450 to 750 uu. NO CANOPY at all, which makes it
+			// the one tree that never fades — a permanent vertical landmark inside a
+			// stand whose roof comes and goes, and the thing that stops a faded
+			// clearing from looking like nothing was ever there.
+			//
+			// Composite rather than a single tapered box on purpose: two parts also
+			// keeps it on the pos.z = 0 authoring convention its three neighbours
+			// use, so a whole stand is authored with one z value instead of trees at
+			// 0 and dead trees at 230.
+			{ TEXT("tree_dead"),        Composite({
+				Part(Cylinder, FVector(50.f, 50.f, 230.f), FVector(0.f, 0.f, 230.f), true, ESarkoSurface::Bark),
+				Part(Cylinder, FVector(28.f, 28.f, 150.f), FVector(0.f, 0.f, 600.f), true, ESarkoSurface::Bark),
+			}) },
+
+			// The forest as a BORDER, which is a different object from the four
+			// kinds above and stays one. Tile these along an edge — 1200 uu long
+			// each, 400 uu deep, 1000 uu (10 m, 5.7x the pawn) tall, dark green,
+			// impassable. This is what closes off the east, and it is opaque on
+			// purpose: you are not meant to see, walk or shoot through the edge of
+			// the world. A `tree` is the opposite of it in every one of those.
 			{ TEXT("treeline"),         Box(Cube,     FVector(600.f, 200.f, 500.f), true,  ESarkoSurface::Vegetation) },
 
 			// ТЗ §5's «светлые борта». A wall's exact twin — 400x60x140 — so the

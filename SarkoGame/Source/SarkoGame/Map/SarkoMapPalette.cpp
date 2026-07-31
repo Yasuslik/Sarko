@@ -32,6 +32,12 @@ namespace
 			/* Structure  */ { SarkoMap::Palette::Structure,            SarkoMap::Palette::StructureRoughness },
 			/* Rust       */ { FLinearColor(0.160f, 0.070f, 0.036f),    0.85f },
 			/* Timber     */ { FLinearColor(0.185f, 0.100f, 0.055f),    0.80f },
+			// Deliberately between the ground and the timber: 1.4x the ground's
+			// luminance (so a trunk is an object, not a stain) and a little over
+			// half the village timber's (so a stand of trees does not read as a
+			// stack of planks). Rougher than timber for the same reason the ground
+			// is rough — bark has no sheen to catch a 400 m specular sheet.
+			/* Bark       */ { FLinearColor(0.105f, 0.062f, 0.034f),    0.88f },
 			/* Vegetation */ { FLinearColor(0.020f, 0.042f, 0.016f),    0.95f },
 			// Opaque, and that is a shipped limitation rather than a choice: a
 			// translucent material cannot exist here without authoring an asset
@@ -71,8 +77,8 @@ namespace
 	/** JSON names, in enum order. Lower snake case, like every other key. */
 	const TCHAR* const SurfaceNames[static_cast<int32>(ESarkoSurface::Count)] = {
 		TEXT("ground"), TEXT("dirt"), TEXT("asphalt"), TEXT("concrete"), TEXT("structure"),
-		TEXT("rust"), TEXT("timber"), TEXT("vegetation"), TEXT("water"), TEXT("shallow"),
-		TEXT("ravine"), TEXT("extraction")
+		TEXT("rust"), TEXT("timber"), TEXT("bark"), TEXT("vegetation"), TEXT("water"),
+		TEXT("shallow"), TEXT("ravine"), TEXT("extraction")
 	};
 }
 

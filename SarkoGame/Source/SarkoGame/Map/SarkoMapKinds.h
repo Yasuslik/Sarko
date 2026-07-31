@@ -50,6 +50,27 @@ struct FSarkoPropPart
 	/** What this part is made of, for colour (ТЗ §14). */
 	UPROPERTY()
 	ESarkoSurface Surface = ESarkoSurface::Structure;
+
+	/**
+	 * True for the leafy part of a tree: the one thing on the map that hides
+	 * ITSELF when the local player walks under it.
+	 *
+	 * The camera looks almost straight down (a 1400 uu boom at -70 degrees), so
+	 * anything held 4-8 m over the pawn's head sits between the camera and the
+	 * pawn and the player disappears. That is the whole reason `treeline` is a
+	 * solid dark-green wall used only as a boundary rather than actual trees.
+	 * Flagging the canopy instead lets a stand read as forest from a distance and
+	 * open up overhead: ASarkoRaidGameState::UpdateCanopyFade hides every flagged
+	 * part inside USarkoRaidSettings::CanopyFadeRadiusUU of the local pawn.
+	 *
+	 * Cosmetic and local, always. A flagged part must also be non-colliding
+	 * (SarkoMap::Canopy is the only thing that sets this, and it enforces that),
+	 * because the fade changes visibility and NOTHING else: a hidden canopy that
+	 * stopped a bullet, or a visible one that did not, would each be a worse bug
+	 * than an empty world. Cover and navigation are the trunks, which never fade.
+	 */
+	UPROPERTY()
+	bool bCanopy = false;
 };
 
 /**

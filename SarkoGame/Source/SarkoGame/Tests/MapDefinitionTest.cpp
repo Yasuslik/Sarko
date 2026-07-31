@@ -899,8 +899,15 @@ bool FSarkoPropKindScaleMatchesThePawn::RunTest(const FString& Parameters)
 	}
 
 	// Sight blockers: taller than the pawn, so they cut line of sight outright.
+	// The four trees are in this list rather than the shoot-over one deliberately:
+	// what collides on a tree is its TRUNK, and a trunk you can shoot over is a
+	// stump. TopOf measures colliding parts only, so this is a claim about the
+	// trunks and says nothing about the canopies — which is exactly right, since
+	// a canopy blocks neither sight nor anything else.
 	for (const FName& Name : { FName(TEXT("house")), FName(TEXT("wall")),
-		FName(TEXT("treeline")), FName(TEXT("fence_section")) })
+		FName(TEXT("treeline")), FName(TEXT("fence_section")),
+		FName(TEXT("tree")), FName(TEXT("tree_tall")), FName(TEXT("tree_small")),
+		FName(TEXT("tree_dead")) })
 	{
 		float Top = 0.f;
 		if (TopOf(Name, Top))
@@ -922,6 +929,57 @@ bool FSarkoPropKindScaleMatchesThePawn::RunTest(const FString& Parameters)
 			static_cast<uint8>(Bush.Parts[0].Surface), static_cast<uint8>(ESarkoSurface::Vegetation));
 	}
 
+	// The canopy contract, on every kind that has one.
+	//
+	// Three claims, and each one is a bug that would otherwise only be found by
+	// playing: a canopy that collides is an invisible wall four metres up; a
+	// canopy low enough to touch turns a cosmetic fade into a gameplay event; and
+	// a canopy nothing can hide is a canopy that permanently hides the player,
+	// which is the entire reason this sector had a treeline instead of a forest.
+	constexpr float CanopyHeadroomUU = 1.5f * PawnHeightUU;
+	int32 CanopiesSeen = 0;
+	for (const FName& Name : { FName(TEXT("tree")), FName(TEXT("tree_tall")), FName(TEXT("tree_small")) })
+	{
+		FSarkoPropKind Tree;
+		if (!SarkoMap::FindPropKind(Name, Tree))
+		{
+			continue;
+		}
+		bool bHasCanopy = false;
+		bool bHasSolidTrunk = false;
+		for (const FSarkoPropPart& Piece : Tree.Parts)
+		{
+			if (!Piece.bCanopy)
+			{
+				bHasSolidTrunk |= Piece.bBlocksMovement;
+				continue;
+			}
+			bHasCanopy = true;
+			++CanopiesSeen;
+			TestFalse(FString::Printf(TEXT("'%s' canopy never blocks movement"), *Name.ToString()),
+				Piece.bBlocksMovement);
+			TestEqual(FString::Printf(TEXT("'%s' canopy is vegetation"), *Name.ToString()),
+				static_cast<uint8>(Piece.Surface), static_cast<uint8>(ESarkoSurface::Vegetation));
+			TestTrue(FString::Printf(TEXT("'%s' canopy clears the pawn's head (%.0f uu vs %.0f uu)"),
+				*Name.ToString(), BottomOfPartUU(Tree, Piece), CanopyHeadroomUU),
+				BottomOfPartUU(Tree, Piece) >= CanopyHeadroomUU);
+		}
+		TestTrue(FString::Printf(TEXT("'%s' has a canopy"), *Name.ToString()), bHasCanopy);
+		TestTrue(FString::Printf(TEXT("'%s' has a solid trunk to hide behind"), *Name.ToString()), bHasSolidTrunk);
+	}
+	TestTrue(TEXT("the canopy flag is actually set somewhere"), CanopiesSeen >= 3);
+
+	// The dead tree is the exception that keeps the fade honest: no canopy at all,
+	// so it is the one tree that is still standing when a stand opens up overhead.
+	FSarkoPropKind DeadTree;
+	if (SarkoMap::FindPropKind(TEXT("tree_dead"), DeadTree))
+	{
+		for (const FSarkoPropPart& Piece : DeadTree.Parts)
+		{
+			TestFalse(TEXT("a dead tree has no canopy to fade"), Piece.bCanopy);
+		}
+	}
+
 	// A treeline is the map's boundary: impassable, dark green, and taller than
 	// anything the player can climb (there is no climbing).
 	FSarkoPropKind Treeline;
@@ -941,7 +999,8 @@ bool FSarkoPropKindScaleMatchesThePawn::RunTest(const FString& Parameters)
 		TEXT("freight_car"), TEXT("water_tower"), TEXT("sandbag"), TEXT("crate"), TEXT("pipe"),
 		TEXT("bridge_deck"), TEXT("bridge_rail"), TEXT("house_timber"), TEXT("house_industrial"),
 		TEXT("rock"), TEXT("bush"), TEXT("log"), TEXT("fence_section"),
-		TEXT("road_sign"), TEXT("concrete_barrier"), TEXT("trailer"), TEXT("pylon"), TEXT("treeline")
+		TEXT("road_sign"), TEXT("concrete_barrier"), TEXT("trailer"), TEXT("pylon"), TEXT("treeline"),
+		TEXT("tree"), TEXT("tree_tall"), TEXT("tree_small"), TEXT("tree_dead")
 	};
 	for (const FName& Name : AllKinds)
 	{

@@ -31,6 +31,18 @@ enum class ESarkoSurface : uint8
 	Rust,
 	/** §14's warm village tone. Doubles as timber: roofs, fences, logs, sheds. */
 	Timber,
+	/**
+	 * Tree trunks, and only tree trunks.
+	 *
+	 * Timber was the obvious candidate and is the wrong one: it is the *village*
+	 * tone — a bright sawn-plank orange-brown that reads, correctly, as something
+	 * a person built. A stand of two hundred trunks in it looks like a timber
+	 * yard from above, and worse, it makes a forest the brightest thing in the
+	 * north when the forest should be where the frame goes quiet. Bark is the
+	 * same hue family, duller and darker, so a trunk still separates from the
+	 * ground (1.4x its luminance) without competing with the buildings.
+	 */
+	Bark,
 	/** Bushes and the treeline boundary. Dark green, deliberately darker than the ground. */
 	Vegetation,
 	/** The ravine's water. Dark blue-grey and OPAQUE — see the Water constant. */
