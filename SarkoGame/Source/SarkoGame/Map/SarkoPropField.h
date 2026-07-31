@@ -85,6 +85,25 @@ public:
 		const FRotator& WorldRotation);
 
 	/**
+	 * Called once when the last part has been added. Builds every hierarchical
+	 * component's cluster tree SYNCHRONOUSLY, and it is not optional.
+	 *
+	 * A HISM does not draw an instance until it is in the cluster tree, and
+	 * AddInstance only schedules an ASYNC rebuild. So without this the whole
+	 * props section — every wall, wreck, rock, pipe and trunk in the sector — is
+	 * simply absent for the first few frames of a raid and then appears. It cost
+	 * an afternoon to find because it is invisible in any screenshot taken a
+	 * moment late (the overview shot delays on a timer and looked perfect) and
+	 * total in one taken immediately.
+	 *
+	 * Synchronous is right here and would be wrong almost anywhere else: this
+	 * runs during level load, where a few milliseconds of blocking is free and
+	 * geometry popping in after the player can already move is not. The canopy
+	 * components are plain ISMs with no tree at all and need nothing.
+	 */
+	void FinishBuild();
+
+	/**
 	 * Hides every canopy within RadiusUU of ViewerLocation (planar distance —
 	 * the camera is overhead, so the pawn's own height is irrelevant) and shows
 	 * every canopy outside it.

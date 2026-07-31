@@ -37,10 +37,15 @@ enum class ESarkoSurface : uint8
 	 * Timber was the obvious candidate and is the wrong one: it is the *village*
 	 * tone — a bright sawn-plank orange-brown that reads, correctly, as something
 	 * a person built. A stand of two hundred trunks in it looks like a timber
-	 * yard from above, and worse, it makes a forest the brightest thing in the
-	 * north when the forest should be where the frame goes quiet. Bark is the
-	 * same hue family, duller and darker, so a trunk still separates from the
-	 * ground (1.4x its luminance) without competing with the buildings.
+	 * yard from above. Bark is the same family, desaturated toward grey, so a
+	 * stand reads as wood without reading as lumber.
+	 *
+	 * It is 2.4x the ground's luminance and that is not generosity. A trunk is
+	 * VERTICAL and the sun here is 55 degrees up, so a trunk's sides catch a
+	 * fraction of what the flat ground catches; the first version of this colour
+	 * cleared every luminance rule on paper at 1.4x and rendered as black posts
+	 * with pale lit caps. Surfaces that stand up need more contrast than
+	 * surfaces that lie down.
 	 */
 	Bark,
 	/** Bushes and the treeline boundary. Dark green, deliberately darker than the ground. */

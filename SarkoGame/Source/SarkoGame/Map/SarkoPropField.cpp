@@ -180,6 +180,21 @@ void ASarkoPropField::AddPart(UStaticMesh* Mesh, const FSarkoPropPart& Part, con
 	}
 }
 
+void ASarkoPropField::FinishBuild()
+{
+	for (const TPair<FString, TObjectPtr<UInstancedStaticMeshComponent>>& Pair : ComponentsByKey)
+	{
+		if (UHierarchicalInstancedStaticMeshComponent* Hierarchical =
+			Cast<UHierarchicalInstancedStaticMeshComponent>(Pair.Value.Get()))
+		{
+			// ForceUpdate, not just "if outdated": the async rebuild AddInstance
+			// scheduled has probably already marked the tree up to date from its
+			// own point of view while its result is still in flight.
+			Hierarchical->BuildTreeIfOutdated(/*Async*/ false, /*ForceUpdate*/ true);
+		}
+	}
+}
+
 int32 ASarkoPropField::GetInstanceCount() const
 {
 	int32 Total = 0;

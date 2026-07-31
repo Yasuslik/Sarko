@@ -112,10 +112,32 @@ namespace SarkoMap
 	FVector PartWorldLocation(const FVector& PropLocation, float PropYawDegrees, const FSarkoPropPart& Part);
 
 	/**
-	 * How many actors the props section of a definition will spawn — the sum of
-	 * every resolved kind's part count. Unknown kinds contribute nothing,
-	 * exactly as SpawnProps skips them. This is the ТЗ §16 budget number, and a
-	 * test holds it to a ceiling.
+	 * How many boxes the props section of a definition amounts to — the sum of
+	 * every resolved kind's part count. Unknown kinds contribute nothing, exactly
+	 * as SpawnProps skips them.
+	 *
+	 * Was CountPropActors, and the rename is the point rather than tidying: since
+	 * the props became instances this number is no longer a count of ACTORS. It
+	 * is the number of instances spread across CountInstancedComponents
+	 * components, and the sector spawns exactly one actor for all of them. Every
+	 * caller that meant "how much is there" still wants this; the caller that
+	 * meant "what does the renderer pay" wants the other one.
 	 */
-	int32 CountPropActors(const FSarkoMapDefinition& Definition);
+	int32 CountPropParts(const FSarkoMapDefinition& Definition);
+
+	/**
+	 * How many instanced components those parts will end up in: the number of
+	 * distinct (mesh, surface, collision, canopy) keys the definition uses.
+	 *
+	 * This is the honest budget number now. What costs money on a phone is draw
+	 * calls, and one instanced component that agrees on mesh and material is one
+	 * draw regardless of whether it holds four instances or four hundred — so a
+	 * forest of three hundred trees is not three hundred of anything, it is two
+	 * more components than the map already had.
+	 *
+	 * Pure, so it can be asserted under -nullrhi with no world; it predicts
+	 * ASarkoPropField::GetInstancedComponentCount from the map file alone, and
+	 * the two agreeing is what makes this a budget rather than a guess.
+	 */
+	int32 CountInstancedComponents(const FSarkoMapDefinition& Definition);
 }

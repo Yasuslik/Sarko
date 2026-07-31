@@ -381,15 +381,18 @@ bool FSarkoPropKindsAreComplete::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FSarkoPropActorCountIsWithinTheMobileBudget,
-	"Sarko.Map.PropActorCountIsWithinTheMobileBudget",
+	FSarkoPropInstanceCountIsWithinTheMobileBudget,
+	"Sarko.Map.PropInstanceCountIsWithinTheMobileBudget",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FSarkoPropActorCountIsWithinTheMobileBudget::RunTest(const FString& Parameters)
+bool FSarkoPropInstanceCountIsWithinTheMobileBudget::RunTest(const FString& Parameters)
 {
-	// Composite kinds make one authored prop cost several actors, and ТЗ §16 is
-	// a budget, not advice. This is the number that decides when instancing
-	// stops being premature: see the Global Constraints' actor tally.
+	// How much geometry the props section amounts to. Renamed from
+	// PropActorCount, and the rename is load-bearing: a prop part is an INSTANCE
+	// now, not an actor, and the sector spawns exactly one actor for the lot.
+	// Sarko.Map.BridgeStaysInsideTheActorBudget carries the whole argument for
+	// why, and bounds the two numbers that decide performance (actors, and
+	// instanced components). This one bounds the third: sheer amount of stuff.
 	FSarkoMapDefinition Map;
 	FString Error;
 	if (!SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Map, Error))
@@ -398,27 +401,31 @@ bool FSarkoPropActorCountIsWithinTheMobileBudget::RunTest(const FString& Paramet
 		return false;
 	}
 
-	const int32 PropActors = SarkoMap::CountPropActors(Map);
+	const int32 PropParts = SarkoMap::CountPropParts(Map);
 	TestTrue(TEXT("every prop resolves, so the count is not silently short"),
-		PropActors >= Map.Props.Num());
-	// 420 for Bridge_West: the sector carries 363 prop actors from 351 authored
-	// props with ТЗ §15's fill of the north in (about 150 of them are rocks,
-	// bushes, logs, fences and treeline), and projects to ~388 once the three
-	// camps and the landmark pass land. Raised from 400 in the same commit that
-	// raised the total ceiling to 560, and for the same documented reasons — see
-	// Sarko.Map.BridgeStaysInsideTheActorBudget, which carries the whole argument
-	// and the trigger that would reverse it (a packaged iOS build that misses 30
-	// fps in this sector).
-	TestTrue(FString::Printf(TEXT("props stay inside the mobile actor budget (%d)"), PropActors),
-		PropActors <= 420);
+		PropParts >= Map.Props.Num());
+	// 1200, against roughly 880 with the forest in — 401 parts before it, plus
+	// two per tree. The old ceiling here was 420 and it was a hard ACTOR limit;
+	// this one is soft and about triangles, memory and physics bodies rather than
+	// draw calls, which is why it is generous. An instance costs a transform and
+	// a static body; it does not cost a UObject, a tick registration or a draw
+	// call of its own.
+	//
+	// It is not unbounded, because "instances are free" is how a map ends up with
+	// forty thousand of them and a two-second level load on a phone. If this
+	// fails, the question to ask is whether the map needs the geometry — not
+	// whether to raise the number again.
+	TestTrue(FString::Printf(TEXT("props stay inside the mobile geometry budget (%d)"), PropParts),
+		PropParts <= 1200);
 
 	// Was an equality until Stage C: the shipped map used no composite kind, so
-	// actors and authored entries were the same number. Bridge_West places
-	// pylons, road signs and trailers, so the relation is now strictly greater —
-	// asserted, because a *fall back* to equality would mean a composite had
-	// silently collapsed to one box and the pylon had lost its crossarms.
-	TestTrue(FString::Printf(TEXT("composite kinds are in use (%d actors from %d props)"),
-		PropActors, Map.Props.Num()), PropActors > Map.Props.Num());
+	// parts and authored entries were the same number. Bridge_West places pylons,
+	// road signs and trailers, and every tree is a trunk plus a canopy, so the
+	// relation is now strictly greater — asserted, because a *fall back* to
+	// equality would mean a composite had silently collapsed to one box and the
+	// pylon had lost its crossarms, or every tree its canopy.
+	TestTrue(FString::Printf(TEXT("composite kinds are in use (%d parts from %d props)"),
+		PropParts, Map.Props.Num()), PropParts > Map.Props.Num());
 
 	// One authored prop of a single-box kind is exactly one actor: this is the
 	// promise that adding parts cost the existing map nothing.
@@ -436,7 +443,7 @@ bool FSarkoPropActorCountIsWithinTheMobileBudget::RunTest(const FString& Paramet
 		AddError(FString::Printf(TEXT("fixture failed to parse: %s"), *ParseError));
 		return false;
 	}
-	TestEqual(TEXT("a single-box prop is one actor"), SarkoMap::CountPropActors(OneCrate), 1);
+	TestEqual(TEXT("a single-box prop is one part"), SarkoMap::CountPropParts(OneCrate), 1);
 
 	// An unknown kind spawns nothing, so it must count as nothing — otherwise
 	// the budget number would be optimistic in exactly the case where the map
@@ -451,7 +458,7 @@ bool FSarkoPropActorCountIsWithinTheMobileBudget::RunTest(const FString& Paramet
 	})");
 	if (SarkoMap::ParseDefinition(BadJson, Nonsense, ParseError))
 	{
-		TestEqual(TEXT("an unresolvable kind contributes no actors"), SarkoMap::CountPropActors(Nonsense), 0);
+		TestEqual(TEXT("an unresolvable kind contributes no parts"), SarkoMap::CountPropParts(Nonsense), 0);
 	}
 	return true;
 }
@@ -775,7 +782,11 @@ bool FSarkoNewPropKindsExist::RunTest(const FString& Parameters)
 	// discovering mid-sector that the thing the ТЗ asked for does not exist.
 	const TArray<FName> Required = {
 		TEXT("rock"), TEXT("bush"), TEXT("log"), TEXT("fence_section"), TEXT("road_sign"),
-		TEXT("concrete_barrier"), TEXT("trailer"), TEXT("pylon"), TEXT("treeline")
+		TEXT("concrete_barrier"), TEXT("trailer"), TEXT("pylon"), TEXT("treeline"),
+		// The forest. Listed here for the same reason the nine above are: this
+		// loop also asserts that bridge.json PLACES each one, and a tree kind
+		// nothing plants is a kind whose extents have never been seen in a frame.
+		TEXT("tree"), TEXT("tree_tall"), TEXT("tree_small"), TEXT("tree_dead")
 	};
 
 	for (const FName& Kind : Required)
@@ -837,24 +848,35 @@ bool FSarkoNewPropKindsExist::RunTest(const FString& Parameters)
 		TestTrue(FString::Printf(TEXT("bridge.json places '%s'"), *Kind.ToString()), bPlaced);
 	}
 
-	// Composites now cost more actors than they cost authored entries, which is
+	// Composites now cost more parts than they cost authored entries, which is
 	// exactly what they were for. The relation that still has to hold is that
 	// every prop resolves — a kind that did not would silently contribute zero
 	// and make the budget number optimistic in the one case where the map is
 	// broken. The absolute ceiling lives in
-	// Sarko.Map.PropActorCountIsWithinTheMobileBudget.
-	int32 ExpectedActors = 0;
+	// Sarko.Map.PropInstanceCountIsWithinTheMobileBudget.
+	int32 ExpectedParts = 0;
 	for (const FSarkoMapProp& Prop : Bridge.Props)
 	{
 		FSarkoPropKind Resolved;
 		TestTrue(FString::Printf(TEXT("placed kind '%s' resolves"), *Prop.Kind.ToString()),
 			SarkoMap::FindPropKind(Prop.Kind, Resolved));
-		ExpectedActors += Resolved.Parts.Num();
+		ExpectedParts += Resolved.Parts.Num();
 	}
-	TestEqual(TEXT("the actor count is the sum of every placed kind's parts"),
-		SarkoMap::CountPropActors(Bridge), ExpectedActors);
+	TestEqual(TEXT("the part count is the sum of every placed kind's parts"),
+		SarkoMap::CountPropParts(Bridge), ExpectedParts);
 	TestTrue(TEXT("composites are actually in use, so the sum exceeds the entry count"),
-		SarkoMap::CountPropActors(Bridge) > Bridge.Props.Num());
+		SarkoMap::CountPropParts(Bridge) > Bridge.Props.Num());
+
+	// Every distinct (mesh, surface, collision, canopy) combination the sector
+	// uses is one instanced component, and one draw call. This is the prediction
+	// ASarkoPropField has to match at runtime, which is why it is computed from
+	// the same four fields in the same order — a key that drifted from
+	// FindOrCreateComponent's would bound a number nothing pays.
+	const int32 Components = SarkoMap::CountInstancedComponents(Bridge);
+	AddInfo(FString::Printf(TEXT("bridge.json needs %d instanced components for %d prop parts"),
+		Components, SarkoMap::CountPropParts(Bridge)));
+	TestTrue(TEXT("the sector's vocabulary fits in a handful of draw calls"),
+		Components > 0 && Components < SarkoMap::CountPropParts(Bridge));
 	return true;
 }
 

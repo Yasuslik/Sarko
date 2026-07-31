@@ -298,7 +298,7 @@ FVector SarkoMap::PartWorldLocation(const FVector& PropLocation, float PropYawDe
 	return PropLocation + FRotator(0.f, PropYawDegrees, 0.f).RotateVector(Part.Offset);
 }
 
-int32 SarkoMap::CountPropActors(const FSarkoMapDefinition& Definition)
+int32 SarkoMap::CountPropParts(const FSarkoMapDefinition& Definition)
 {
 	int32 Total = 0;
 	for (const FSarkoMapProp& Prop : Definition.Props)
@@ -310,4 +310,30 @@ int32 SarkoMap::CountPropActors(const FSarkoMapDefinition& Definition)
 		}
 	}
 	return Total;
+}
+
+int32 SarkoMap::CountInstancedComponents(const FSarkoMapDefinition& Definition)
+{
+	// The key has to be the same four fields ASarkoPropField::FindOrCreateComponent
+	// keys on, or this number predicts nothing. Mesh and surface because that is
+	// what a draw call is; collision because a component carries one setting for
+	// every instance in it; the canopy flag because canopies are the only
+	// instances that ever change and are deliberately kept out of the components
+	// that never do.
+	TSet<FString> Keys;
+	for (const FSarkoMapProp& Prop : Definition.Props)
+	{
+		FSarkoPropKind Kind;
+		if (!FindPropKind(Prop.Kind, Kind))
+		{
+			continue;
+		}
+		for (const FSarkoPropPart& Part : Kind.Parts)
+		{
+			Keys.Add(FString::Printf(TEXT("%s|%d|%d|%d"),
+				*Part.Mesh.ToString(), static_cast<int32>(Part.Surface),
+				Part.bBlocksMovement ? 1 : 0, Part.bCanopy ? 1 : 0));
+		}
+	}
+	return Keys.Num();
 }

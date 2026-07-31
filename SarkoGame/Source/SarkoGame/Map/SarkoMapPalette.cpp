@@ -32,12 +32,19 @@ namespace
 			/* Structure  */ { SarkoMap::Palette::Structure,            SarkoMap::Palette::StructureRoughness },
 			/* Rust       */ { FLinearColor(0.160f, 0.070f, 0.036f),    0.85f },
 			/* Timber     */ { FLinearColor(0.185f, 0.100f, 0.055f),    0.80f },
-			// Deliberately between the ground and the timber: 1.4x the ground's
-			// luminance (so a trunk is an object, not a stain) and a little over
-			// half the village timber's (so a stand of trees does not read as a
-			// stack of planks). Rougher than timber for the same reason the ground
-			// is rough — bark has no sheen to catch a 400 m specular sheet.
-			/* Bark       */ { FLinearColor(0.105f, 0.062f, 0.034f),    0.88f },
+			// 2.4x the ground's luminance, and greyer than the village timber
+			// rather than darker — which is the second attempt. The first was
+			// 1.4x and a warm brown, chosen on the numbers, and in a frame it
+			// produced black posts with pale lit caps: a trunk is VERTICAL, and
+			// this sector's sun sits 55 degrees up, so a trunk's sides receive a
+			// fraction of the light the flat ground does. Two surfaces that
+			// separate on paper do not separate when one of them is a wall.
+			//
+			// Greyer rather than simply brighter because a brighter warm brown
+			// lands on top of Timber, and "the fence tone" and "the tree tone"
+			// being the same colour is exactly the distinction this surface was
+			// added to make.
+			/* Bark       */ { FLinearColor(0.145f, 0.108f, 0.078f),    0.88f },
 			/* Vegetation */ { FLinearColor(0.020f, 0.042f, 0.016f),    0.95f },
 			// Opaque, and that is a shipped limitation rather than a choice: a
 			// translucent material cannot exist here without authoring an asset

@@ -374,7 +374,7 @@ bool FSarkoBridgePropsClearTheWalls::RunTest(const FString& Parameters)
 	}
 	// A guard against the guard: if the kind lookup or the props section ever comes
 	// back empty this test would pass by checking nothing at all.
-	TestEqual(TEXT("every prop part was checked"), PartsChecked, SarkoMap::CountPropActors(Map));
+	TestEqual(TEXT("every prop part was checked"), PartsChecked, SarkoMap::CountPropParts(Map));
 	TestTrue(TEXT("there are props to check"), PartsChecked >= 40);
 	return true;
 }
@@ -484,50 +484,80 @@ bool FSarkoBridgeStaysInsideTheActorBudget::RunTest(const FString& Parameters)
 	}
 
 	// ТЗ §16 is a budget, and this is the whole bill: one floor, every block
-	// including expanded building walls, every prop part, a container each, a
-	// pad each, a bot each, the player, and two lights.
+	// including expanded building walls, ONE prop field, a container each, a pad
+	// each, a bot each, the player, and two lights.
+	//
+	// "One prop field" is the whole of this task's effect on this number. Every
+	// prop part in the sector is an instance inside ASarkoPropField now, not an
+	// actor of its own.
 	const FSarkoMapLayout Layout = SarkoMap::ToLayout(Map);
-	const int32 Actors = 1 + Layout.Cover.Num() + SarkoMap::CountPropActors(Map)
+	const int32 Actors = 1 + Layout.Cover.Num() + 1
 		+ Map.Containers.Num() + Map.Extractions.Num() + Map.BotSpawns.Num() + 1 + 2;
+	const int32 PropComponents = SarkoMap::CountInstancedComponents(Map);
+	const int32 PropParts = SarkoMap::CountPropParts(Map);
 
-	AddInfo(FString::Printf(TEXT("bridge.json spawns %d actors (%d blocks+walls, %d prop actors from %d props)"),
-		Actors, Layout.Cover.Num(), SarkoMap::CountPropActors(Map), Map.Props.Num()));
+	AddInfo(FString::Printf(
+		TEXT("bridge.json spawns %d actors (%d blocks+walls) and %d instanced components holding %d prop instances from %d props"),
+		Actors, Layout.Cover.Num(), PropComponents, PropParts, Map.Props.Num()));
 
-	// 560 is Bridge_West's ceiling, and it is a DECISION rather than a drift.
+	// THE TRIGGER THIS TEST CARRIED HAS FIRED, AND THIS IS THE RESPONSE.
 	//
-	// Where the number comes from. With the east closure, the world border and
-	// ТЗ §15's fill of the north in, the bill is 459: 1 floor, 32 authored blocks
-	// (12 of them the closure and the border), 32 walls expanded from 5 buildings,
-	// 363 prop actors from 351 authored props (the difference is the composite
-	// kinds — pylons, road signs, trailers), 19 containers, 3 extraction pads, 6
-	// bots, the pawn and two lights. The three camps, the tutorial loot layout and
-	// the landmark pass still to come add ~70 more, which is the ~529 the
-	// Bridge_West plan projects. 560 leaves about thirty of headroom over that:
-	// enough for a crate beside a container, not enough to hide a fill that
-	// doubled.
+	// What it used to say: 560 actors, of which 401 were prop parts against a
+	// sub-ceiling of 420; instancing was considered and deliberately deferred,
+	// because SpawnMeshBox gave every actor its own UMaterialInstanceDynamic and
+	// UE only batches primitives sharing a mesh AND a material, so HISM would
+	// have bought nothing until those went away. The written response order was
+	// (1) shared per-surface material instances, (2) HISM per (mesh, surface) for
+	// the fill kinds, (3) cut content — never (3) first.
 	//
-	// Instancing was considered here and deliberately NOT taken. What costs money
-	// is draw calls, and SpawnMeshBox -> PaintFlat gives every actor its own
-	// UMaterialInstanceDynamic — UE only auto-instances primitives that share a
-	// mesh AND a material, so moving these into HISM components would not reduce
-	// the draw count until the per-actor MIDs go away first. The cheap mitigation
-	// is therefore one shared material instance per ESarkoSurface (eleven instead
-	// of five hundred), which is a change to the single spawn path and belongs
-	// with its own before/after measurement, not inside a content stage. The
-	// saving that WAS available here has been taken: the closure is 12 blocks
-	// instead of ~50 tiled treeline props.
+	// (1) landed in Stage B. The forest is what makes (2) due: a stand the player
+	// can walk into is hundreds of trees, and at two parts each the old scheme
+	// runs out of budget before the first stand is finished. So step (2) is taken
+	// here, and taken further than the note proposed — every kind is instanced,
+	// not just the fill ones, because one spawn path is simpler than a spawn path
+	// plus a list of exceptions that would have to be kept in step with the kind
+	// table by hand.
 	//
-	// The trigger that reopens this: a PACKAGED iOS build that misses 30 fps in
-	// this sector. Response order is (1) shared per-surface material instances,
-	// measured; (2) HISM per (mesh, surface) pair for the fill kinds only — rock,
-	// bush, log, fence_section, treeline, about 150 of the prop actors; (3)
-	// cutting content. Never (3) first. Nothing this stage added ticks, allocates
-	// per frame or replicates, which is why 500-odd static cubes is not where
-	// ТЗ §16's budget is expected to break.
+	// WHAT THE TWO NUMBERS NOW MEAN, and they mean different things:
 	//
-	// A failure here still means what it always meant: not a bug, but this
-	// decision coming due again.
-	TestTrue(FString::Printf(TEXT("the sector spawns at most 560 actors (it spawns %d)"), Actors), Actors <= 560);
+	//  * ACTORS is what the engine has to tick, replicate, garbage-collect and
+	//    hold UObject overhead for. It went from ~540 to ~140 in this commit and
+	//    it no longer grows with content at all — a thousand more trees add zero
+	//    actors. 180 is a generous ceiling over the ~140 the sector bills today;
+	//    it is deliberately not tight, because it is no longer the interesting
+	//    number and a tight bound on an uninteresting number is just noise.
+	//
+	//  * INSTANCED COMPONENTS is what the renderer pays. One component that
+	//    agrees on mesh and material is one draw call whether it holds four
+	//    instances or four hundred, so THIS is the number a phone feels. It is a
+	//    function of the KIND TABLE, not of the map: it goes up when someone adds
+	//    a (mesh, surface, collision, canopy) combination nobody was using, and
+	//    it does not move when someone plants two hundred trees. 24 is the
+	//    ceiling against roughly 14 in use — room for a real amount of new
+	//    vocabulary, and low enough that a change which silently split one
+	//    component per prop would fail here loudly.
+	//
+	// The instance count is NOT bounded here on purpose; it is bounded in
+	// Sarko.Map.PropInstanceCountIsWithinTheMobileBudget, which is where the
+	// "how much geometry is there" question lives.
+	//
+	// The trigger that reopens THIS decision is unchanged in kind: a PACKAGED iOS
+	// build that misses 30 fps in this sector. The response order left is (a) cut
+	// draw calls by merging surfaces — fewer components, i.e. fewer colours; (b)
+	// cull distances on the fill components; (c) cut content. Still never (c)
+	// first. A failure here is not a bug: it is this decision coming due again.
+	TestTrue(FString::Printf(TEXT("the sector spawns at most 180 actors (it spawns %d)"), Actors),
+		Actors <= 180);
+	TestTrue(FString::Printf(TEXT("the props draw in at most 24 instanced components (they use %d)"), PropComponents),
+		PropComponents <= 24);
+
+	// Guards against the guard. A key scheme that collapsed to one component
+	// would paint the whole sector one colour and pass a ceiling; a key scheme
+	// that degenerated to one component per part would put us back where we
+	// started with extra steps, and neither shows up as a wrong total.
+	TestTrue(FString::Printf(TEXT("the props are genuinely batched (%d instances in %d components)"),
+		PropParts, PropComponents), PropParts > PropComponents * 10);
+	TestTrue(TEXT("the palette did not collapse into one component"), PropComponents >= 8);
 	return true;
 }
 
@@ -793,7 +823,7 @@ bool FSarkoBridgeSpawnsClearTheProps::RunTest(const FString& Parameters)
 	// rather than passing by checking nothing), and there is a real amount of
 	// solid geometry to be clear of.
 	TestEqual(TEXT("every prop part was classified as solid or walk-through"),
-		SolidParts.Num() + NonCollidingParts, SarkoMap::CountPropActors(Map));
+		SolidParts.Num() + NonCollidingParts, SarkoMap::CountPropParts(Map));
 	TestTrue(FString::Printf(TEXT("there are solid prop parts to clear (%d)"), SolidParts.Num()),
 		SolidParts.Num() >= 200);
 

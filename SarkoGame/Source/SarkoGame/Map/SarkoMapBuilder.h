@@ -173,6 +173,10 @@ namespace SarkoMap
 	 * SpawnLayout's floor and cover: the props. Logs and skips an unknown kind
 	 * rather than substituting a default, because a silently wrong prop is
 	 * harder to notice than a missing one.
+	 *
+	 * ONE actor — an ASarkoPropField holding every part as an instance. It was an
+	 * actor per part until the forest, and 401 of them; see the class comment on
+	 * ASarkoPropField for why that had to change and what made it possible.
 	 */
 	void SpawnProps(UWorld& World, const FSarkoMapDefinition& Definition);
 
