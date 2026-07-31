@@ -34,6 +34,34 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "Map")
 	FName MapId = TEXT("bridge");
 
+	/**
+	 * How close the local pawn has to get to a tree before that tree's canopy
+	 * hides itself — the one number that makes a walk-in forest playable under a
+	 * top-down camera.
+	 *
+	 * WHERE 1000 COMES FROM. The camera is a 1400 uu boom pitched -70 degrees, so
+	 * it sits about 480 uu behind the pawn and 1320 uu above it. The sight line
+	 * from there to the pawn passes through canopy height (roughly 300-900 uu)
+	 * between 110 and 330 uu behind the pawn's own position; canopies are up to
+	 * 300 uu in radius; so anything whose trunk is within ~650 uu can put leaves
+	 * between the camera and the player. 1000 uu is that, plus enough margin that
+	 * the hole opens BEFORE the player walks into it rather than around them
+	 * afterwards — a canopy that pops out at the moment it would have hidden you
+	 * reads as a glitch even though it is technically sufficient.
+	 *
+	 * Bigger is not better: this is a hole cut in the forest roof, and at 2000 uu
+	 * the player walks around inside a permanent clearing and the stand stops
+	 * reading as a stand at all. Smaller than about 700 and the pawn's own
+	 * silhouette starts clipping the edge of the hole.
+	 *
+	 * Purely cosmetic and purely local. It changes an instance transform on the
+	 * machine the player is looking at; it never touches collision, never touches
+	 * gameplay state and never leaves the client. Setting it to 0 disables the
+	 * effect entirely, which is a fine way to see the problem it solves.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Map")
+	float CanopyFadeRadiusUU = 1000.f;
+
 	UPROPERTY(EditAnywhere, config, Category = "Movement")
 	float WalkSpeed = 400.f;
 

@@ -1,8 +1,11 @@
 #include "Core/SarkoRaidGameState.h"
 
 #include "Core/SarkoRaidSettings.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
 #include "Loot/SarkoLootContainer.h"
 #include "Map/SarkoMapDefinition.h"
+#include "Map/SarkoPropField.h"
 #include "Net/UnrealNetwork.h"
 
 bool SarkoRaid::CanFinishRaid(ESarkoRaidOutcome Current, ESarkoRaidOutcome Requested)
@@ -182,6 +185,46 @@ void ASarkoRaidGameState::RegisterContainer(ASarkoLootContainer* Container)
 	}
 }
 
+void ASarkoRaidGameState::RegisterPropField(ASarkoPropField* Field)
+{
+	if (Field)
+	{
+		PropField = Field;
+	}
+}
+
+ASarkoPropField* ASarkoRaidGameState::GetPropField() const
+{
+	return PropField.Get();
+}
+
+void ASarkoRaidGameState::UpdateCanopyFade()
+{
+	ASarkoPropField* Field = PropField.Get();
+	UWorld* World = GetWorld();
+	if (!Field || !World)
+	{
+		return;
+	}
+
+	// The local player, or nobody. GetFirstPlayerController on a dedicated server
+	// hands back a remote client's controller, which is exactly the machine this
+	// effect must NOT run for — hence the IsLocalController check rather than
+	// trusting "first" to mean "ours".
+	const APlayerController* Controller = World->GetFirstPlayerController();
+	if (!Controller || !Controller->IsLocalController())
+	{
+		return;
+	}
+	const APawn* Pawn = Controller->GetPawn();
+	if (!Pawn)
+	{
+		return;
+	}
+
+	Field->UpdateCanopyFade(Pawn->GetActorLocation(), GetDefault<USarkoRaidSettings>()->CanopyFadeRadiusUU);
+}
+
 void ASarkoRaidGameState::StartRaidClock(float DurationSeconds)
 {
 	RemainingSeconds = DurationSeconds;
@@ -191,6 +234,14 @@ void ASarkoRaidGameState::StartRaidClock(float DurationSeconds)
 void ASarkoRaidGameState::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+
+	// Before the authority gate, deliberately: the canopy fade is the one thing
+	// this actor does that belongs to a CAMERA rather than to the server. It runs
+	// wherever there is a local pawn — client, listen server, standalone — and
+	// nowhere else. It is also the only work here that a finished raid still
+	// wants doing: the summary screen freezes the world, and a player frozen
+	// under a canopy should still be able to see themselves.
+	UpdateCanopyFade();
 
 	// The clock only runs on the server; clients receive RemainingSeconds.
 	if (!HasAuthority() || !bClockStarted)

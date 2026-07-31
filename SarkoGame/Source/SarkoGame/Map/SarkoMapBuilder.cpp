@@ -147,7 +147,7 @@ namespace
 	 *
 	 * Game thread only, like everything else in this file.
 	 */
-	UMaterialInstanceDynamic* SharedFlatMaterial(ESarkoSurface Surface)
+	UMaterialInstanceDynamic* SharedFlatMaterialInternal(ESarkoSurface Surface)
 	{
 		static const TCHAR* BasicShapeMaterialPath = TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial");
 		static TMap<uint8, UMaterialInstanceDynamic*> Cache;
@@ -192,7 +192,7 @@ namespace
 	/** Assigns that shared instance to every slot the component has. */
 	void PaintFlat(UStaticMeshComponent& Component, ESarkoSurface Surface)
 	{
-		UMaterialInstanceDynamic* Material = SharedFlatMaterial(Surface);
+		UMaterialInterface* Material = SarkoMap::SharedSurfaceMaterial(Surface);
 		if (!Material)
 		{
 			return;
@@ -246,6 +246,11 @@ namespace
 			Component->SetMobility(EComponentMobility::Static);
 		}
 	}
+}
+
+UMaterialInterface* SarkoMap::SharedSurfaceMaterial(ESarkoSurface Surface)
+{
+	return SharedFlatMaterialInternal(Surface);
 }
 
 void SarkoMap::SpawnLayout(UWorld& World, const FSarkoMapLayout& Layout)

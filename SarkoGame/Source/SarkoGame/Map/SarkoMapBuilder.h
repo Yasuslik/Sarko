@@ -148,6 +148,23 @@ namespace SarkoMap
 		const FLinearColor GroundBounceColour(0.050f, 0.045f, 0.030f);
 	}
 
+	/**
+	 * The one material instance for a surface, created on first ask and shared by
+	 * everything that wears it — the floor, every cover block, and every instanced
+	 * prop component.
+	 *
+	 * Public because sharing is no longer just a memory argument. A unique
+	 * material is a unique shader binding, and UE batches primitives only when
+	 * they agree on mesh AND material, so a second instance for the same surface
+	 * silently un-batches everything painted with it. Anything that needs to
+	 * ANIMATE a parameter needs its own instance and must say so, rather than
+	 * quietly mutating the one every block in the sector is using.
+	 *
+	 * Null (and a log line) if the base material fails to load; callers keep the
+	 * engine's placeholder rather than losing their geometry.
+	 */
+	UMaterialInterface* SharedSurfaceMaterial(ESarkoSurface Surface);
+
 	/** Spawns floor and cover for a layout using engine primitive meshes. */
 	void SpawnLayout(UWorld& World, const FSarkoMapLayout& Layout);
 
