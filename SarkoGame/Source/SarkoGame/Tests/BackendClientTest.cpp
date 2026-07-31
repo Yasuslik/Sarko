@@ -453,4 +453,137 @@ bool FSarkoSeedFromTheUrlSurvivesTheFullUint32Range::RunTest(const FString& Para
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoParsesTheRealProfileResponse,
+	"Sarko.Backend.ParsesTheRealProfileResponse",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoParsesTheRealProfileResponse::RunTest(const FString& Parameters)
+{
+	// Copied from the deployed service, field for field. `stash` is ordered by
+	// item_id server-side (store.Profile's ORDER BY), which is why the test can
+	// assert positions.
+	const FString Body = TEXT(R"({
+		"player_id": "a9451008-9665-44d6-aeec-1305d61e53dd",
+		"schema_version": 1,
+		"stash": [
+			{ "item_id": "ammo_9mm", "quantity": 60 },
+			{ "item_id": "medkit",   "quantity": 1 },
+			{ "item_id": "pistol",   "quantity": 1 }
+		],
+		"vehicle_tier": "none",
+		"unlocked_maps": ["bridge"],
+		"tutorial_completed": true
+	})");
+
+	FSarkoProfile Profile;
+	FString Error;
+	TestTrue(TEXT("the live profile shape parses"), SarkoBackend::ParseProfileResponse(Body, Profile, Error));
+	TestEqual(TEXT("no error on success"), Error, FString());
+	TestEqual(TEXT("player id survives"), Profile.PlayerId, FString(TEXT("a9451008-9665-44d6-aeec-1305d61e53dd")));
+	TestEqual(TEXT("schema version survives"), Profile.SchemaVersion, 1);
+	TestEqual(TEXT("every stash row is read"), Profile.Stash.Num(), 3);
+	TestEqual(TEXT("stash order is the server's"), Profile.Stash[0].Item, FName(TEXT("ammo_9mm")));
+	TestEqual(TEXT("stash quantity survives"), Profile.Stash[0].Quantity, 60);
+	TestEqual(TEXT("vehicle tier survives"), Profile.VehicleTier, FString(TEXT("none")));
+	TestEqual(TEXT("unlocked maps are read"), Profile.UnlockedMaps.Num(), 1);
+	TestEqual(TEXT("the only unlocked map is the one this build ships"),
+		Profile.UnlockedMaps[0], FString(TEXT("bridge")));
+	TestTrue(TEXT("tutorial_completed is read, not defaulted"), Profile.bTutorialCompleted);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoAbsentTutorialFlagMeansTutorialMode,
+	"Sarko.Backend.AbsentTutorialFlagMeansTutorialMode",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoAbsentTutorialFlagMeansTutorialMode::RunTest(const FString& Parameters)
+{
+	// Spec §6.5: "no flag → tutorial mode". That has to hold for a *missing*
+	// field too, not only for `false`, because a client running against a backend
+	// that predates Task 1 receives no field at all. Defaulting the other way
+	// would hand a brand-new player the full seeded loot economy on raid one and
+	// skip the tutorial permanently, with nothing logging it.
+	const FString Body = TEXT(R"({
+		"player_id": "11111111-2222-3333-4444-555555555555",
+		"schema_version": 1,
+		"stash": [],
+		"vehicle_tier": "none",
+		"unlocked_maps": ["bridge"]
+	})");
+
+	FSarkoProfile Profile;
+	FString Error;
+	TestTrue(TEXT("a profile without the flag still parses"),
+		SarkoBackend::ParseProfileResponse(Body, Profile, Error));
+	TestFalse(TEXT("an absent flag reads as not completed"), Profile.bTutorialCompleted);
+	TestEqual(TEXT("an empty stash is legitimate, not an error"), Profile.Stash.Num(), 0);
+
+	// And the default on a freshly constructed struct must agree, because the
+	// offline path never parses anything at all.
+	const FSarkoProfile Fresh;
+	TestFalse(TEXT("a default-constructed profile is in tutorial mode"), Fresh.bTutorialCompleted);
+
+	// The byte-for-byte body the deployed service answered with on 2026-07-31,
+	// before the flag's migration shipped — one line, no whitespace, no flag. The
+	// hand-written case above proves the rule; this proves the rule against the
+	// actual wire text, including its ordering and its absent field.
+	const FString Captured = TEXT(R"({"player_id":"a1b67c01-ec63-40d9-bba9-d76f296e0451","schema_version":1,"stash":[{"item_id":"ammo_9mm","quantity":60},{"item_id":"medkit","quantity":1},{"item_id":"pistol","quantity":1}],"vehicle_tier":"none","unlocked_maps":["bridge"]})");
+
+	FSarkoProfile Live;
+	FString LiveError;
+	TestTrue(TEXT("the captured production body parses"),
+		SarkoBackend::ParseProfileResponse(Captured, Live, LiveError));
+	TestEqual(TEXT("captured: player id survives"), Live.PlayerId,
+		FString(TEXT("a1b67c01-ec63-40d9-bba9-d76f296e0451")));
+	TestEqual(TEXT("captured: schema version survives"), Live.SchemaVersion, 1);
+	TestEqual(TEXT("captured: the starter kit is three rows"), Live.Stash.Num(), 3);
+	TestEqual(TEXT("captured: first row is the ammo"), Live.Stash[0].Item, FName(TEXT("ammo_9mm")));
+	TestEqual(TEXT("captured: ammo count survives"), Live.Stash[0].Quantity, 60);
+	TestEqual(TEXT("captured: last row is the pistol"), Live.Stash[2].Item, FName(TEXT("pistol")));
+	TestEqual(TEXT("captured: vehicle tier survives"), Live.VehicleTier, FString(TEXT("none")));
+	TestEqual(TEXT("captured: one unlocked map"), Live.UnlockedMaps.Num(), 1);
+	TestEqual(TEXT("captured: it is bridge"), Live.UnlockedMaps[0], FString(TEXT("bridge")));
+	TestFalse(TEXT("captured: a backend older than the flag means tutorial mode"),
+		Live.bTutorialCompleted);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoProfileRejectsBadInput,
+	"Sarko.Backend.ProfileRejectsBadInput",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoProfileRejectsBadInput::RunTest(const FString& Parameters)
+{
+	// The shelter draws this and the raid branches on it. A half-parsed profile
+	// would show a player an empty stash they actually own, or silently pick the
+	// wrong loot mode — both indistinguishable from a backend fault.
+	const TArray<TPair<FString, FString>> BadCases = {
+		{ TEXT("not json"),            TEXT("{{{") },
+		{ TEXT("an error envelope"),   TEXT(R"({"error":{"code":"unauthorized","message":"no player in context"}})") },
+		{ TEXT("no player_id"),        TEXT(R"({"schema_version":1,"vehicle_tier":"none"})") },
+		{ TEXT("empty player_id"),     TEXT(R"({"player_id":"","schema_version":1,"vehicle_tier":"none"})") },
+		{ TEXT("no vehicle_tier"),     TEXT(R"({"player_id":"p","schema_version":1})") },
+		{ TEXT("stash not an array"),  TEXT(R"({"player_id":"p","vehicle_tier":"none","stash":7})") },
+		{ TEXT("stash row has no id"), TEXT(R"({"player_id":"p","vehicle_tier":"none","stash":[{"quantity":3}]})") },
+		{ TEXT("stash row qty zero"),  TEXT(R"({"player_id":"p","vehicle_tier":"none","stash":[{"item_id":"chain","quantity":0}]})") },
+	};
+
+	for (const TPair<FString, FString>& Case : BadCases)
+	{
+		FSarkoProfile Profile;
+		FString Error;
+		TestFalse(FString::Printf(TEXT("rejected: %s"), *Case.Key),
+			SarkoBackend::ParseProfileResponse(Case.Value, Profile, Error));
+		TestFalse(FString::Printf(TEXT("names the problem: %s"), *Case.Key), Error.IsEmpty());
+		// A failed parse leaves nothing behind: a caller that ignores the return
+		// value must not find a plausible-looking half-profile.
+		TestTrue(FString::Printf(TEXT("nothing survives a failure: %s"), *Case.Key),
+			Profile.PlayerId.IsEmpty() && Profile.Stash.Num() == 0);
+	}
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS
