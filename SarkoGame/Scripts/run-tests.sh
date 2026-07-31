@@ -21,6 +21,21 @@ BUILD_LOG="$PROJECT_DIR/Saved/Logs/agent-build.log"
 UE_LOG="$HOME/Library/Logs/Unreal Engine/SarkoGameEditor/SarkoGame.log"
 mkdir -p "$(dirname "$BUILD_LOG")"
 
+# A running editor holds the module dylib open, so UBT quietly redirects the
+# build into a hot-reload copy (…-0001.dylib) and the headless run below loads
+# the OLD one. That failure mode is invisible: the stale binary still runs every
+# test and still prints "N tests performed, 0 failed", so a green result can be
+# a green result for code that was never compiled. Only a NEW test changes the
+# count, and edits to existing tests do not — which is exactly when this bites.
+if pgrep -f "UnrealEditor.*SarkoGame" > /dev/null 2>&1; then
+	echo "REFUSING TO RUN: an editor or game process has SarkoGame open."
+	echo "It holds the module dylib, so the build would land in a hot-reload copy"
+	echo "and these tests would run against a stale binary and still report green."
+	pgrep -fl "UnrealEditor.*SarkoGame" | head -5
+	echo "Close the editor (or kill those pids) and re-run."
+	exit 1
+fi
+
 echo "==> Building SarkoGameEditor"
 if ! "$UE/Engine/Build/BatchFiles/Mac/Build.sh" \
 	SarkoGameEditor Mac Development \
@@ -30,6 +45,25 @@ if ! "$UE/Engine/Build/BatchFiles/Mac/Build.sh" \
 	exit 1
 fi
 echo "    build ok"
+
+# Second guard, for the case where the build succeeded but landed somewhere the
+# test run will not load: the module binary must be at least as new as the
+# newest source file. Catches a hot-reload redirect that started before this
+# script did, and any silently skipped compile.
+MODULE_DYLIB="$PROJECT_DIR/Binaries/Mac/UnrealEditor-SarkoGame.dylib"
+NEWEST_SOURCE="$(find "$PROJECT_DIR/Source" -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.cs' \) -print0 \
+	| xargs -0 stat -f '%m %N' | sort -rn | head -1)"
+if [[ -f "$MODULE_DYLIB" && -n "$NEWEST_SOURCE" ]]; then
+	SOURCE_MTIME="${NEWEST_SOURCE%% *}"
+	DYLIB_MTIME="$(stat -f '%m' "$MODULE_DYLIB")"
+	if (( DYLIB_MTIME < SOURCE_MTIME )); then
+		echo "REFUSING TO RUN: $MODULE_DYLIB is older than ${NEWEST_SOURCE#* }."
+		echo "The build did not land in the binary the test run loads —"
+		echo "any result would describe code that is not the code on disk."
+		ls -l "$MODULE_DYLIB"
+		exit 1
+	fi
+fi
 
 echo "==> Running automation tests matching '$FILTER'"
 # -nullrhi: no rendering, so this works with no display and no GPU work.
