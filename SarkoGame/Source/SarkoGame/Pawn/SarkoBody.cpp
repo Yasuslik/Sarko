@@ -1,73 +1,104 @@
 #include "Pawn/SarkoBody.h"
 
 #include "Components/CapsuleComponent.h"
-#include "Components/StaticMeshComponent.h"
-#include "Engine/StaticMesh.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "GameFramework/Character.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 
 namespace
 {
-	/** The engine cylinder is 100 uu across and 100 uu tall at unit scale. */
-	constexpr float EngineCylinderSize = 100.f;
+	/**
+	 * Manny for the player, Quinn for the enemy. Two different meshes rather than
+	 * one mesh twice: they are different builds with different textures, so the
+	 * silhouettes differ even before any tint is applied — and if the tint below
+	 * turns out to be a no-op on some material variant, friend/foe still reads.
+	 */
+	const TCHAR* PlayerMeshPath = TEXT("/Game/Mannequins/Meshes/SKM_Manny_Simple.SKM_Manny_Simple");
+	const TCHAR* EnemyMeshPath = TEXT("/Game/Mannequins/Meshes/SKM_Quinn_Simple.SKM_Quinn_Simple");
 
-	/** A blob on top marks facing, so it is obvious which way the pawn looks. */
-	constexpr float HeadScale = 0.45f;
+	/**
+	 * M_Mannequin's body-colour vector parameter. Set through a dynamic instance
+	 * of whatever material the mesh already carries, so the mannequin's own
+	 * textures are kept and only the paint colour changes — the alternative,
+	 * assigning a flat coloured material, would throw away the textures that are
+	 * the entire point of using these assets.
+	 */
+	const TCHAR* PaintTintParameter = TEXT("Paint Tint");
+
+	/** Blue reads as "me" and red as "them" from directly above; the same pairing the placeholder bodies used. */
+	const FLinearColor PlayerTint(0.16f, 0.34f, 0.85f);
+	const FLinearColor EnemyTint(0.80f, 0.12f, 0.10f);
+
+	/**
+	 * The mannequin faces +Y in mesh space, so a -90 degree yaw is what puts its
+	 * nose down the actor's +X — the axis ASarkoCharacter::Tick rotates to face
+	 * aim or travel. Without this the character runs permanently sideways, which
+	 * from a top-down camera is the single most obvious way to look broken.
+	 */
+	constexpr float MeshYawCorrection = -90.f;
 }
 
-void SarkoBody::AttachPlaceholderBody(ACharacter& Character, const FLinearColor& Tint)
+const TCHAR* SarkoBody::MeshPathForSide(ESide Side)
 {
-	UStaticMesh* CylinderMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-	UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
-	UMaterialInterface* BaseMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	return Side == ESide::Enemy ? EnemyMeshPath : PlayerMeshPath;
+}
 
-	if (!CylinderMesh || !Sphere || !BaseMaterial)
+void SarkoBody::AttachCharacterMesh(ACharacter& Character, ESide Side)
+{
+	USkeletalMeshComponent* MeshComponent = Character.GetMesh();
+	if (!MeshComponent)
 	{
-		UE_LOG(LogTemp, Error, TEXT("SarkoBody: engine primitive missing; pawns will be invisible"));
+		UE_LOG(LogTemp, Error, TEXT("SarkoBody: character has no mesh component; the pawn will be invisible"));
 		return;
 	}
 
+	const TCHAR* Path = MeshPathForSide(Side);
+	USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, Path);
+	if (!Mesh)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SarkoBody: '%s' failed to load; the pawn will be invisible"), Path);
+		return;
+	}
+
+	MeshComponent->SetSkeletalMeshAsset(Mesh);
+
+	// The mannequin's origin is between its feet, so it has to be dropped by a
+	// full capsule half-height to stand *on* the capsule's floor. Read from the
+	// capsule rather than hard-coded, so a later capsule change cannot silently
+	// sink the character into the ground or float it above it.
 	const UCapsuleComponent* Capsule = Character.GetCapsuleComponent();
 	const float HalfHeight = Capsule ? Capsule->GetScaledCapsuleHalfHeight() : 88.f;
-	const float Radius = Capsule ? Capsule->GetScaledCapsuleRadius() : 34.f;
+	MeshComponent->SetRelativeLocation(FVector(0.f, 0.f, -HalfHeight));
+	MeshComponent->SetRelativeRotation(FRotator(0.f, MeshYawCorrection, 0.f));
 
-	const auto AddPiece = [&Character, BaseMaterial, &Tint](UStaticMesh* Mesh, const FName Name, const FVector& Offset, const FVector& Scale, float Brightness)
+	// Cosmetic only: the capsule owns collision, and a mesh that blocked traces
+	// would let a shot hit the body instead of the pawn — which is not the same
+	// hit, because the server re-traces against the capsule.
+	MeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+	// A dynamic instance per material slot, so the tint is per-pawn and the
+	// shared material instance on disk is never touched.
+	const FLinearColor Tint = Side == ESide::Enemy ? EnemyTint : PlayerTint;
+	const int32 MaterialCount = MeshComponent->GetNumMaterials();
+	for (int32 Slot = 0; Slot < MaterialCount; ++Slot)
 	{
-		UStaticMeshComponent* Component = NewObject<UStaticMeshComponent>(&Character, Name);
-		if (!Component)
+		UMaterialInterface* Base = MeshComponent->GetMaterial(Slot);
+		if (!Base)
 		{
-			return;
+			continue;
 		}
-		Component->SetupAttachment(Character.GetCapsuleComponent());
-		Component->SetStaticMesh(Mesh);
-		Component->SetRelativeLocation(Offset);
-		Component->SetRelativeScale3D(Scale);
-		// Cosmetic only: the capsule owns collision, and a mesh that blocked
-		// traces would let a shot hit the body instead of the pawn.
-		Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		Component->RegisterComponent();
-
-		if (UMaterialInstanceDynamic* Material = Component->CreateAndSetMaterialInstanceDynamicFromMaterial(0, BaseMaterial))
+		if (UMaterialInstanceDynamic* Dynamic = MeshComponent->CreateAndSetMaterialInstanceDynamicFromMaterial(Slot, Base))
 		{
-			// BasicShapeMaterial exposes its tint as "Color"; older copies use
-			// "BaseColor". Setting both is harmless — an unknown parameter name
-			// is ignored — and beats the body silently staying default grey.
-			Material->SetVectorParameterValue(TEXT("Color"), Tint * Brightness);
-			Material->SetVectorParameterValue(TEXT("BaseColor"), Tint * Brightness);
+			// An unknown parameter name is ignored rather than fatal, so this is
+			// safe against a material variant that does not expose the tint —
+			// the two different meshes carry the friend/foe distinction in that
+			// case.
+			Dynamic->SetVectorParameterValue(PaintTintParameter, Tint);
 		}
-	};
+	}
 
-	// Body: a cylinder filling the capsule.
-	AddPiece(CylinderMesh, TEXT("BodyMesh"),
-		FVector(0.f, 0.f, -HalfHeight),
-		FVector((Radius * 2.f) / EngineCylinderSize, (Radius * 2.f) / EngineCylinderSize, (HalfHeight * 2.f) / EngineCylinderSize),
-		1.f);
-
-	// Head: offset forward as well as up, so facing is readable from directly
-	// above — which is the only angle this game is ever seen from.
-	AddPiece(Sphere, TEXT("HeadMesh"),
-		FVector(Radius * 0.5f, 0.f, HalfHeight * 0.65f),
-		FVector((Radius * 2.f * HeadScale) / EngineCylinderSize),
-		1.4f);
+	UE_LOG(LogTemp, Display, TEXT("SarkoBody: %s wearing '%s', %d material slot(s), dropped %.0f uu onto the capsule floor"),
+		Side == ESide::Enemy ? TEXT("enemy") : TEXT("player"), *Mesh->GetName(), MaterialCount, HalfHeight);
 }

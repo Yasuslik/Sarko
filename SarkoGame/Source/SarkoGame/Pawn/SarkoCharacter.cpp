@@ -1,6 +1,7 @@
 #include "Pawn/SarkoCharacter.h"
 
 #include "Pawn/SarkoBody.h"
+#include "Pawn/SarkoCharacterAnim.h"
 
 #include "Camera/CameraComponent.h"
 #include "Combat/SarkoWeapon.h"
@@ -74,6 +75,11 @@ ASarkoCharacter::ASarkoCharacter()
 	HealthComponent = CreateDefaultSubobject<USarkoHealthComponent>(TEXT("Health"));
 	WeaponComponent = CreateDefaultSubobject<USarkoWeaponComponent>(TEXT("Weapon"));
 	BackpackComponent = CreateDefaultSubobject<USarkoBackpackComponent>(TEXT("Backpack"));
+
+	// Created last on purpose: it finds the health and weapon components by
+	// class in BeginPlay, and component BeginPlay runs in creation order, so
+	// both are already initialised by the time it looks for them.
+	AnimComponent = CreateDefaultSubobject<USarkoCharacterAnimComponent>(TEXT("CharacterAnim"));
 }
 
 void ASarkoCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -92,7 +98,7 @@ void ASarkoCharacter::BeginPlay()
 
 	// A visible body. ACharacter's mesh is empty by default, so without
 	// this the player cannot see their own character at all.
-	SarkoBody::AttachPlaceholderBody(*this, FLinearColor(0.25f, 0.5f, 0.95f));
+	SarkoBody::AttachCharacterMesh(*this, SarkoBody::ESide::Player);
 
 	if (HasAuthority() && HealthComponent)
 	{

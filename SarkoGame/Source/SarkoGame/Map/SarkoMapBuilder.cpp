@@ -10,6 +10,8 @@
 #include "Loot/SarkoLootContainer.h"
 #include "Map/SarkoMapDefinition.h"
 #include "Map/SarkoMapKinds.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace
@@ -65,6 +67,58 @@ namespace
 	}
 
 	/**
+	 * Paints one primitive a flat colour.
+	 *
+	 * This exists because of a rendering bug, not for art's sake.
+	 * /Engine/BasicShapes/Cube ships with /Engine/EngineMaterials/WorldGridMaterial
+	 * in its material slot — the engine's grey checkerboard placeholder — and
+	 * nothing here was overriding it. That material is a texture, and the floor
+	 * is one cube scaled 400x on X and Y, so its 0..1 UVs are stretched across
+	 * 400 m: every texel of the grid texture, including the fine dither in its
+	 * flat areas, comes out roughly the size of the player. Magnified that far
+	 * there is no coarser mip to fall back to (r.MipMapLODBias 8 changes the
+	 * frame not at all), so the ground renders as dense black-and-white speckle
+	 * that fights every character silhouette on it. It is base colour, not
+	 * lighting: the identical pattern is there with showflag.Lighting 0.
+	 *
+	 * BasicShapeMaterial is the cure because it has no textures at all — one
+	 * vector parameter into BaseColor, one scalar into Roughness. A constant
+	 * cannot alias at any scale, and on a phone it is strictly cheaper than what
+	 * it replaces: zero texture samples and zero texture memory where there were
+	 * two sampled textures (grid colour and grid normal) plus a CameraDepthFade.
+	 *
+	 * The parameter is called "Color" in current engine versions and "BaseColor"
+	 * in older copies, so both are set — the same belt-and-braces the loot
+	 * container and the extraction pad already use against this material.
+	 */
+	void PaintFlat(UStaticMeshComponent& Component, const FLinearColor& Tint, float Roughness)
+	{
+		static const TCHAR* BasicShapeMaterialPath = TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial");
+
+		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, BasicShapeMaterialPath);
+		if (!Base)
+		{
+			// Not fatal: the geometry is still there and still blocks bullets, it
+			// just keeps the engine's speckled placeholder material.
+			UE_LOG(LogTemp, Error, TEXT("SarkoMap: '%s' failed to load; geometry keeps the engine grid material"), BasicShapeMaterialPath);
+			return;
+		}
+
+		const int32 SlotCount = FMath::Max(Component.GetNumMaterials(), 1);
+		for (int32 Slot = 0; Slot < SlotCount; ++Slot)
+		{
+			UMaterialInstanceDynamic* Material = Component.CreateAndSetMaterialInstanceDynamicFromMaterial(Slot, Base);
+			if (!Material)
+			{
+				continue;
+			}
+			Material->SetVectorParameterValue(TEXT("Color"), Tint);
+			Material->SetVectorParameterValue(TEXT("BaseColor"), Tint);
+			Material->SetScalarParameterValue(TEXT("Roughness"), Roughness);
+		}
+	}
+
+	/**
 	 * Spawns one box-shaped actor with a given mesh, transform and extent. The
 	 * one spawn path SpawnLayout (floor, cover) and SpawnProps (props,
 	 * container markers) both use.
@@ -78,7 +132,8 @@ namespace
 	 * standing on it just falls through forever. Go Movable just long enough
 	 * to assign the mesh, scale and collision, then lock it back to Static.
 	 */
-	void SpawnMeshBox(UWorld& World, UStaticMesh* Mesh, const FVector& Location, const FRotator& Rotation, const FVector& Extent, bool bCollides)
+	void SpawnMeshBox(UWorld& World, UStaticMesh* Mesh, const FVector& Location, const FRotator& Rotation, const FVector& Extent, bool bCollides,
+		const FLinearColor& Tint, float Roughness)
 	{
 		FActorSpawnParameters Params;
 		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
@@ -97,6 +152,11 @@ namespace
 			// per axis.
 			Component->SetWorldScale3D(Extent / 50.f);
 			Component->SetCollisionEnabled(bCollides ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
+			// Painted inside the Movable window too, for the same reason the mesh
+			// is: a Static component that has already begun play is the awkward
+			// case, and there is no reason to find out the hard way which of its
+			// setters tolerate it.
+			PaintFlat(*Component, Tint, Roughness);
 			Component->SetMobility(EComponentMobility::Static);
 		}
 	}
@@ -121,11 +181,13 @@ void SarkoMap::SpawnLayout(UWorld& World, const FSarkoMapLayout& Layout)
 	}
 
 	// Floor: one flattened cube covering the play area.
-	SpawnMeshBox(World, CubeMesh, FVector(0.f, 0.f, -25.f), FRotator::ZeroRotator, FVector(Layout.Extent, Layout.Extent, 25.f), true);
+	SpawnMeshBox(World, CubeMesh, FVector(0.f, 0.f, -25.f), FRotator::ZeroRotator, FVector(Layout.Extent, Layout.Extent, 25.f), true,
+		Palette::Ground, Palette::GroundRoughness);
 
 	for (const FSarkoCoverBlock& Block : Layout.Cover)
 	{
-		SpawnMeshBox(World, CubeMesh, Block.Location, Block.Rotation, Block.Extent, true);
+		SpawnMeshBox(World, CubeMesh, Block.Location, Block.Rotation, Block.Extent, true,
+			Palette::Structure, Palette::StructureRoughness);
 	}
 }
 
@@ -152,7 +214,12 @@ void SarkoMap::SpawnProps(UWorld& World, const FSarkoMapDefinition& Definition)
 			continue;
 		}
 
-		SpawnMeshBox(World, Mesh, Prop.Location, FRotator(0.f, Prop.Yaw, 0.f), Kind.Extent, Kind.bBlocksMovement);
+		// Props share the cover grey rather than getting a colour each: the read
+		// the player needs from above is "ground versus thing standing on it",
+		// and a per-kind palette would compete with the blue/red that carries
+		// friend/foe.
+		SpawnMeshBox(World, Mesh, Prop.Location, FRotator(0.f, Prop.Yaw, 0.f), Kind.Extent, Kind.bBlocksMovement,
+			Palette::Structure, Palette::StructureRoughness);
 	}
 
 	UE_LOG(LogTemp, Display, TEXT("SarkoMap: spawned %d props, skipped %d"),
