@@ -560,4 +560,229 @@ bool FSarkoBackpackFillsPartialStacksBeforeOpeningSlots::RunTest(const FString& 
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoContainersMayCarryFixedItems,
+	"Sarko.Loot.ContainersMayCarryFixedItems",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoContainersMayCarryFixedItems::RunTest(const FString& Parameters)
+{
+	// The tutorial's static layout (spec §6.5) is authored in the map file, one
+	// optional list per container. Stage C writes the real one; this pins the
+	// schema so it cannot drift under it.
+	const FString Json = TEXT(R"({
+		"id": "t",
+		"extentUU": 1000,
+		"raidDurationSeconds": 600,
+		"playerSpawns": [{ "pos": [0, 0, 100] }],
+		"containers": [
+			{ "pos": [100, 0, 0], "tier": "junk",
+			  "fixedItems": [{ "item": "scrap_metal", "qty": 3 }, { "item": "duct_tape", "qty": 1 }] },
+			{ "pos": [200, 0, 0], "tier": "common" }
+		]
+	})");
+
+	FSarkoMapDefinition Definition;
+	FString Error;
+	TestTrue(TEXT("fixedItems parses"), SarkoMap::ParseDefinition(Json, Definition, Error));
+	TestEqual(TEXT("no error on success"), Error, FString());
+	TestEqual(TEXT("both containers are read"), Definition.Containers.Num(), 2);
+
+	TestEqual(TEXT("the authored list is read in order"), Definition.Containers[0].FixedItems.Num(), 2);
+	TestEqual(TEXT("the first fixed item's id survives"),
+		Definition.Containers[0].FixedItems[0].Item, FName(TEXT("scrap_metal")));
+	TestEqual(TEXT("the first fixed item's quantity survives"),
+		Definition.Containers[0].FixedItems[0].Quantity, 3);
+
+	// Absent is the normal case and means "roll this one" even in tutorial mode.
+	TestEqual(TEXT("a container with no fixedItems has an empty list"),
+		Definition.Containers[1].FixedItems.Num(), 0);
+
+	// Every failure mode is a named error, never a silently shortened list: a
+	// dropped entry is a teaching beat that quietly stops happening, and the
+	// symptom is "the tutorial feels thin", which nobody can trace to a data file.
+	const TArray<TPair<FString, FString>> BadCases = {
+		{ TEXT("not an array"),        TEXT(R"("fixedItems": 7)") },
+		{ TEXT("entry not an object"), TEXT(R"("fixedItems": ["scrap_metal"])") },
+		{ TEXT("no item id"),          TEXT(R"("fixedItems": [{ "qty": 2 }])") },
+		{ TEXT("empty item id"),       TEXT(R"("fixedItems": [{ "item": "", "qty": 2 }])") },
+		{ TEXT("qty missing"),         TEXT(R"("fixedItems": [{ "item": "scrap_metal" }])") },
+		{ TEXT("qty zero"),            TEXT(R"("fixedItems": [{ "item": "scrap_metal", "qty": 0 }])") },
+		{ TEXT("qty negative"),        TEXT(R"("fixedItems": [{ "item": "scrap_metal", "qty": -1 }])") },
+		// An id the catalog does not know would be rejected by the backend's
+		// domain.ValidateRaidItems at result time — fifteen minutes into a raid,
+		// having already been shown to the player. Caught at load instead.
+		{ TEXT("unknown item id"),     TEXT(R"("fixedItems": [{ "item": "unobtanium", "qty": 1 }])") },
+		// An empty list is the one malformation that looks like success. It parses
+		// to the same empty FixedItems as an absent key, so RollContainerFor falls
+		// through to a seeded roll: an author writing [] to mean "this crate is
+		// empty during the tutorial" gets random loot instead. It also costs
+		// Stage C its acceptance signal, since SetTutorialLoot counts containers
+		// with Num() > 0 and would keep warning that nothing is authored.
+		{ TEXT("empty list"),          TEXT(R"("fixedItems": [])") },
+		// JSON has a single number type, so 1.7 clears the "less than 1" check
+		// above and is then truncated to 1 by the cast — the only malformation
+		// here that used to change what the player receives without saying so.
+		{ TEXT("fractional qty"),      TEXT(R"("fixedItems": [{ "item": "scrap_metal", "qty": 1.7 }])") },
+	};
+
+	for (const TPair<FString, FString>& Case : BadCases)
+	{
+		const FString Bad = FString::Printf(TEXT(R"({
+			"id": "t", "extentUU": 1000, "raidDurationSeconds": 600,
+			"playerSpawns": [{ "pos": [0, 0, 100] }],
+			"containers": [{ "pos": [100, 0, 0], "tier": "junk", %s }]
+		})"), *Case.Value);
+
+		FSarkoMapDefinition Rejected;
+		FString BadError;
+		TestFalse(FString::Printf(TEXT("rejected: %s"), *Case.Key),
+			SarkoMap::ParseDefinition(Bad, Rejected, BadError));
+		TestFalse(FString::Printf(TEXT("names the problem: %s"), *Case.Key), BadError.IsEmpty());
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoTutorialLootIgnoresTheRandomStream,
+	"Sarko.Loot.TutorialLootIgnoresTheRandomStream",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoTutorialLootIgnoresTheRandomStream::RunTest(const FString& Parameters)
+{
+	FSarkoLootContainerSpot Spot;
+	Spot.Tier = SarkoLoot::TierJunk;
+	Spot.FixedItems = {
+		FSarkoItemStack{ FName(TEXT("scrap_metal")), 3 },
+		FSarkoItemStack{ FName(TEXT("duct_tape")), 1 },
+	};
+
+	// A real table, so the test proves the fixed list *wins* rather than that
+	// there was nothing to roll.
+	const FSarkoLootTable* Table = SarkoLoot::GetLootTables().Find(SarkoLoot::TierJunk);
+	if (!Table)
+	{
+		AddError(TEXT("the junk tier has no loot table, so this test cannot mean anything"));
+		return false;
+	}
+
+	// Two wildly different streams must produce byte-identical results: "static"
+	// means the seed cannot reach it at all, which is what makes dying and
+	// replaying the tutorial show the same layout (spec §6.5).
+	FRandomStream StreamA(1);
+	FRandomStream StreamB(0x7FFFFFFF);
+	const TArray<FSarkoItemStack> FromA = SarkoLoot::RollContainerFor(Spot, *Table, StreamA, /*bTutorialLoot*/ true);
+	const TArray<FSarkoItemStack> FromB = SarkoLoot::RollContainerFor(Spot, *Table, StreamB, /*bTutorialLoot*/ true);
+
+	TestEqual(TEXT("the fixed list is returned whole"), FromA.Num(), 2);
+	TestEqual(TEXT("two different streams give the same static loot"), FromA.Num(), FromB.Num());
+	for (int32 Index = 0; Index < FromA.Num(); ++Index)
+	{
+		TestEqual(TEXT("same item at the same position"), FromA[Index].Item, FromB[Index].Item);
+		TestEqual(TEXT("same quantity"), FromA[Index].Quantity, FromB[Index].Quantity);
+	}
+	TestEqual(TEXT("the authored order is preserved"), FromA[0].Item, FName(TEXT("scrap_metal")));
+	TestEqual(TEXT("the authored quantity is preserved"), FromA[0].Quantity, 3);
+
+	// Fixed lists must clear the backend's plausibility gate, which is the same
+	// gate a rolled haul clears (spec §6.5: "fixed lists pass the same
+	// plausibility gate"). The client-side half of that is the 12-slot backpack.
+	TestTrue(TEXT("a fixed list fits a backpack"), FromA.Num() <= 12);
+	for (const FSarkoItemStack& Stack : FromA)
+	{
+		TestNotNull(TEXT("every fixed item is in the catalog"),
+			SarkoLoot::GetItemCatalog().Find(Stack.Item));
+		TestTrue(TEXT("every fixed quantity is positive"), Stack.Quantity > 0);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoTutorialModeFallsBackToRollingWhenNothingIsAuthored,
+	"Sarko.Loot.TutorialModeFallsBackToRollingWhenNothingIsAuthored",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoTutorialModeFallsBackToRollingWhenNothingIsAuthored::RunTest(const FString& Parameters)
+{
+	// The mechanism ships in Stage A.5; the authored layout is Stage C's. Between
+	// the two, `bridge.json` carries no fixedItems at all, and a tutorial raid that
+	// yielded nothing from all 42 containers would be a real regression in a build
+	// that is meant to stay playable. So tutorial mode with nothing authored rolls
+	// normally — and the game mode logs one Warning per raid naming the count, so
+	// the gap is visible rather than assumed. Stage C's acceptance bar is that the
+	// Warning stops appearing.
+	FSarkoLootContainerSpot Unauthored;
+	Unauthored.Tier = SarkoLoot::TierJunk;
+
+	const FSarkoLootTable* Table = SarkoLoot::GetLootTables().Find(SarkoLoot::TierJunk);
+	if (!Table)
+	{
+		AddError(TEXT("the junk tier has no loot table, so this test cannot mean anything"));
+		return false;
+	}
+
+	FRandomStream Tutorial(4242);
+	FRandomStream Normal(4242);
+	const TArray<FSarkoItemStack> InTutorial =
+		SarkoLoot::RollContainerFor(Unauthored, *Table, Tutorial, /*bTutorialLoot*/ true);
+	const TArray<FSarkoItemStack> Rolled =
+		SarkoLoot::RollContainerFor(Unauthored, *Table, Normal, /*bTutorialLoot*/ false);
+
+	TestEqual(TEXT("an unauthored container rolls identically in either mode"), InTutorial.Num(), Rolled.Num());
+	for (int32 Index = 0; Index < InTutorial.Num(); ++Index)
+	{
+		TestEqual(TEXT("same item"), InTutorial[Index].Item, Rolled[Index].Item);
+		TestEqual(TEXT("same quantity"), InTutorial[Index].Quantity, Rolled[Index].Quantity);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoNormalModeIgnoresAuthoredFixedItems,
+	"Sarko.Loot.NormalModeIgnoresAuthoredFixedItems",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoNormalModeIgnoresAuthoredFixedItems::RunTest(const FString& Parameters)
+{
+	// The other half of the branch, and the half that protects the economy: once
+	// tutorial_completed is set, an authored fixedItems list must be dead data.
+	// Otherwise the teaching layout — which contains a guaranteed military crate —
+	// becomes a farmable route forever.
+	FSarkoLootContainerSpot Spot;
+	Spot.Tier = SarkoLoot::TierMilitary;
+	Spot.FixedItems = { FSarkoItemStack{ FName(TEXT("bike_frame")), 1 } };
+
+	const FSarkoLootTable* Table = SarkoLoot::GetLootTables().Find(SarkoLoot::TierMilitary);
+	if (!Table)
+	{
+		AddError(TEXT("the military tier has no loot table, so this test cannot mean anything"));
+		return false;
+	}
+
+	// Ten different streams, because a single roll could coincidentally match the
+	// fixed list and pass a weaker version of this test.
+	int32 MatchedTheFixedList = 0;
+	for (int32 Seed = 1; Seed <= 10; ++Seed)
+	{
+		FRandomStream Stream(Seed * 7919);
+		const TArray<FSarkoItemStack> Out = SarkoLoot::RollContainerFor(Spot, *Table, Stream, /*bTutorialLoot*/ false);
+		FRandomStream Same(Seed * 7919);
+		const TArray<FSarkoItemStack> Reference = SarkoLoot::RollContainer(*Table, Same);
+
+		TestEqual(TEXT("normal mode is exactly RollContainer"), Out.Num(), Reference.Num());
+		for (int32 Index = 0; Index < Out.Num(); ++Index)
+		{
+			TestEqual(TEXT("same item as an unbranched roll"), Out[Index].Item, Reference[Index].Item);
+			TestEqual(TEXT("same quantity as an unbranched roll"), Out[Index].Quantity, Reference[Index].Quantity);
+		}
+		if (Out.Num() == 1 && Out[0].Item == FName(TEXT("bike_frame")) && Out[0].Quantity == 1)
+		{
+			++MatchedTheFixedList;
+		}
+	}
+	TestTrue(TEXT("at least one of ten rolls differs from the fixed list, so the branch is really off"),
+		MatchedTheFixedList < 10);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

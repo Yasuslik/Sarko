@@ -3,6 +3,9 @@
 #include "CoreMinimal.h"
 #include "Core/SarkoRaidGameState.h"
 #include "GameFramework/GameModeBase.h"
+// Included, not forward-declared: SarkoExtract::FSarkoDwell is the value type of
+// the Dwells map below, so the complete type has to be visible here.
+#include "Loot/SarkoExtractionZone.h"
 #include "Map/SarkoMapDefinition.h"
 // Included, not forward-declared: FSarkoRaidSession is a USTRUCT held by value
 // below, so the full type has to be here.
@@ -91,6 +94,22 @@ public:
 	 */
 	int64 LootSalt = 0;
 
+	/**
+	 * Whether this raid uses the tutorial's static loot (spec §6.5).
+	 *
+	 * Set from GET /v1/profile's `tutorial_completed` before the raid goes live,
+	 * or from USarkoRaidSettings::bOfflineTutorialLoot when there is no profile.
+	 *
+	 * A deliberately plain member and **not** a UPROPERTY, for exactly the reasons
+	 * LootSalt is one: a game mode exists only on the server, so there is no
+	 * replication path to forget to exclude, and a non-UPROPERTY also stays out of
+	 * anything that walks reflected properties. It matters here because a client
+	 * that knew the raid was in tutorial mode could read the authored layout
+	 * straight out of its own copy of the map file — fixedItems is shipped data,
+	 * unlike a roll, which needs the server-only salt.
+	 */
+	bool bTutorialLoot = false;
+
 	/** The layout this raid was loaded from; pawns spawn against it. */
 	FSarkoMapLayout CachedLayout;
 
@@ -113,11 +132,39 @@ private:
 	 */
 	void BeginBackendSession();
 
+	/**
+	 * Everything after auth: start, confirm and ActivateRaid. Split out of
+	 * BeginBackendSession because auth is now skipped whenever the player arrived
+	 * from the shelter with a live JWT (the client and its token ride
+	 * USarkoGameInstance across the travel), so the rest of the chain has two
+	 * entry points — one synchronous, one from the auth completion.
+	 */
+	void OnAuthenticated();
+
+	/** Sets bTutorialLoot and logs what the map can actually deliver in that mode. */
+	void SetTutorialLoot(bool bEnabled);
+
+	/** /v1/raid/start -> /v1/raid/confirm -> ActivateRaid. Split from OnAuthenticated
+	 *  so the profile hop sits between auth and the session opening. */
+	void BeginRaidSession();
+
 	/** Everything after a failed call: log, use the local seed, keep playing (spec §4.6). */
 	void FallBackToOfflineRaid(const FString& Reason);
 
 	/** Marks the seed authoritative, starts the clock and lets containers open. */
 	void ActivateRaid(int32 AuthoritativeSeed, float ClockSeconds);
+
+	/**
+	 * Hands the outcome and haul to the game instance and schedules the trip back
+	 * to the shelter. Called once, from the tail of FinishRaid, on every path that
+	 * writes an outcome — a path that writes one and does not call this strands the
+	 * player on the outcome banner forever.
+	 *
+	 * The travel is on a timer rather than immediate so the outcome banner is
+	 * visible where the raid ended, and the timer is a weak-lambda delegate
+	 * because it is scheduled on a game mode that a travel is about to destroy.
+	 */
+	void ReturnToShelter(ESarkoRaidOutcome Outcome, const TArray<FSarkoItemStack>& Haul);
 
 	/**
 	 * The map file's own raid duration, or the settings default when the map
@@ -142,9 +189,13 @@ private:
 	int32 NextPlayerStartIndex = 0;
 
 	/**
-	 * Server-side per-pawn dwell, in seconds. Keyed weakly so a destroyed pawn's
+	 * Server-side per-pawn extraction progress, keyed weakly so a destroyed pawn's
 	 * entry cannot keep it alive; stale entries are pruned when their key goes
 	 * stale rather than left to accumulate.
+	 *
+	 * The value carries the zone it belongs to, so progress cannot leak across a
+	 * zone boundary. Cleared wholesale in ActivateRaid, which makes the frame the
+	 * raid goes live an entry frame for every pawn.
 	 */
-	TMap<TWeakObjectPtr<class ASarkoCharacter>, float> DwellSeconds;
+	TMap<TWeakObjectPtr<class ASarkoCharacter>, SarkoExtract::FSarkoDwell> Dwells;
 };

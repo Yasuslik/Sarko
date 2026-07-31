@@ -204,6 +204,115 @@ bool SarkoBackend::ParseExpiresAtResponse(const FString& Json, FDateTime& OutExp
 	return true;
 }
 
+bool SarkoBackend::ParseProfileResponse(const FString& Json, FSarkoProfile& OutProfile, FString& OutError)
+{
+	// Reset first, and again on every failure below: a caller that ignores the
+	// return value must find an empty profile rather than a plausible half of one.
+	OutProfile = FSarkoProfile();
+	OutError.Reset();
+
+	TSharedPtr<FJsonObject> Root;
+	if (!ReadRoot(Json, Root, OutError))
+	{
+		return false;
+	}
+
+	// An error envelope is valid JSON with none of these fields, and it arrives
+	// on a 401 the moment the JWT expires. Named explicitly so the log says
+	// "unauthorized" instead of "profile response has no 'player_id'".
+	FSarkoBackendError Envelope;
+	if (ParseErrorResponse(Json, Envelope))
+	{
+		OutError = FString::Printf(TEXT("profile request failed: %s — %s"), *Envelope.Code, *Envelope.Message);
+		return false;
+	}
+
+	if (!Root->TryGetStringField(TEXT("player_id"), OutProfile.PlayerId) || OutProfile.PlayerId.IsEmpty())
+	{
+		OutError = TEXT("profile response has no 'player_id'");
+		OutProfile = FSarkoProfile();
+		return false;
+	}
+	if (!Root->TryGetStringField(TEXT("vehicle_tier"), OutProfile.VehicleTier) || OutProfile.VehicleTier.IsEmpty())
+	{
+		OutError = TEXT("profile response has no 'vehicle_tier'");
+		OutProfile = FSarkoProfile();
+		return false;
+	}
+
+	// Optional, and absence is not an error: schema_version is informational and
+	// a future response may drop it.
+	double SchemaVersion = 0.0;
+	if (Root->TryGetNumberField(TEXT("schema_version"), SchemaVersion))
+	{
+		OutProfile.SchemaVersion = static_cast<int32>(SchemaVersion);
+	}
+
+	// `stash` may be absent (a brand-new player before the starter kit lands) or
+	// empty. Present-but-not-an-array is a fault, and must not read as "empty".
+	if (Root->HasField(TEXT("stash")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Stash = nullptr;
+		if (!Root->TryGetArrayField(TEXT("stash"), Stash) || !Stash)
+		{
+			OutError = TEXT("profile response has a 'stash' that is not an array");
+			OutProfile = FSarkoProfile();
+			return false;
+		}
+		OutProfile.Stash.Reserve(Stash->Num());
+		for (const TSharedPtr<FJsonValue>& Value : *Stash)
+		{
+			const TSharedPtr<FJsonObject>* Object = nullptr;
+			if (!Value->TryGetObject(Object) || !Object)
+			{
+				OutError = TEXT("'stash' contains a non-object entry");
+				OutProfile = FSarkoProfile();
+				return false;
+			}
+			FString ItemId;
+			double Quantity = 0.0;
+			if (!(*Object)->TryGetStringField(TEXT("item_id"), ItemId) || ItemId.IsEmpty())
+			{
+				OutError = TEXT("a stash row has no 'item_id'");
+				OutProfile = FSarkoProfile();
+				return false;
+			}
+			if (!(*Object)->TryGetNumberField(TEXT("quantity"), Quantity) || Quantity < 1.0)
+			{
+				OutError = FString::Printf(TEXT("stash row '%s' has no positive 'quantity'"), *ItemId);
+				OutProfile = FSarkoProfile();
+				return false;
+			}
+			OutProfile.Stash.Add(FSarkoItemStack{ FName(*ItemId), static_cast<int32>(Quantity) });
+		}
+	}
+
+	if (Root->HasField(TEXT("unlocked_maps")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Maps = nullptr;
+		if (!Root->TryGetArrayField(TEXT("unlocked_maps"), Maps) || !Maps)
+		{
+			OutError = TEXT("profile response has an 'unlocked_maps' that is not an array");
+			OutProfile = FSarkoProfile();
+			return false;
+		}
+		OutProfile.UnlockedMaps.Reserve(Maps->Num());
+		for (const TSharedPtr<FJsonValue>& Value : *Maps)
+		{
+			FString MapId;
+			if (Value->TryGetString(MapId) && !MapId.IsEmpty())
+			{
+				OutProfile.UnlockedMaps.Add(MapId);
+			}
+		}
+	}
+
+	// The one field whose absence is meaningful rather than merely tolerated:
+	// absent == false == tutorial mode (spec §6.5).
+	Root->TryGetBoolField(TEXT("tutorial_completed"), OutProfile.bTutorialCompleted);
+	return true;
+}
+
 bool SarkoBackend::ParseErrorResponse(const FString& Json, FSarkoBackendError& OutError)
 {
 	OutError = FSarkoBackendError();
@@ -224,6 +333,16 @@ bool SarkoBackend::ParseErrorResponse(const FString& Json, FSarkoBackendError& O
 	return !OutError.Code.IsEmpty();
 }
 
+bool SarkoBackend::ShouldDropTokenOnResponse(bool bAuthenticatedRequest, int32 HttpCode, const FString& ErrorCode)
+{
+	if (!bAuthenticatedRequest || HttpCode != 401)
+	{
+		return false;
+	}
+	// The raid's own session token, not the Bearer token — see the header.
+	return ErrorCode != TEXT("bad_session_token");
+}
+
 int32 SarkoBackend::SeedToInt32(int64 Seed)
 {
 	// Truncate to 32 bits, then reinterpret. Well-defined both ways, and the
@@ -241,6 +360,16 @@ FString SarkoBackend::DeviceIdFilePath()
 	// as one player against one stash. Harmless for the listen-server slice, but
 	// testing two independent players on one machine needs separate -userdir values
 	// (or project copies) rather than two windows.
+	//
+	// WARNING for headless runs: do NOT pass `-csvCaptureFrames` on the command
+	// line. FCsvProfiler::PreInit runs *before* the project path is resolved and
+	// poisons FPaths::ProjectSavedDir(), so this function returns the engine's own
+	// saved directory instead — ~/Library/Application Support/Epic/UnrealEngine/5.8/
+	// Saved/SarkoDevice.txt — and the run silently authenticates as a *different*
+	// player with a different stash and a different tutorial flag. Nothing logs it;
+	// the raid just looks wrong. The same flag's trace screenshot channel also
+	// swallows `Shot showui`, so the evidence you were capturing does not appear
+	// either. Start the profiler after init instead: -ExecCmds="CsvProfile Start".
 	return FPaths::ProjectSavedDir() / TEXT("SarkoDevice.txt");
 }
 
@@ -334,7 +463,7 @@ TArray<FSarkoItemStack> SarkoBackend::WireLoadout()
 	return TArray<FSarkoItemStack>();
 }
 
-void FSarkoBackendClient::Send(const FString& Path, const FString& Body, bool bAuthenticated,
+void FSarkoBackendClient::Send(const TCHAR* Verb, const FString& Path, const FString& Body, bool bAuthenticated,
 	TFunction<void(bool, const FString&, const FString&)> OnComplete)
 {
 	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
@@ -351,13 +480,19 @@ void FSarkoBackendClient::Send(const FString& Path, const FString& Body, bool bA
 
 	const FHttpRequestRef Request = FHttpModule::Get().CreateRequest();
 	Request->SetURL(Settings.BackendBaseUrl + Path);
-	Request->SetVerb(TEXT("POST"));
-	Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+	Request->SetVerb(Verb);
+	if (!Body.IsEmpty())
+	{
+		// No Content-Type and no body on a GET: some proxies reject a GET that
+		// declares a JSON body, and Go's http.Server will happily read one and
+		// then ignore it, which makes a mistake here invisible.
+		Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+		Request->SetContentAsString(Body);
+	}
 	if (bAuthenticated)
 	{
 		Request->SetHeader(TEXT("Authorization"), TEXT("Bearer ") + Jwt);
 	}
-	Request->SetContentAsString(Body);
 	// Bounded, because a stalled request must not hold the end of a raid open.
 	Request->SetTimeout(Settings.BackendTimeoutSeconds);
 
@@ -365,9 +500,10 @@ void FSarkoBackendClient::Send(const FString& Path, const FString& Body, bool bA
 	// client with it — has been torn down.
 	TWeakPtr<FSarkoBackendClient> WeakSelf = AsShared();
 	Request->OnProcessRequestComplete().BindLambda(
-		[WeakSelf, Path, OnComplete](FHttpRequestPtr, FHttpResponsePtr Response, bool bConnected)
+		[WeakSelf, Path, bAuthenticated, OnComplete](FHttpRequestPtr, FHttpResponsePtr Response, bool bConnected)
 		{
-			if (!WeakSelf.IsValid())
+			const TSharedPtr<FSarkoBackendClient> Self = WeakSelf.Pin();
+			if (!Self)
 			{
 				UE_LOG(LogTemp, Warning, TEXT("SarkoBackend: %s completed after the client was destroyed; ignored"), *Path);
 				return;
@@ -392,6 +528,23 @@ void FSarkoBackendClient::Send(const FString& Path, const FString& Body, bool bA
 				// raid's worth of persistence, and the log is the only place it
 				// is visible.
 				UE_LOG(LogTemp, Error, TEXT("SarkoBackend: %s"), *Error);
+
+				// A rejected token must not outlive the request that was rejected.
+				// One client and one JWT now ride the whole launch (the game
+				// instance owns them), so keeping a token the server has refused
+				// makes every later request fail forever — a rotated JWT_SECRET or
+				// a dropped player row used to heal itself on the next raid and
+				// silently stopped doing so. Dropped rather than refreshed here:
+				// the next caller already asks IsAuthenticated() first
+				// (ASarkoShelterPlayerController::FetchProfile,
+				// ASarkoRaidGameMode::BeginBackendSession), so re-auth happens on
+				// its own, exactly once, with no retry loop to get wrong.
+				if (SarkoBackend::ShouldDropTokenOnResponse(bAuthenticated, Code, Parsed.Code))
+				{
+					Self->Jwt.Reset();
+					UE_LOG(LogTemp, Warning,
+						TEXT("SarkoBackend: the token was refused, so it has been dropped — the next request will authenticate again"));
+				}
 				OnComplete(false, ResponseBody, Error);
 				return;
 			}
@@ -416,7 +569,7 @@ void FSarkoBackendClient::Send(const FString& Path, const FString& Body, bool bA
 void FSarkoBackendClient::Authenticate(FOnDone OnDone)
 {
 	TWeakPtr<FSarkoBackendClient> WeakSelf = AsShared();
-	Send(TEXT("/v1/auth/anonymous"), SarkoBackend::MakeAnonymousBody(SarkoBackend::EnsureDeviceId()),
+	Send(TEXT("POST"), TEXT("/v1/auth/anonymous"), SarkoBackend::MakeAnonymousBody(SarkoBackend::EnsureDeviceId()),
 		/*bAuthenticated*/ false,
 		[WeakSelf, OnDone](bool bSuccess, const FString& Body, const FString& Error)
 		{
@@ -446,7 +599,7 @@ void FSarkoBackendClient::Authenticate(FOnDone OnDone)
 
 void FSarkoBackendClient::StartRaid(const FString& MapId, const TArray<FSarkoItemStack>& Loadout, FOnSession OnDone)
 {
-	Send(TEXT("/v1/raid/start"), SarkoBackend::MakeRaidStartBody(MapId, Loadout), /*bAuthenticated*/ true,
+	Send(TEXT("POST"), TEXT("/v1/raid/start"), SarkoBackend::MakeRaidStartBody(MapId, Loadout), /*bAuthenticated*/ true,
 		[OnDone](bool bSuccess, const FString& Body, const FString& Error)
 		{
 			if (!bSuccess)
@@ -470,7 +623,7 @@ void FSarkoBackendClient::StartRaid(const FString& MapId, const TArray<FSarkoIte
 
 void FSarkoBackendClient::ConfirmRaid(const FSarkoRaidSession& Session, FOnDeadline OnDone)
 {
-	Send(TEXT("/v1/raid/confirm"), SarkoBackend::MakeSessionBody(Session.SessionId, Session.SessionToken),
+	Send(TEXT("POST"), TEXT("/v1/raid/confirm"), SarkoBackend::MakeSessionBody(Session.SessionId, Session.SessionToken),
 		/*bAuthenticated*/ true,
 		[OnDone](bool bSuccess, const FString& Body, const FString& Error)
 		{
@@ -496,7 +649,7 @@ void FSarkoBackendClient::ConfirmRaid(const FSarkoRaidSession& Session, FOnDeadl
 void FSarkoBackendClient::SubmitResult(const FSarkoRaidSession& Session, const FString& Outcome,
 	const TArray<FSarkoItemStack>& Items, FOnDone OnDone)
 {
-	Send(TEXT("/v1/raid/result"),
+	Send(TEXT("POST"), TEXT("/v1/raid/result"),
 		SarkoBackend::MakeRaidResultBody(Session.SessionId, Session.SessionToken, Outcome, Items),
 		/*bAuthenticated*/ true,
 		[Outcome, OnDone](bool bSuccess, const FString& Body, const FString& Error)
@@ -511,5 +664,34 @@ void FSarkoBackendClient::SubmitResult(const FSarkoRaidSession& Session, const F
 			// on them — the shelter reads the profile next launch.
 			UE_LOG(LogTemp, Display, TEXT("SarkoBackend: result '%s' recorded: %s"), *Outcome, *Body);
 			OnDone(true, FString());
+		});
+}
+
+void FSarkoBackendClient::FetchProfile(FOnProfile OnDone)
+{
+	Send(TEXT("GET"), TEXT("/v1/profile"), FString(), /*bAuthenticated*/ true,
+		[OnDone](bool bSuccess, const FString& Body, const FString& Error)
+		{
+			if (!bSuccess)
+			{
+				OnDone(false, FSarkoProfile(), Error);
+				return;
+			}
+			FSarkoProfile Profile;
+			FString ParseError;
+			if (!SarkoBackend::ParseProfileResponse(Body, Profile, ParseError))
+			{
+				UE_LOG(LogTemp, Error, TEXT("SarkoBackend: %s"), *ParseError);
+				OnDone(false, FSarkoProfile(), ParseError);
+				return;
+			}
+			// The stash is logged by size, not by contents: it is the player's own
+			// inventory and there is no reason for it to be in a log file, and on a
+			// long-lived stash it would be dozens of lines every shelter entry.
+			UE_LOG(LogTemp, Display,
+				TEXT("SarkoBackend: profile for %s — %d stash rows, tier '%s', tutorial %s"),
+				*Profile.PlayerId, Profile.Stash.Num(), *Profile.VehicleTier,
+				Profile.bTutorialCompleted ? TEXT("completed") : TEXT("PENDING"));
+			OnDone(true, Profile, FString());
 		});
 }

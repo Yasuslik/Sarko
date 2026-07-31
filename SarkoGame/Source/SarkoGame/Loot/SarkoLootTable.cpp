@@ -1,6 +1,9 @@
 #include "Loot/SarkoLootTable.h"
 
 #include "Dom/JsonObject.h"
+// For the full FSarkoLootContainerSpot that RollContainerFor reads FixedItems
+// off; the header only forward-declares it.
+#include "Map/SarkoMapDefinition.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Serialization/JsonReader.h"
@@ -272,6 +275,19 @@ TArray<FSarkoItemStack> SarkoLoot::RollContainer(const FSarkoLootTable& Table, F
 	}
 
 	return Out;
+}
+
+TArray<FSarkoItemStack> SarkoLoot::RollContainerFor(const FSarkoLootContainerSpot& Spot,
+	const FSarkoLootTable& Table, FRandomStream& Stream, bool bTutorialLoot)
+{
+	if (bTutorialLoot && Spot.FixedItems.Num() > 0)
+	{
+		// A copy, and the stream is not advanced at all. Advancing it "for
+		// consistency" would make the tutorial's own contents depend on which
+		// containers the player opened first, which is the opposite of static.
+		return Spot.FixedItems;
+	}
+	return RollContainer(Table, Stream);
 }
 
 SarkoLoot::FSarkoLootPayout SarkoLoot::CompleteLootChannel(const TArray<FSarkoItemStack>& Rolled,

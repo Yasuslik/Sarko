@@ -480,7 +480,8 @@ func TestProfileExposesTutorialCompletedOverTheWire(t *testing.T) {
 Run: `cd sarko-api && make test`
 Expected: `ok` for all seven packages, and **94 tests** total (89 before + 3 raid-result + 1 players + 1 endpoints). Confirm the count with:
 
-Run: `cd sarko-api && TEST_DATABASE_URL="postgres://sarko:sarko@localhost:5455/sarko_test?sslmode=disable" go test ./... -count=1 -p 1 -v 2>&1 | grep -c '^=== RUN' `
+Run: `cd sarko-api && TEST_DATABASE_URL="postgres://sarko:sarko@localhost:5455/sarko_test?sslmode=disable" go test ./... -count=1 -p 1 -v 2>&1 | grep '^=== RUN' | grep -vc '/'`
+(the `grep -vc '/'` matters: a bare `grep -c '^=== RUN'` counts subtests too and reports 131, not the 94 top-level tests this plan's numbers refer to.)
 Expected: `94`.
 
 - [ ] **Step 9: Commit**

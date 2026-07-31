@@ -68,6 +68,12 @@ struct FSarkoLootTables
 	const FSarkoLootTable* Find(FName Tier) const;
 };
 
+// Forward-declared at global scope on purpose. `const struct
+// FSarkoLootContainerSpot&` written inside `namespace SarkoLoot` declares a
+// second, permanently-incomplete SarkoLoot::FSarkoLootContainerSpot that shadows
+// the real one — that exact bug already happened once in SarkoMapBuilder.h.
+struct FSarkoLootContainerSpot;
+
 namespace SarkoLoot
 {
 	/** The five tiers every table file must define, in this order. */
@@ -143,6 +149,27 @@ namespace SarkoLoot
 	 * haul and a retried transfer cannot duplicate loot.
 	 */
 	TArray<FSarkoItemStack> RollContainer(const FSarkoLootTable& Table, FRandomStream& Stream);
+
+	/**
+	 * One container's contents, honouring the tutorial's static loot.
+	 *
+	 * The single entry point the loot channel calls, so the branch exists in
+	 * exactly one place rather than at the call site:
+	 *  - tutorial mode **and** an authored fixedItems list → that list, verbatim,
+	 *    with the stream untouched. Static means the seed cannot reach it, which
+	 *    is what makes dying and replaying the tutorial show the same layout
+	 *    (spec §6.5);
+	 *  - anything else → RollContainer, unchanged.
+	 *
+	 * Tutorial mode with **no** authored list deliberately rolls rather than
+	 * yielding nothing: the mechanism ships in Stage A.5 and the layout in Stage
+	 * C, and a first raid where all 42 containers are empty would be a real
+	 * regression in between. ASarkoRaidGameMode logs one Warning per tutorial raid
+	 * naming how many containers carry a list, so the gap is visible; Stage C's
+	 * acceptance bar is that the Warning stops appearing.
+	 */
+	TArray<FSarkoItemStack> RollContainerFor(const FSarkoLootContainerSpot& Spot, const FSarkoLootTable& Table,
+		FRandomStream& Stream, bool bTutorialLoot);
 
 	/** What one completed loot channel actually moved. */
 	struct FSarkoLootPayout

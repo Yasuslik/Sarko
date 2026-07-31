@@ -69,6 +69,25 @@ class ASarkoPlayerController : public APlayerController
 public:
 	ASarkoPlayerController();
 
+	/**
+	 * Asserts FInputModeGameOnly, because nothing else in the raid does.
+	 *
+	 * UGameViewportClient::SetIgnoreInput is **not** world state: the viewport
+	 * client belongs to the ULocalPlayer, which UEngine::LoadMap keeps while it
+	 * destroys every actor. So the shelter's FInputModeUIOnly (which sets
+	 * bIgnoreInput = true) survives the travel into the raid, and
+	 * UGameViewportClient::InputKey/InputAxis/InputTouch all early-return while it
+	 * is set — the raid spawns, the clock runs, and WASD, touch, fire, loot and
+	 * extract are every one of them dead, so the raid can only ever end MIA.
+	 *
+	 * Asserted here rather than only reset by the shelter on the way out, and the
+	 * shelter resets it too: each alone leaves the hole open (a future screen that
+	 * forgets to reset, or a raid entered from some other UI-only state), and the
+	 * pair is idempotent — applying game-only input in a world that is already
+	 * game-only changes nothing.
+	 */
+	virtual void BeginPlay() override;
+
 	virtual void PlayerTick(float DeltaTime) override;
 
 	const FSarkoTouchStick& GetMoveStick() const { return MoveStick; }

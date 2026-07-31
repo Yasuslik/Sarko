@@ -571,3 +571,51 @@ func TestRaidStartRejectsAnUnknownLoadoutItem(t *testing.T) {
 		t.Errorf("raid/start after a rejected loadout = %d, want 200 (no session was left open)", code)
 	}
 }
+
+func TestProfileExposesTutorialCompletedOverTheWire(t *testing.T) {
+	// The client's tutorial branch reads this exact field name off the HTTP
+	// response. A struct field with no tag, or a tag with the wrong name,
+	// serialises to something the client parses as absent — and absent means
+	// tutorial mode, so the bug is "every veteran gets static loot forever" and
+	// nothing in the store tests can see it. Decoded into map[string]any rather
+	// than store.Profile for the same reason: unmarshalling into the struct that
+	// produced the JSON would agree with itself whatever the tag said.
+	c := newTestServer(t)
+	c.login("device-tutorial-wire")
+
+	var raw map[string]any
+	if code := c.do(http.MethodGet, "/v1/profile", nil, &raw); code != http.StatusOK {
+		t.Fatalf("profile status = %d, want 200", code)
+	}
+	done, present := raw["tutorial_completed"]
+	if !present {
+		t.Fatalf("profile response has no tutorial_completed field: %v", raw)
+	}
+	if done != false {
+		t.Errorf("tutorial_completed = %v for a new player, want false", done)
+	}
+
+	var started store.StartedRaid
+	if code := c.do(http.MethodPost, "/v1/raid/start",
+		map[string]any{"map_id": "bridge", "loadout": []any{}}, &started); code != http.StatusOK {
+		t.Fatalf("raid/start status = %d, want 200", code)
+	}
+	c.confirm(started)
+
+	var result store.RaidResult
+	if code := c.do(http.MethodPost, "/v1/raid/result", map[string]any{
+		"session_id":    started.SessionID,
+		"session_token": started.SessionToken,
+		"outcome":       "extracted",
+		"items":         []map[string]any{{"item_id": "chain", "quantity": 1}},
+	}, &result); code != http.StatusOK {
+		t.Fatalf("raid/result status = %d, want 200", code)
+	}
+
+	if code := c.do(http.MethodGet, "/v1/profile", nil, &raw); code != http.StatusOK {
+		t.Fatalf("profile status after extraction = %d, want 200", code)
+	}
+	if raw["tutorial_completed"] != true {
+		t.Errorf("tutorial_completed = %v after a successful raid, want true", raw["tutorial_completed"])
+	}
+}

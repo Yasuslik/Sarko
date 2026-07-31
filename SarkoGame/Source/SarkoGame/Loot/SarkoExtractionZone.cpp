@@ -19,6 +19,33 @@ float SarkoExtract::AdvanceDwell(float CurrentSeconds, bool bInsideZone, float D
 	return CurrentSeconds + FMath::Min(DeltaSeconds, MaxDwellStepSeconds);
 }
 
+SarkoExtract::FSarkoDwell SarkoExtract::AdvanceDwellInZone(const FSarkoDwell& Current, int32 ZoneIndex,
+	float DeltaSeconds)
+{
+	FSarkoDwell Next;
+
+	if (ZoneIndex == INDEX_NONE)
+	{
+		// Outside: forget the zone and the seconds both. Returning a default is the
+		// whole rule, so there is nothing to reset elsewhere.
+		return Next;
+	}
+
+	Next.ZoneIndex = ZoneIndex;
+
+	if (ZoneIndex != Current.ZoneIndex)
+	{
+		// An entry frame. AdvanceDwell from zero rather than assigning the delta
+		// directly, so the per-frame clamp applies here too — a hitch on the frame
+		// the pawn arrives is the easiest way to lose it.
+		Next.Seconds = AdvanceDwell(0.f, /*bInsideZone*/ true, DeltaSeconds);
+		return Next;
+	}
+
+	Next.Seconds = AdvanceDwell(Current.Seconds, /*bInsideZone*/ true, DeltaSeconds);
+	return Next;
+}
+
 int32 SarkoExtract::FindZoneContaining(const FVector& PawnLocation, const TArray<FSarkoExtractionSpot>& Zones)
 {
 	for (int32 Index = 0; Index < Zones.Num(); ++Index)

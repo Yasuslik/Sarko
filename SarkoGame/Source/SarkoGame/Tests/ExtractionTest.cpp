@@ -473,4 +473,137 @@ bool FSarkoLosingOutcomesLoseTheHaul::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoDwellIsMeasuredFromEnteringThisZone,
+	"Sarko.Extract.DwellIsMeasuredFromEnteringThisZone",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoDwellIsMeasuredFromEnteringThisZone::RunTest(const FString& Parameters)
+{
+	using SarkoExtract::FSarkoDwell;
+
+	// Entering starts the clock at this frame's delta, not at zero-plus-a-frame
+	// later: the frame the pawn is first seen inside is a frame it spent inside.
+	FSarkoDwell Dwell = SarkoExtract::AdvanceDwellInZone(FSarkoDwell(), /*ZoneIndex*/ 0, 0.1f);
+	TestEqual(TEXT("entering records which zone"), Dwell.ZoneIndex, 0);
+	TestTrue(TEXT("entering starts at one frame"), FMath::IsNearlyEqual(Dwell.Seconds, 0.1f, 0.001f));
+
+	for (int32 Frame = 0; Frame < 9; ++Frame)
+	{
+		Dwell = SarkoExtract::AdvanceDwellInZone(Dwell, 0, 0.1f);
+	}
+	TestTrue(TEXT("a second in one zone accrues about a second"),
+		FMath::IsNearlyEqual(Dwell.Seconds, 1.f, 0.001f));
+
+	// THE BUG. Crossing straight from zone 0 into zone 1 without passing through
+	// open ground must NOT carry zone 0's seconds across. Before this, a pawn that
+	// had stood 4.9 s in one zone extracted from a different one on its first frame
+	// inside — nine tenths of the dwell paid somewhere else entirely.
+	const FSarkoDwell Crossed = SarkoExtract::AdvanceDwellInZone(Dwell, /*ZoneIndex*/ 1, 0.1f);
+	TestEqual(TEXT("crossing into a different zone re-keys the dwell"), Crossed.ZoneIndex, 1);
+	TestTrue(TEXT("crossing into a different zone restarts the count"),
+		FMath::IsNearlyEqual(Crossed.Seconds, 0.1f, 0.001f));
+
+	// Leaving resets to zero and forgets the zone, so re-entering the same one
+	// starts over rather than resuming (spec §4.5: leaving resets it, and a pause
+	// would let a player stitch five seconds out of safe fragments).
+	const FSarkoDwell Left = SarkoExtract::AdvanceDwellInZone(Dwell, INDEX_NONE, 0.1f);
+	TestEqual(TEXT("leaving forgets the zone"), Left.ZoneIndex, INDEX_NONE);
+	TestEqual(TEXT("leaving resets to zero"), Left.Seconds, 0.f);
+
+	const FSarkoDwell Reentered = SarkoExtract::AdvanceDwellInZone(Left, 0, 0.5f);
+	TestTrue(TEXT("re-entering starts from zero"), FMath::IsNearlyEqual(Reentered.Seconds, 0.5f, 0.001f));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoDwellClampsHitchesAndIgnoresDeadFrames,
+	"Sarko.Extract.DwellClampsHitchesAndIgnoresDeadFrames",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoDwellClampsHitchesAndIgnoresDeadFrames::RunTest(const FString& Parameters)
+{
+	using SarkoExtract::FSarkoDwell;
+
+	// A loading stall or a breakpoint produces one enormous delta, and without a
+	// clamp that single frame completes most of an extraction the player never
+	// stood through. The clamp has to survive being moved behind the new entry
+	// point, including on the *entry* frame — a hitch on the frame the pawn
+	// arrives is the easiest way to lose it.
+	const FSarkoDwell AfterHitch = SarkoExtract::AdvanceDwellInZone(FSarkoDwell(), 0, 3.f);
+	TestTrue(TEXT("a huge delta is clamped even on the entry frame"),
+		AfterHitch.Seconds <= SarkoExtract::MaxDwellStepSeconds + KINDA_SMALL_NUMBER);
+
+	FSarkoDwell Standing;
+	Standing.ZoneIndex = 0;
+	Standing.Seconds = 2.f;
+	TestEqual(TEXT("a zero delta changes nothing"),
+		SarkoExtract::AdvanceDwellInZone(Standing, 0, 0.f).Seconds, 2.f);
+	TestEqual(TEXT("a negative delta changes nothing"),
+		SarkoExtract::AdvanceDwellInZone(Standing, 0, -1.f).Seconds, 2.f);
+	// ...but a zero delta on a *different* zone still re-keys, because the pawn is
+	// somewhere else and its old progress is not transferable at any delta.
+	const FSarkoDwell ZeroDeltaCross = SarkoExtract::AdvanceDwellInZone(Standing, 1, 0.f);
+	TestEqual(TEXT("a zero delta still re-keys across zones"), ZeroDeltaCross.ZoneIndex, 1);
+	TestEqual(TEXT("and drops the old zone's progress"), ZeroDeltaCross.Seconds, 0.f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoActivationIsTheDwellEpoch,
+	"Sarko.Extract.ActivationIsTheDwellEpoch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoActivationIsTheDwellEpoch::RunTest(const FString& Parameters)
+{
+	using SarkoExtract::FSarkoDwell;
+
+	// The rule the live e2e exposed, now written down: a pawn standing in a zone
+	// before the raid went live owes the FULL dwell from the activation frame, not
+	// a fraction of it and not zero. ASarkoRaidGameMode::ActivateRaid clears its
+	// dwell map, so the next tick is an entry frame — which is what this default
+	// state models. The alternative reading of "measured from entering the zone"
+	// would hand an instant extraction to anyone who spawned on a pad.
+	const FSarkoDwell AtActivation;
+	TestEqual(TEXT("a cleared dwell knows no zone"), AtActivation.ZoneIndex, INDEX_NONE);
+	TestEqual(TEXT("a cleared dwell has no seconds"), AtActivation.Seconds, 0.f);
+
+	// Ten frames of 0.5 s reaches the 5 s dwell and not a frame sooner.
+	FSarkoDwell Dwell = AtActivation;
+	constexpr float Required = 5.f;
+	int32 Frames = 0;
+	while (Dwell.Seconds < Required && Frames < 100)
+	{
+		Dwell = SarkoExtract::AdvanceDwellInZone(Dwell, 0, 0.5f);
+		++Frames;
+	}
+	TestEqual(TEXT("the full dwell is owed from the activation frame"), Frames, 10);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoClientLayoutTriggersOnSessionReadyNotOnSeed,
+	"Sarko.Extract.ClientLayoutTriggersOnSessionReadyNotOnSeed",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoClientLayoutTriggersOnSessionReadyNotOnSeed::RunTest(const FString& Parameters)
+{
+	// The other open note. A client spawned its geometry from OnRep_Seed, and
+	// replication sends no change when a property equals its default — so an
+	// authoritative seed of exactly 0 (one in 2^32 of the backend's uint32, and
+	// the *default* of the ?Seed= path) never fired the notify and left a joining
+	// client standing in an empty world with no error anywhere.
+	//
+	// bSessionReady is the honest trigger: it is false until the raid is live and
+	// its flip false->true always replicates. The rule is pure so the seed value is
+	// provably irrelevant to it.
+	TestFalse(TEXT("nothing spawns before the session is ready"),
+		SarkoRaid::ShouldSpawnClientLayout(/*bLayoutBuilt*/ false, /*bSessionReady*/ false));
+	TestTrue(TEXT("a ready session spawns the layout"),
+		SarkoRaid::ShouldSpawnClientLayout(false, true));
+	TestFalse(TEXT("an already-built layout is never rebuilt"),
+		SarkoRaid::ShouldSpawnClientLayout(/*bLayoutBuilt*/ true, true));
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

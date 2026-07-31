@@ -118,6 +118,9 @@ bool FSarkoMapDefinitionRejectsBadInput::RunTest(const FString& Parameters)
 		// A zero-radius extraction zone can never trigger.
 		{ TEXT("zero radiusUU"),
 			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],"extractions":[{"pos":[0,0,0],"radiusUU":0}]})") },
+		// fixedItems has its own bad-case table next to its positive case, in
+		// Sarko.Loot.ContainersMayCarryFixedItems — including the empty-list and
+		// fractional-qty rows, which belong beside their siblings rather than here.
 	};
 
 	for (const TPair<FString, FString>& Case : BadCases)

@@ -193,3 +193,20 @@ func TestProfileUnknownPlayerReturnsErrNotFound(t *testing.T) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
+
+func TestProfileReportsTutorialNotCompletedForANewPlayer(t *testing.T) {
+	// Read through the same path the client reads: /v1/profile serialises this
+	// struct verbatim, so a field that is never populated by Profile() is a field
+	// the client receives as false no matter what the column says.
+	s := store.New(testutil.Pool(t))
+	ctx := context.Background()
+	playerID := seedPlayer(t, s, "device-tutorial-fresh", nil)
+
+	profile, err := s.Profile(ctx, playerID)
+	if err != nil {
+		t.Fatalf("Profile: %v", err)
+	}
+	if profile.TutorialCompleted {
+		t.Error("a new player must start with tutorial_completed = false")
+	}
+}

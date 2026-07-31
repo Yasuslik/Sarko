@@ -2,6 +2,9 @@
 
 #include "CoreMinimal.h"
 
+// Included, not forward-declared: FSarkoItemStack is a USTRUCT held by value in
+// FSarkoLootContainerSpot::FixedItems below, so the full type has to be here.
+#include "Loot/SarkoItemCatalog.h"
 #include "Map/SarkoMapBuilder.h"
 
 #include "SarkoMapDefinition.generated.h"
@@ -33,6 +36,23 @@ struct FSarkoLootContainerSpot
 
 	UPROPERTY()
 	FName Tier;
+
+	/**
+	 * Exact contents instead of a roll, for the one-time tutorial raid (spec
+	 * §6.5). Empty for every normal container, which is all of them today —
+	 * Stage C authors the teaching layout against Bridge_West's geometry.
+	 *
+	 * Only consulted while the player's profile says `tutorial_completed` is
+	 * false, so once the tutorial is over this is dead data rather than a
+	 * guaranteed drop a player could farm forever.
+	 *
+	 * Validated against the item catalog at parse time: an id the catalog does
+	 * not know would be refused by the backend's domain.ValidateRaidItems at
+	 * result time, fifteen minutes into a raid, after the player has already been
+	 * shown the item.
+	 */
+	UPROPERTY()
+	TArray<FSarkoItemStack> FixedItems;
 };
 
 /** A place the player can leave the raid from. Mechanic lands in a later plan. */
