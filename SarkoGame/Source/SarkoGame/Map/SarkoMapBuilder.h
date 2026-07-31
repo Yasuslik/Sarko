@@ -23,6 +23,14 @@ struct FSarkoCoverBlock
 {
 	GENERATED_BODY()
 
+	/**
+	 * Optional stable name (ТЗ §18). Optional on a block because there are
+	 * hundreds and none is referenced individually; carried anyway so an
+	 * expanded building's walls can be traced back to their building.
+	 */
+	UPROPERTY()
+	FString Id;
+
 	UPROPERTY()
 	FVector Location = FVector::ZeroVector;
 

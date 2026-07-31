@@ -104,6 +104,40 @@ namespace
 		return true;
 	}
 
+	/**
+	 * Reads an optional stable id. Absent is fine; present-but-empty is not —
+	 * an empty id is a name nothing can be found by, and two of them collide.
+	 *
+	 * Deliberately does NOT go through ReadOptionalString: TryGetStringField is
+	 * not the type check it looks like, because FJsonValueNumber overrides
+	 * TryGetString and stringifies. `"id": 7` therefore parses as the id "7" —
+	 * a name that looks like a string everywhere downstream but cannot be found
+	 * by grepping the map file for it, and that changes representation the
+	 * moment anyone re-serialises the file. The JSON type is checked directly
+	 * instead, so a non-string id is a named error like every other
+	 * malformation in this parser.
+	 */
+	bool ReadOptionalId(const TSharedPtr<FJsonObject>& Object, FString& Out, FString& OutError)
+	{
+		const TSharedPtr<FJsonValue> Field = Object->TryGetField(TEXT("id"));
+		if (!Field.IsValid())
+		{
+			return true;
+		}
+		if (Field->Type != EJson::String)
+		{
+			OutError = TEXT("'id' is present but not a string");
+			return false;
+		}
+		Out = Field->AsString();
+		if (Out.IsEmpty())
+		{
+			OutError = TEXT("'id' is present but empty");
+			return false;
+		}
+		return true;
+	}
+
 	/** Reads a yaw in degrees, defaulting to 0.0 when the field is absent. */
 	bool ReadYaw(const TSharedPtr<FJsonObject>& Object, double& OutYaw, FString& OutError)
 	{
@@ -171,6 +205,11 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 				OutError = FString::Printf(TEXT("blocks[%d]: %s"), Index, *OutError);
 				return false;
 			}
+			if (!ReadOptionalId(*Object, Block.Id, OutError))
+			{
+				OutError = FString::Printf(TEXT("blocks[%d]: %s"), Index, *OutError);
+				return false;
+			}
 			// A block with a non-positive extent describes geometry that either
 			// cannot exist or has collapsed to nothing, and is never intentional.
 			if (Block.Extent.X <= 0.f || Block.Extent.Y <= 0.f || Block.Extent.Z <= 0.f)
@@ -209,6 +248,11 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 			}
 			FSarkoMapProp Prop;
 			if (!ReadVector(*Object, TEXT("pos"), Prop.Location, OutError))
+			{
+				OutError = FString::Printf(TEXT("props[%d]: %s"), Index, *OutError);
+				return false;
+			}
+			if (!ReadOptionalId(*Object, Prop.Id, OutError))
 			{
 				OutError = FString::Printf(TEXT("props[%d]: %s"), Index, *OutError);
 				return false;
@@ -252,6 +296,11 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 			}
 			FSarkoLootContainerSpot Spot;
 			if (!ReadVector(*Object, TEXT("pos"), Spot.Location, OutError))
+			{
+				OutError = FString::Printf(TEXT("containers[%d]: %s"), Index, *OutError);
+				return false;
+			}
+			if (!ReadOptionalId(*Object, Spot.Id, OutError))
 			{
 				OutError = FString::Printf(TEXT("containers[%d]: %s"), Index, *OutError);
 				return false;
@@ -377,8 +426,18 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 				OutError = FString::Printf(TEXT("playerSpawns[%d]: %s"), Index, *OutError);
 				return false;
 			}
+			FString SpawnId;
+			if (!ReadOptionalId(*Object, SpawnId, OutError))
+			{
+				OutError = FString::Printf(TEXT("playerSpawns[%d]: %s"), Index, *OutError);
+				return false;
+			}
 			const FRotator Rotation(0.f, static_cast<float>(Yaw), 0.f);
 			OutDefinition.PlayerSpawns.Add(FTransform(Rotation, Location));
+			// Both arrays, same iteration, no early exit between them — the one
+			// discipline that keeps the two index-aligned. An id read that fails
+			// returns above, before either array has been touched.
+			OutDefinition.PlayerSpawnIds.Add(SpawnId);
 		}
 	}
 	if (OutDefinition.PlayerSpawns.Num() == 0)
@@ -406,6 +465,11 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 			}
 			FSarkoBotSpot Spot;
 			if (!ReadVector(*Object, TEXT("pos"), Spot.Location, OutError))
+			{
+				OutError = FString::Printf(TEXT("botSpawns[%d]: %s"), Index, *OutError);
+				return false;
+			}
+			if (!ReadOptionalId(*Object, Spot.Id, OutError))
 			{
 				OutError = FString::Printf(TEXT("botSpawns[%d]: %s"), Index, *OutError);
 				return false;
@@ -447,6 +511,11 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 				OutError = FString::Printf(TEXT("extractions[%d]: %s"), Index, *OutError);
 				return false;
 			}
+			if (!ReadOptionalId(*Object, Spot.Id, OutError))
+			{
+				OutError = FString::Printf(TEXT("extractions[%d]: %s"), Index, *OutError);
+				return false;
+			}
 			// Absence keeps the struct's own default (400 uu); presence must
 			// parse and clear a sane minimum, or the zone could be too small
 			// to ever register an overlap.
@@ -470,6 +539,15 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 			}
 			OutDefinition.Extractions.Add(Spot);
 		}
+	}
+
+	// Uniqueness is a parse-time rule rather than a caller's responsibility:
+	// every consumer of a definition assumes an id names one object, and there
+	// is no safe behaviour for the case where it names two.
+	TArray<FString> Ids;
+	if (!CollectIds(OutDefinition, Ids, OutError))
+	{
+		return false;
 	}
 
 	return true;
@@ -511,5 +589,79 @@ bool SarkoMap::LoadDefinitionFromDisk(const FString& MapId, FSarkoMapDefinition&
 		OutError = FString::Printf(TEXT("%s: %s"), *Path, *OutError);
 		return false;
 	}
+	// Stricter than the pure parser on purpose (see RequireIdentifiedEntries).
+	// A shipped map with an anonymous container cannot be audited against the
+	// ТЗ's loot ledger, and Stage C authors 42 of them.
+	FString IdError;
+	if (!RequireIdentifiedEntries(OutDefinition, IdError))
+	{
+		OutError = FString::Printf(TEXT("%s: %s"), *Path, *IdError);
+		OutDefinition = FSarkoMapDefinition();
+		return false;
+	}
+	return true;
+}
+
+bool SarkoMap::CollectIds(const FSarkoMapDefinition& Definition, TArray<FString>& OutIds, FString& OutError)
+{
+	OutIds.Reset();
+	OutError.Reset();
+
+	TSet<FString> Seen;
+	const auto Take = [&OutIds, &OutError, &Seen](const FString& Id, const TCHAR* Section, int32 Index) -> bool
+	{
+		if (Id.IsEmpty())
+		{
+			return true;
+		}
+		if (Seen.Contains(Id))
+		{
+			OutError = FString::Printf(TEXT("duplicate id '%s' (%s[%d])"), *Id, Section, Index);
+			return false;
+		}
+		Seen.Add(Id);
+		OutIds.Add(Id);
+		return true;
+	};
+
+	for (int32 I = 0; I < Definition.Blocks.Num(); ++I)         { if (!Take(Definition.Blocks[I].Id, TEXT("blocks"), I))            { return false; } }
+	for (int32 I = 0; I < Definition.Props.Num(); ++I)          { if (!Take(Definition.Props[I].Id, TEXT("props"), I))              { return false; } }
+	for (int32 I = 0; I < Definition.Containers.Num(); ++I)     { if (!Take(Definition.Containers[I].Id, TEXT("containers"), I))    { return false; } }
+	for (int32 I = 0; I < Definition.PlayerSpawnIds.Num(); ++I) { if (!Take(Definition.PlayerSpawnIds[I], TEXT("playerSpawns"), I)) { return false; } }
+	for (int32 I = 0; I < Definition.BotSpawns.Num(); ++I)      { if (!Take(Definition.BotSpawns[I].Id, TEXT("botSpawns"), I))      { return false; } }
+	for (int32 I = 0; I < Definition.Extractions.Num(); ++I)    { if (!Take(Definition.Extractions[I].Id, TEXT("extractions"), I))  { return false; } }
+	return true;
+}
+
+bool SarkoMap::RequireIdentifiedEntries(const FSarkoMapDefinition& Definition, FString& OutError)
+{
+	OutError.Reset();
+
+	const auto Require = [&OutError](const FString& Id, const TCHAR* Section, int32 Index) -> bool
+	{
+		if (!Id.IsEmpty())
+		{
+			return true;
+		}
+		OutError = FString::Printf(TEXT("%s[%d] has no 'id'; containers, spawns, extractions and buildings must be named"),
+			Section, Index);
+		return false;
+	};
+
+	// PlayerSpawnIds is index-aligned with PlayerSpawns, so a spawn that never
+	// reached the id array would be invisible to the loop below. Checked first,
+	// because a shorter id array makes every later "every spawn is named"
+	// verdict a statement about fewer spawns than the map has.
+	if (Definition.PlayerSpawnIds.Num() != Definition.PlayerSpawns.Num())
+	{
+		OutError = FString::Printf(TEXT("playerSpawns: %d spawns but %d ids — the arrays must stay index-aligned"),
+			Definition.PlayerSpawns.Num(), Definition.PlayerSpawnIds.Num());
+		return false;
+	}
+
+	for (int32 I = 0; I < Definition.Containers.Num(); ++I)     { if (!Require(Definition.Containers[I].Id, TEXT("containers"), I))    { return false; } }
+	for (int32 I = 0; I < Definition.PlayerSpawnIds.Num(); ++I) { if (!Require(Definition.PlayerSpawnIds[I], TEXT("playerSpawns"), I)) { return false; } }
+	for (int32 I = 0; I < Definition.BotSpawns.Num(); ++I)      { if (!Require(Definition.BotSpawns[I].Id, TEXT("botSpawns"), I))      { return false; } }
+	for (int32 I = 0; I < Definition.Extractions.Num(); ++I)    { if (!Require(Definition.Extractions[I].Id, TEXT("extractions"), I))  { return false; } }
 	return true;
 }

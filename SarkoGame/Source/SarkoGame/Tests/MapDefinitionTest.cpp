@@ -229,4 +229,161 @@ bool FSarkoPropKindsAreComplete::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoMapIdsAreOptionalAndUnique,
+	"Sarko.Map.IdsAreOptionalAndUnique",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoMapIdsAreOptionalAndUnique::RunTest(const FString& Parameters)
+{
+	// Ids are how a report, a bug and a test all name the same object (ТЗ §18).
+	// Optional in the pure parser so every fixture in this suite stays valid;
+	// unique always, because two objects answering to one name is worse than
+	// neither having one — a fix applied to "bridge_house_d1" would silently
+	// land on whichever of them the code happened to find first.
+	const FString Json = TEXT(R"({
+		"id": "test",
+		"extentUU": 20000,
+		"raidDurationSeconds": 900,
+		"blocks": [ { "id": "b1", "kind": "wall", "pos": [0, 0, 100], "extent": [100, 100, 100] } ],
+		"props": [ { "id": "p1", "kind": "crate", "pos": [200, 0, 70] } ],
+		"containers": [ { "id": "c1", "pos": [250, 0, 0], "tier": "junk" } ],
+		"playerSpawns": [ { "id": "s1", "pos": [-16000, 17000, 100], "yaw": 135 } ],
+		"botSpawns": [ { "id": "n1", "pos": [8000, -12000, 100], "zone": "deep" } ],
+		"extractions": [ { "id": "e1", "pos": [-14000, 19000, 0], "radiusUU": 400, "name": "North" } ]
+	})");
+
+	FSarkoMapDefinition Definition;
+	FString Error;
+	const bool bParsed = SarkoMap::ParseDefinition(Json, Definition, Error);
+	TestTrue(FString::Printf(TEXT("a fully identified map parses: %s"), *Error), bParsed);
+	if (!bParsed)
+	{
+		return false;
+	}
+	TestEqual(TEXT("no error on success"), Error, FString());
+	TestEqual(TEXT("a block's id is read"), Definition.Blocks[0].Id, FString(TEXT("b1")));
+	TestEqual(TEXT("a prop's id is read"), Definition.Props[0].Id, FString(TEXT("p1")));
+	TestEqual(TEXT("a container's id is read"), Definition.Containers[0].Id, FString(TEXT("c1")));
+	TestEqual(TEXT("a bot's id is read"), Definition.BotSpawns[0].Id, FString(TEXT("n1")));
+	TestEqual(TEXT("an extraction's id is read"), Definition.Extractions[0].Id, FString(TEXT("e1")));
+	// Player spawns are FTransforms and cannot carry a field, so their ids ride
+	// a parallel array. The arrays must stay index-aligned or an id names the
+	// wrong spawn, which is worse than no id at all.
+	TestEqual(TEXT("player spawn ids are index-aligned with the spawns"),
+		Definition.PlayerSpawnIds.Num(), Definition.PlayerSpawns.Num());
+	TestEqual(TEXT("a player spawn's id is read"), Definition.PlayerSpawnIds[0], FString(TEXT("s1")));
+
+	// Every id collected, in file order, from one call.
+	TArray<FString> Ids;
+	FString CollectError;
+	TestTrue(TEXT("ids collect cleanly"), SarkoMap::CollectIds(Definition, Ids, CollectError));
+	TestEqual(TEXT("six ids in the file, six collected"), Ids.Num(), 6);
+
+	// The same fixture with no ids at all must still parse: this is the promise
+	// that a hand-written map from before this task keeps working.
+	FSarkoMapDefinition Anonymous;
+	TestTrue(TEXT("a map with no ids anywhere still parses"),
+		SarkoMap::ParseDefinition(MinimalMapJson, Anonymous, Error));
+	TArray<FString> NoIds;
+	TestTrue(TEXT("collecting from an anonymous map is not an error"),
+		SarkoMap::CollectIds(Anonymous, NoIds, CollectError));
+	TestEqual(TEXT("an anonymous map yields no ids"), NoIds.Num(), 0);
+	// An anonymous map still gets one id per spawn slot, or RequireIdentifiedEntries
+	// would walk a shorter array than the spawns it is supposed to be checking.
+	TestEqual(TEXT("an anonymous map's spawn ids are still index-aligned"),
+		Anonymous.PlayerSpawnIds.Num(), Anonymous.PlayerSpawns.Num());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoMapRejectsBadIds,
+	"Sarko.Map.RejectsBadIds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoMapRejectsBadIds::RunTest(const FString& Parameters)
+{
+	const TArray<TPair<FString, FString>> BadCases = {
+		// A duplicate across two *different* sections is the realistic mistake:
+		// copy a container line, paste it as a prop, forget to rename.
+		{ TEXT("duplicate id across sections"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"props":[{"id":"same","kind":"crate","pos":[100,100,70]}],
+				"containers":[{"id":"same","pos":[150,100,0],"tier":"junk"}]})") },
+		{ TEXT("duplicate id inside one section"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"props":[{"id":"same","kind":"crate","pos":[100,100,70]},{"id":"same","kind":"crate","pos":[300,100,70]}]})") },
+		// Present-but-empty is not "absent": it is a field the author started
+		// filling in and abandoned, and it would collide with the next one.
+		{ TEXT("empty id string"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"props":[{"id":"","kind":"crate","pos":[100,100,70]}]})") },
+		// Same discipline as every other optional field in this parser.
+		{ TEXT("id is a number"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"props":[{"id":7,"kind":"crate","pos":[100,100,70]}]})") },
+	};
+
+	for (const TPair<FString, FString>& Case : BadCases)
+	{
+		FSarkoMapDefinition Definition;
+		FString Error;
+		TestFalse(FString::Printf(TEXT("rejected: %s"), *Case.Key),
+			SarkoMap::ParseDefinition(Case.Value, Definition, Error));
+		TestFalse(FString::Printf(TEXT("names the problem: %s"), *Case.Key), Error.IsEmpty());
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoShippedMapsMustIdentifyEveryPlaceable,
+	"Sarko.Map.ShippedMapsMustIdentifyEveryPlaceable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoShippedMapsMustIdentifyEveryPlaceable::RunTest(const FString& Parameters)
+{
+	// The stricter rule that only the on-disk path enforces. Blocks and props
+	// are exempt because there are 246 of them and none is ever referred to
+	// individually; containers, spawns and extractions each carry state or a
+	// ledger row, so an anonymous one cannot be audited.
+	const FString Anonymous = TEXT(R"({
+		"id": "anon",
+		"extentUU": 20000,
+		"raidDurationSeconds": 900,
+		"playerSpawns": [ { "pos": [0, 0, 100], "yaw": 0 } ],
+		"containers": [ { "pos": [250, 0, 0], "tier": "junk" } ]
+	})");
+
+	FSarkoMapDefinition Definition;
+	FString Error;
+	if (!SarkoMap::ParseDefinition(Anonymous, Definition, Error))
+	{
+		AddError(FString::Printf(TEXT("fixture must still parse: %s"), *Error));
+		return false;
+	}
+	FString RequireError;
+	TestFalse(TEXT("an anonymous container fails the shipped-map rule"),
+		SarkoMap::RequireIdentifiedEntries(Definition, RequireError));
+	TestTrue(FString::Printf(TEXT("the failure names the section: %s"), *RequireError),
+		RequireError.Contains(TEXT("containers")));
+
+	// And the real map must pass it, through the real entry point. Both bools are
+	// computed before the message is formatted: FString::Printf's arguments are
+	// evaluated in an unspecified order, so an error read in the same expression
+	// that produces it prints empty exactly when it matters.
+	FSarkoMapDefinition Bridge;
+	FString LoadError;
+	const bool bBridgeLoaded = SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Bridge, LoadError);
+	TestTrue(FString::Printf(TEXT("bridge.json loads: %s"), *LoadError), bBridgeLoaded);
+	if (!bBridgeLoaded)
+	{
+		return false;
+	}
+	FString BridgeRequireError;
+	const bool bBridgeIdentified = SarkoMap::RequireIdentifiedEntries(Bridge, BridgeRequireError);
+	TestTrue(FString::Printf(TEXT("bridge.json identifies every placeable: %s"), *BridgeRequireError),
+		bBridgeIdentified);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

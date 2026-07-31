@@ -46,6 +46,35 @@ bool FSarkoBridgeMapIsValid::RunTest(const FString& Parameters)
 	TestEqual(TEXT("the sector is 400 m across"), Extent, 20000.f);
 	TestEqual(TEXT("the tutorial raid is 15 minutes"), Map.RaidDurationSeconds, 900.f);
 
+	// MapExtent (settings) and extentUU (map file) are two copies of one number.
+	// Disagreement is silent and ugly in both directions: too small and the AI
+	// patrols a box inside the map while the overview crops the sector; too
+	// large and bots walk off the floor. Load through the settings' own MapId,
+	// so this also pins that the configured map is the one that exists.
+	const USarkoRaidSettings* Settings = GetDefault<USarkoRaidSettings>();
+	TestNotNull(TEXT("settings resolve"), Settings);
+	if (Settings)
+	{
+		FSarkoMapDefinition Configured;
+		FString ConfiguredError;
+		const bool bConfiguredLoaded = SarkoMap::LoadDefinitionFromDisk(
+			Settings->MapId.ToString(), Configured, ConfiguredError);
+		TestTrue(FString::Printf(TEXT("the configured map '%s' exists on disk: %s"),
+			*Settings->MapId.ToString(), *ConfiguredError), bConfiguredLoaded);
+		if (bConfiguredLoaded)
+		{
+			TestEqual(TEXT("MapExtent agrees with the map file's extentUU"),
+				Settings->MapExtent, Configured.ExtentUU);
+			// Not compared against USarkoRaidSettings::RaidDurationSeconds on
+			// purpose: the map file wins there by design (SarkoRaidGameMode
+			// falls back to the setting only when the definition carries no
+			// duration), so those two are allowed to differ and do. What must
+			// hold is that the map the settings point at is this map.
+			TestEqual(TEXT("RaidDurationSeconds is not contradicted by the map file"),
+				Configured.RaidDurationSeconds, Map.RaidDurationSeconds);
+		}
+	}
+
 	// Everything inside the sector.
 	const auto CheckInside = [this, Extent](const FVector& Point, const TCHAR* What)
 	{
