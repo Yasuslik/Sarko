@@ -195,6 +195,80 @@ void ASarkoRaidGameMode::BeginBackendSession()
 
 void ASarkoRaidGameMode::OnAuthenticated()
 {
+	// The profile decides the loot mode, so it is fetched before the session
+	// opens rather than alongside it: a container opened against the wrong mode
+	// cannot be un-opened, because CompleteLootChannel marks it.
+	//
+	// Fetched here rather than trusted from the game instance's cache, even though
+	// the shelter just fetched one: a raid can be entered directly from the
+	// command line with no shelter visit at all (which is how every headless
+	// verification in this plan runs), and the authority must not depend on a
+	// screen it may never have shown.
+	TWeakObjectPtr<ASarkoRaidGameMode> WeakThis(this);
+	Backend->FetchProfile([WeakThis](bool bSuccess, const FSarkoProfile& Profile, const FString& Error)
+	{
+		ASarkoRaidGameMode* Self = WeakThis.Get();
+		if (!Self || !Self->Backend)
+		{
+			return;
+		}
+		if (!bSuccess)
+		{
+			// A failed profile is not a failed raid: spec §4.6's offline
+			// degradation says the raid still plays and nothing persists. The
+			// offline fallback picks the loot mode from settings.
+			Self->FallBackToOfflineRaid(Error);
+			return;
+		}
+
+		if (USarkoGameInstance* Instance = Self->GetGameInstance<USarkoGameInstance>())
+		{
+			// Cached so the shelter draws the post-raid stash without waiting, and
+			// so the two screens agree about the tier.
+			Instance->RecordProfile(Profile);
+		}
+
+		Self->SetTutorialLoot(!Profile.bTutorialCompleted);
+		Self->BeginRaidSession();
+	});
+}
+
+void ASarkoRaidGameMode::SetTutorialLoot(bool bEnabled)
+{
+	bTutorialLoot = bEnabled;
+	if (!bEnabled)
+	{
+		UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: normal loot — containers roll against the raid seed"));
+		return;
+	}
+
+	// Counted once, at activation, not per container: this is the one line that
+	// tells a reader whether the tutorial actually has a layout yet. Stage C
+	// authors it; until then the count is 0 and every container falls back to a
+	// roll (see SarkoLoot::RollContainerFor).
+	int32 WithFixedItems = 0;
+	for (const FSarkoLootContainerSpot& Spot : CachedDefinition.Containers)
+	{
+		if (Spot.FixedItems.Num() > 0)
+		{
+			++WithFixedItems;
+		}
+	}
+
+	if (WithFixedItems == 0)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("SarkoRaidGameMode: TUTORIAL loot requested but none of %d containers in '%s' carries fixedItems — every container will roll instead. Authoring the static layout is Stage C's job (spec §6.5)."),
+			CachedDefinition.Containers.Num(), *CachedDefinition.Id);
+		return;
+	}
+	UE_LOG(LogTemp, Display,
+		TEXT("SarkoRaidGameMode: TUTORIAL loot — %d of %d containers carry fixedItems, the rest roll"),
+		WithFixedItems, CachedDefinition.Containers.Num());
+}
+
+void ASarkoRaidGameMode::BeginRaidSession()
+{
 	// Weak again, and for a second reason now: the client is owned by the game
 	// instance and therefore outlives every world, so a completion is guaranteed
 	// to run — on a live client, with a dead game mode — after the player has
@@ -295,6 +369,12 @@ void ASarkoRaidGameMode::FallBackToOfflineRaid(const FString& Reason)
 	// Cleared so FinishRaid can tell "no session" from "a session that failed
 	// halfway": an empty session id is the one signal it reads.
 	Session = FSarkoRaidSession();
+
+	// No profile, so no flag. Settings decide, defaulting to the tutorial's static
+	// layout: an offline raid persists nothing, so replaying the tutorial costs the
+	// player nothing and gives a deterministic raid to iterate against.
+	SetTutorialLoot(GetDefault<USarkoRaidSettings>()->bOfflineTutorialLoot);
+
 	// The Seed the game mode already holds (URL option or its default) becomes
 	// authoritative for this raid.
 	ActivateRaid(Seed, MapClockSeconds());

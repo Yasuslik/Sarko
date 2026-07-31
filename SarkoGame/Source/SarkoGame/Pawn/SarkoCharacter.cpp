@@ -363,7 +363,13 @@ void ASarkoCharacter::TickLootChannel()
 	// replicated and the tables ship in the build, so without the salt the two
 	// remaining inputs are both already in the client's hands.
 	FRandomStream Stream(SarkoLoot::ContainerSeed(RaidState->Seed, Index, GameMode->LootSalt));
-	const TArray<FSarkoItemStack> Rolled = SarkoLoot::RollContainer(*Table, Stream);
+	// RollContainerFor, not RollContainer: the tutorial's static loot (spec §6.5)
+	// is a per-container branch, and bTutorialLoot is a server-only member of the
+	// game mode — like LootSalt, it is never replicated, so a client cannot learn
+	// which mode the raid is in and therefore cannot read the authored layout out
+	// of its own copy of the map file plus the tables.
+	const TArray<FSarkoItemStack> Rolled =
+		SarkoLoot::RollContainerFor(Spots[Index], *Table, Stream, GameMode->bTutorialLoot);
 
 	// CompleteLootChannel owns the order and the double-credit gate: credit, then
 	// mark, and never credit an index that is already marked. Spec §4.3's partial

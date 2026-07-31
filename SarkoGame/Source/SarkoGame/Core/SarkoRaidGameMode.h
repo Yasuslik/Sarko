@@ -91,6 +91,22 @@ public:
 	 */
 	int64 LootSalt = 0;
 
+	/**
+	 * Whether this raid uses the tutorial's static loot (spec §6.5).
+	 *
+	 * Set from GET /v1/profile's `tutorial_completed` before the raid goes live,
+	 * or from USarkoRaidSettings::bOfflineTutorialLoot when there is no profile.
+	 *
+	 * A deliberately plain member and **not** a UPROPERTY, for exactly the reasons
+	 * LootSalt is one: a game mode exists only on the server, so there is no
+	 * replication path to forget to exclude, and a non-UPROPERTY also stays out of
+	 * anything that walks reflected properties. It matters here because a client
+	 * that knew the raid was in tutorial mode could read the authored layout
+	 * straight out of its own copy of the map file — fixedItems is shipped data,
+	 * unlike a roll, which needs the server-only salt.
+	 */
+	bool bTutorialLoot = false;
+
 	/** The layout this raid was loaded from; pawns spawn against it. */
 	FSarkoMapLayout CachedLayout;
 
@@ -121,6 +137,13 @@ private:
 	 * entry points — one synchronous, one from the auth completion.
 	 */
 	void OnAuthenticated();
+
+	/** Sets bTutorialLoot and logs what the map can actually deliver in that mode. */
+	void SetTutorialLoot(bool bEnabled);
+
+	/** /v1/raid/start -> /v1/raid/confirm -> ActivateRaid. Split from OnAuthenticated
+	 *  so the profile hop sits between auth and the session opening. */
+	void BeginRaidSession();
 
 	/** Everything after a failed call: log, use the local seed, keep playing (spec §4.6). */
 	void FallBackToOfflineRaid(const FString& Reason);

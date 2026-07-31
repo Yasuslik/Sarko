@@ -133,6 +133,17 @@ public:
 	bool bBackendEnabled = true;
 
 	/**
+	 * Which loot mode an offline raid uses, when there is no profile to ask.
+	 *
+	 * True (the default) means an offline raid replays the tutorial's static
+	 * layout: nothing persists offline, so replaying it costs nothing and gives a
+	 * deterministic raid to iterate against. Set it false to exercise the seeded
+	 * roll path with the backend off.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Loot")
+	bool bOfflineTutorialLoot = true;
+
+	/**
 	 * No trailing slash: paths are appended verbatim.
 	 *
 	 * In DefaultGame.ini this value must be *quoted*: the ini parser swallows
