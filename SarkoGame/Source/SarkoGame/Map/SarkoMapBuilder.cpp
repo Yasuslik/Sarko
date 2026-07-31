@@ -213,24 +213,38 @@ void SarkoMap::SpawnProps(UWorld& World, const FSarkoMapDefinition& Definition)
 			continue;
 		}
 
-		UStaticMesh* Mesh = Cast<UStaticMesh>(Kind.Mesh.TryLoad());
-		if (!Mesh)
+		// One actor per part. A single-box kind — which is all eleven kinds the
+		// shipped map uses — has one part with a zero offset, so this is the same
+		// single spawn it always was, at the same transform.
+		const FRotator Rotation(0.f, Prop.Yaw, 0.f);
+		for (const FSarkoPropPart& Part : Kind.Parts)
 		{
-			UE_LOG(LogTemp, Error, TEXT("SarkoMap: mesh missing for kind '%s'"), *Prop.Kind.ToString());
-			++Skipped;
-			continue;
+			UStaticMesh* Mesh = Cast<UStaticMesh>(Part.Mesh.TryLoad());
+			if (!Mesh)
+			{
+				UE_LOG(LogTemp, Error, TEXT("SarkoMap: mesh missing for kind '%s'"), *Prop.Kind.ToString());
+				++Skipped;
+				continue;
+			}
+			// The part's offset is authored in the prop's own frame, so it
+			// rotates with the prop: a road sign's plate stays over its post at
+			// any yaw. Rotating the offset and not the part would shear the
+			// composite apart at every angle except zero.
+			const FVector PartLocation = Prop.Location + Rotation.RotateVector(Part.Offset);
+			// Colour comes from the part's surface rather than a per-prop choice:
+			// the read the player needs from above is "ground versus thing
+			// standing on it", and every legacy kind is Structure, which is the
+			// exact grey props were painted before surfaces existed.
+			SpawnMeshBox(World, Mesh, PartLocation, Rotation, Part.Extent, Part.bBlocksMovement,
+				Palette::ColourFor(Part.Surface), Palette::RoughnessFor(Part.Surface));
 		}
-
-		// Props share the cover grey rather than getting a colour each: the read
-		// the player needs from above is "ground versus thing standing on it",
-		// and a per-kind palette would compete with the blue/red that carries
-		// friend/foe.
-		SpawnMeshBox(World, Mesh, Prop.Location, FRotator(0.f, Prop.Yaw, 0.f), Kind.Extent, Kind.bBlocksMovement,
-			Palette::Structure, Palette::StructureRoughness);
 	}
 
-	UE_LOG(LogTemp, Display, TEXT("SarkoMap: spawned %d props, skipped %d"),
-		Definition.Props.Num() - Skipped, Skipped);
+	// Skipped counts *parts* that did not appear (plus one per unknown kind,
+	// which is a deliberate approximation of "at least one thing is missing").
+	// Both totals are named so the line cannot mislead once composites exist.
+	UE_LOG(LogTemp, Display, TEXT("SarkoMap: spawned %d prop actors from %d authored props, skipped %d parts"),
+		CountPropActors(Definition) - Skipped, Definition.Props.Num(), Skipped);
 }
 
 void SarkoMap::SpawnLootContainers(UWorld& World, const FSarkoMapDefinition& Definition)

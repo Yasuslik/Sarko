@@ -68,20 +68,33 @@ namespace
 
 	/**
 	 * Reads an optional numeric field. A genuinely absent field keeps Out at
-	 * whatever default the caller preset it to; a field that is present but
-	 * cannot be parsed as a number is a named error, not a silent 0.0.
+	 * whatever default the caller preset it to; a field that is present but is
+	 * not a JSON number is a named error, not a silent 0.0.
+	 *
+	 * The JSON type is checked directly, for the same reason ReadOptionalString
+	 * and ReadOptionalBool below do it: TryGetNumberField is not a type check.
+	 * TJsonValueString overrides TryGetNumber and runs the text through
+	 * LexTryParseString, so `"yaw": "45"` and `"radiusUU": "400"` used to parse
+	 * as 45 and 400 — and that is the *dangerous* half of this defect, not the
+	 * harmless one. `"yaw": "abc"` was already rejected because the text does
+	 * not parse; a quoted numeral succeeded silently, so the map file grew a
+	 * string where a number belongs, nothing warned, and the next tool that
+	 * reads the file strictly (or the next value that stops being a clean
+	 * numeral) breaks with no clue where the quotes came from.
 	 */
 	bool ReadOptionalNumber(const TSharedPtr<FJsonObject>& Object, const FString& Field, double& Out, FString& OutError)
 	{
-		if (!Object->HasField(Field))
+		const TSharedPtr<FJsonValue> Value = Object->TryGetField(Field);
+		if (!Value.IsValid())
 		{
 			return true;
 		}
-		if (!Object->TryGetNumberField(Field, Out))
+		if (Value->Type != EJson::Number)
 		{
 			OutError = FString::Printf(TEXT("'%s' is present but not a number"), *Field);
 			return false;
 		}
+		Out = Value->AsNumber();
 		return true;
 	}
 

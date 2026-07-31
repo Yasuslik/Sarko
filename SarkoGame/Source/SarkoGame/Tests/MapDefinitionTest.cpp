@@ -138,6 +138,19 @@ bool FSarkoMapDefinitionRejectsBadInput::RunTest(const FString& Parameters)
 		{ TEXT("extraction name is a bool"),
 			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
 				"extractions":[{"pos":[250,0,0],"name":true}]})") },
+		// The same defect on the *number* side, and the dangerous half of it: the
+		// "yaw is a string" row above passes even untightened, because "abc" does
+		// not parse as a number. A quoted numeral does. TJsonValueString overrides
+		// TryGetNumber, so `"yaw": "45"` used to succeed and yield 45 — a map file
+		// that quietly holds strings where numbers belong, with nothing warning
+		// and nothing to grep for. These two rows fail with a silent success
+		// rather than a wrong value, which is why they are here and not implied
+		// by the row above.
+		{ TEXT("yaw is a quoted numeral"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":"45"}]})") },
+		{ TEXT("radiusUU is a quoted numeral"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"extractions":[{"pos":[250,0,0],"radiusUU":"400"}]})") },
 	};
 
 	for (const TPair<FString, FString>& Case : BadCases)
@@ -232,17 +245,159 @@ bool FSarkoPropKindsAreComplete::RunTest(const FString& Parameters)
 		FSarkoPropKind Resolved;
 		const bool bFound = SarkoMap::FindPropKind(Kind, Resolved);
 		TestTrue(FString::Printf(TEXT("kind '%s' resolves"), *Kind.ToString()), bFound);
-		if (bFound)
+		if (!bFound)
 		{
-			TestTrue(FString::Printf(TEXT("kind '%s' has a positive extent"), *Kind.ToString()),
-				Resolved.Extent.GetMin() > 0.f);
-			TestTrue(FString::Printf(TEXT("kind '%s' names a mesh"), *Kind.ToString()),
-				Resolved.Mesh.IsValid() || !Resolved.Mesh.ToString().IsEmpty());
+			continue;
 		}
+		// A kind with no parts resolves successfully and spawns nothing — the
+		// worst possible outcome, because the map looks authored and is empty.
+		TestTrue(FString::Printf(TEXT("kind '%s' has at least one part"), *Kind.ToString()),
+			Resolved.Parts.Num() >= 1);
+
+		// "Above the floor" is only a statement about a COMPOSITE kind, and this
+		// is the trap the authoring convention exists to name. A part's Offset is
+		// measured from the *prop's* origin, not from the floor. A single-box
+		// kind is authored with pos.z = the kind's half-height in the map file, so
+		// its one part is correctly at Offset.Z = 0 and its bottom is at the
+		// floor only once the prop's own location is added — Offset.Z - Extent.Z
+		// is -half-height for every one of the eleven legacy kinds, and asserting
+		// otherwise would demand that all 238 shipped props be re-authored. A
+		// composite is authored with pos.z = 0 instead, so there its part offsets
+		// ARE heights above the floor and the check is meaningful.
+		const bool bComposite = Resolved.Parts.Num() > 1;
+		for (int32 Index = 0; Index < Resolved.Parts.Num(); ++Index)
+		{
+			const FSarkoPropPart& Part = Resolved.Parts[Index];
+			TestTrue(FString::Printf(TEXT("kind '%s' part %d has a positive extent"), *Kind.ToString(), Index),
+				Part.Extent.GetMin() > 0.f);
+			TestTrue(FString::Printf(TEXT("kind '%s' part %d names a mesh"), *Kind.ToString(), Index),
+				!Part.Mesh.ToString().IsEmpty());
+			if (bComposite)
+			{
+				// A part whose bottom is underground is invisible, and if it
+				// collides it is an invisible wall. Tolerance of 1 uu for a part
+				// authored flush with the floor.
+				TestTrue(FString::Printf(TEXT("kind '%s' part %d sits on or above the floor"), *Kind.ToString(), Index),
+					Part.Offset.Z - Part.Extent.Z >= -1.f);
+			}
+			else
+			{
+				// The single-box counterpart of the same invariant, and the one
+				// that actually keeps the shipped map still: no offset at all.
+				TestTrue(FString::Printf(TEXT("single-box kind '%s' has no offset"), *Kind.ToString()),
+					Part.Offset.IsNearlyZero());
+			}
+		}
+	}
+
+	// The eleven kinds that existed before parts did must be single-box and must
+	// keep their exact extents, because bridge.json's 238 props are placed with
+	// pos.z equal to the kind's own half-height. A changed half-height sinks or
+	// floats every instance of that kind at once.
+	const TArray<TPair<FName, FVector>> LegacyExtents = {
+		{ TEXT("wall"),        FVector(400.f, 60.f, 140.f) },
+		{ TEXT("car_wreck"),   FVector(230.f, 95.f, 75.f) },
+		{ TEXT("bus"),         FVector(600.f, 130.f, 160.f) },
+		{ TEXT("house"),       FVector(500.f, 400.f, 300.f) },
+		{ TEXT("fuel_pump"),   FVector(60.f, 40.f, 110.f) },
+		{ TEXT("freight_car"), FVector(700.f, 150.f, 200.f) },
+		{ TEXT("water_tower"), FVector(220.f, 220.f, 700.f) },
+		{ TEXT("sandbag"),     FVector(180.f, 70.f, 55.f) },
+		{ TEXT("crate"),       FVector(70.f, 70.f, 70.f) },
+		{ TEXT("pipe"),        FVector(90.f, 90.f, 600.f) },
+		{ TEXT("bridge_deck"), FVector(900.f, 300.f, 30.f) },
+	};
+	for (const TPair<FName, FVector>& Expected : LegacyExtents)
+	{
+		FSarkoPropKind Resolved;
+		if (!SarkoMap::FindPropKind(Expected.Key, Resolved) || Resolved.Parts.Num() != 1)
+		{
+			AddError(FString::Printf(TEXT("kind '%s' must still be a single box"), *Expected.Key.ToString()));
+			continue;
+		}
+		TestTrue(FString::Printf(TEXT("kind '%s' keeps its extent"), *Expected.Key.ToString()),
+			Resolved.Parts[0].Extent.Equals(Expected.Value, 0.01f));
+		TestTrue(FString::Printf(TEXT("kind '%s' keeps its zero offset"), *Expected.Key.ToString()),
+			Resolved.Parts[0].Offset.IsNearlyZero());
+		TestTrue(FString::Printf(TEXT("kind '%s' still blocks movement"), *Expected.Key.ToString()),
+			Resolved.Parts[0].bBlocksMovement);
+		// The mesh matters as much as the extent: swapping a cylinder for a cube
+		// keeps every number in this table true and still changes the map.
+		TestTrue(FString::Printf(TEXT("kind '%s' keeps a basic-shape mesh"), *Expected.Key.ToString()),
+			Resolved.Parts[0].Mesh.ToString().StartsWith(TEXT("/Engine/BasicShapes/")));
+		// Every legacy kind was painted Palette::Structure before surfaces
+		// existed, so anything else here repaints the shipped map.
+		TestEqual(FString::Printf(TEXT("kind '%s' keeps the structure surface"), *Expected.Key.ToString()),
+			static_cast<uint8>(Resolved.Parts[0].Surface), static_cast<uint8>(ESarkoSurface::Structure));
 	}
 
 	FSarkoPropKind Unknown;
 	TestFalse(TEXT("an unknown kind does not resolve"), SarkoMap::FindPropKind(TEXT("nonsense"), Unknown));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoPropActorCountIsWithinTheMobileBudget,
+	"Sarko.Map.PropActorCountIsWithinTheMobileBudget",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoPropActorCountIsWithinTheMobileBudget::RunTest(const FString& Parameters)
+{
+	// Composite kinds make one authored prop cost several actors, and ТЗ §16 is
+	// a budget, not advice. This is the number that decides when instancing
+	// stops being premature: see the Global Constraints' actor tally.
+	FSarkoMapDefinition Map;
+	FString Error;
+	if (!SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Map, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json failed to load: %s"), *Error));
+		return false;
+	}
+
+	const int32 PropActors = SarkoMap::CountPropActors(Map);
+	TestTrue(TEXT("every prop resolves, so the count is not silently short"),
+		PropActors >= Map.Props.Num());
+	TestTrue(FString::Printf(TEXT("props stay inside the mobile actor budget (%d)"), PropActors),
+		PropActors <= 400);
+
+	// The shipped map is all single-box kinds today, so the count must equal the
+	// authored count exactly. This is the assertion that would catch a part
+	// leaking into a legacy kind — a looser >= would not.
+	TestEqual(TEXT("the shipped map is one actor per authored prop"), PropActors, Map.Props.Num());
+
+	// One authored prop of a single-box kind is exactly one actor: this is the
+	// promise that adding parts cost the existing map nothing.
+	FSarkoMapDefinition OneCrate;
+	FString ParseError;
+	const FString Json = TEXT(R"({
+		"id": "one",
+		"extentUU": 20000,
+		"raidDurationSeconds": 900,
+		"playerSpawns": [ { "pos": [0, 0, 100], "yaw": 0 } ],
+		"props": [ { "kind": "crate", "pos": [100, 100, 70] } ]
+	})");
+	if (!SarkoMap::ParseDefinition(Json, OneCrate, ParseError))
+	{
+		AddError(FString::Printf(TEXT("fixture failed to parse: %s"), *ParseError));
+		return false;
+	}
+	TestEqual(TEXT("a single-box prop is one actor"), SarkoMap::CountPropActors(OneCrate), 1);
+
+	// An unknown kind spawns nothing, so it must count as nothing — otherwise
+	// the budget number would be optimistic in exactly the case where the map
+	// is broken.
+	FSarkoMapDefinition Nonsense;
+	const FString BadJson = TEXT(R"({
+		"id": "bad",
+		"extentUU": 20000,
+		"raidDurationSeconds": 900,
+		"playerSpawns": [ { "pos": [0, 0, 100], "yaw": 0 } ],
+		"props": [ { "kind": "nonsense", "pos": [0, 0, 0] } ]
+	})");
+	if (SarkoMap::ParseDefinition(BadJson, Nonsense, ParseError))
+	{
+		TestEqual(TEXT("an unresolvable kind contributes no actors"), SarkoMap::CountPropActors(Nonsense), 0);
+	}
 	return true;
 }
 
