@@ -1017,3 +1017,157 @@ bool FSarkoCompositePartsRotateWithTheProp::RunTest(const FString& Parameters)
 }
 
 #endif // WITH_AUTOMATION_TESTS
+
+#include "Map/SarkoBuildings.h"
+
+#if WITH_AUTOMATION_TESTS
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBuildingsParseAndReachTheLayout,
+	"Sarko.Map.BuildingsParseAndReachTheLayout",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBuildingsParseAndReachTheLayout::RunTest(const FString& Parameters)
+{
+	// One JSON object per building, and the spawner sees walls. If the walls do
+	// not reach Layout.Cover then buildings are decoration: the player walks
+	// through them and every test about doorways is describing nothing.
+	const FString Json = TEXT(R"({
+		"id": "test",
+		"extentUU": 20000,
+		"raidDurationSeconds": 900,
+		"playerSpawns": [ { "id": "s1", "pos": [0, 0, 100], "yaw": 0 } ],
+		"blocks": [ { "id": "rim", "pos": [0, 5000, 500], "extent": [2000, 300, 500] } ],
+		"buildings": [
+			{
+				"id": "test_shop",
+				"pos": [-13500, -9000, 0],
+				"size": [2200, 1500],
+				"surface": "timber",
+				"doors": [
+					{ "side": "E", "offset": 0, "width": 320 },
+					{ "side": "S", "offset": 600, "width": 300 }
+				],
+				"interiorWalls": [
+					{ "from": [-300, -720], "to": [-300, 720], "door": { "offset": 200, "width": 300 } }
+				]
+			},
+			{ "id": "test_bunker", "pos": [4000, 4000, 0], "size": [1200, 1000], "yaw": 45 }
+		]
+	})");
+
+	FSarkoMapDefinition Definition;
+	FString Error;
+	TestTrue(FString::Printf(TEXT("buildings parse: %s"), *Error),
+		SarkoMap::ParseDefinition(Json, Definition, Error));
+	TestEqual(TEXT("two buildings"), Definition.Buildings.Num(), 2);
+	if (Definition.Buildings.Num() != 2)
+	{
+		AddError(FString::Printf(TEXT("fixture failed to parse: %s"), *Error));
+		return false;
+	}
+	TestEqual(TEXT("the id is read"), Definition.Buildings[0].Id, FString(TEXT("test_shop")));
+	TestTrue(TEXT("the footprint is read"), Definition.Buildings[0].SizeUU.Equals(FVector2D(2200.f, 1500.f), 0.01f));
+	TestEqual(TEXT("the surface is read"),
+		static_cast<uint8>(Definition.Buildings[0].Surface), static_cast<uint8>(ESarkoSurface::Timber));
+	TestEqual(TEXT("both doors are read"), Definition.Buildings[0].Doors.Num(), 2);
+	TestEqual(TEXT("a door's side is read"),
+		static_cast<uint8>(Definition.Buildings[0].Doors[0].Side), static_cast<uint8>(ESarkoBuildingSide::East));
+	TestEqual(TEXT("a door's width is read"), Definition.Buildings[0].Doors[0].WidthUU, 320.f);
+	TestEqual(TEXT("the interior wall is read"), Definition.Buildings[0].InteriorWalls.Num(), 1);
+	TestTrue(TEXT("the interior wall's door is read"), Definition.Buildings[0].InteriorWalls[0].bHasDoor);
+	TestEqual(TEXT("wallHeight defaults to 350"), Definition.Buildings[0].WallHeightUU, 350.f);
+	TestEqual(TEXT("the second building's yaw is read"), Definition.Buildings[1].Yaw, 45.f);
+	// A building with no doors is legal — the ТЗ's four closed entries.
+	TestEqual(TEXT("a closed building has no doors"), Definition.Buildings[1].Doors.Num(), 0);
+
+	// The layout is what SpawnLayout consumes. Authored blocks first, then every
+	// building's walls, so an index into Layout.Cover means the same thing on
+	// every machine.
+	const FSarkoMapLayout Layout = SarkoMap::ToLayout(Definition);
+	TArray<FSarkoCoverBlock> ShopWalls;
+	TArray<FSarkoCoverBlock> BunkerWalls;
+	FString ExpandError;
+	SarkoMap::ExpandBuilding(Definition.Buildings[0], ShopWalls, ExpandError);
+	SarkoMap::ExpandBuilding(Definition.Buildings[1], BunkerWalls, ExpandError);
+	TestEqual(TEXT("the layout holds the authored block plus every expanded wall"),
+		Layout.Cover.Num(), 1 + ShopWalls.Num() + BunkerWalls.Num());
+	TestEqual(TEXT("the authored block comes first"), Layout.Cover[0].Id, FString(TEXT("rim")));
+	TestTrue(TEXT("the first expanded wall follows it"), Layout.Cover[1].Id.StartsWith(TEXT("test_shop")));
+
+	// And the doorway is a doorway in the LAYOUT, not merely in the expander:
+	// this is the end-to-end version of Task 5's invariant.
+	const float WallX = -13500.f + 2200.f * 0.5f - 30.f * 0.5f;
+	TestFalse(TEXT("the shop's east doorway is open in the spawned layout"),
+		SarkoMap::IsPointInsideBlocksXY(FVector2D(WallX, -9000.f), Layout.Cover));
+	TestTrue(TEXT("the shop's east wall is solid beside the doorway"),
+		SarkoMap::IsPointInsideBlocksXY(FVector2D(WallX, -9000.f + 400.f), Layout.Cover));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBuildingsFailLoudly,
+	"Sarko.Map.BuildingsFailLoudly",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBuildingsFailLoudly::RunTest(const FString& Parameters)
+{
+	// Broken building geometry must be a LOAD error, not a spawn-time surprise:
+	// ToLayout has no error channel, so anything that could fail has to fail in
+	// the parser, where the message reaches a human.
+	const TArray<TPair<FString, FString>> BadCases = {
+		{ TEXT("buildings is not an array"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],"buildings":{}})") },
+		{ TEXT("building with no id"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"buildings":[{"pos":[0,0,0],"size":[2000,1500]}]})") },
+		{ TEXT("building with no size"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"buildings":[{"id":"b","pos":[0,0,0]}]})") },
+		{ TEXT("size is not a pair"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"buildings":[{"id":"b","pos":[0,0,0],"size":[2000,1500,300]}]})") },
+		{ TEXT("a quoted numeral where a size belongs"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"buildings":[{"id":"b","pos":[0,0,0],"size":["2000",1500]}]})") },
+		{ TEXT("unknown door side"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"buildings":[{"id":"b","pos":[0,0,0],"size":[2000,1500],
+				"doors":[{"side":"up","offset":0,"width":300},{"side":"S","offset":0,"width":300}]}]})") },
+		// The expander's own rules must be reachable from the parser, or a
+		// 200 uu doorway ships and nobody finds out until a pawn sticks.
+		{ TEXT("doorway below the minimum"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"buildings":[{"id":"b","pos":[0,0,0],"size":[2000,1500],
+				"doors":[{"side":"E","offset":0,"width":200},{"side":"W","offset":0,"width":300}]}]})") },
+		{ TEXT("only one exit"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"buildings":[{"id":"b","pos":[0,0,0],"size":[2000,1500],"doors":[{"side":"E","offset":0,"width":300}]}]})") },
+		// Ids are one namespace across the whole file, buildings included.
+		{ TEXT("a building's id collides with a prop's"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"props":[{"id":"same","kind":"crate","pos":[100,100,70]}],
+				"buildings":[{"id":"same","pos":[0,0,0],"size":[2000,1500]}]})") },
+		// ...and generated wall ids share that namespace too. A hand-authored
+		// block called "b_north_0" and a building called "b" would put two
+		// different boxes in Layout.Cover under one name, so "the wall at
+		// b_north_0" would mean either of them depending on which loop found it
+		// first. Ruled out here rather than left to be discovered in a report.
+		{ TEXT("an authored block id collides with a generated wall id"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"blocks":[{"id":"b_north_0","pos":[5000,5000,100],"extent":[100,100,100]}],
+				"buildings":[{"id":"b","pos":[0,0,0],"size":[2000,1500]}]})") },
+	};
+
+	for (const TPair<FString, FString>& Case : BadCases)
+	{
+		FSarkoMapDefinition Definition;
+		FString Error;
+		TestFalse(FString::Printf(TEXT("rejected: %s"), *Case.Key),
+			SarkoMap::ParseDefinition(Case.Value, Definition, Error));
+		TestFalse(FString::Printf(TEXT("names the problem: %s"), *Case.Key), Error.IsEmpty());
+	}
+	return true;
+}
+
+#endif // WITH_AUTOMATION_TESTS

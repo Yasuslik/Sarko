@@ -26,6 +26,23 @@
     { "kind": "wall", "pos": [17000, -1800, 500], "extent": [3000, 300, 500] }
   ],
 
+  "buildings": [
+    { "note": "S01 АЗС (ТЗ §28 / §9) at its ledger coordinate. Зал + подсобка + служебная, входы В и Ю exactly as ТЗ §9 names them: east is the forecourt the pump row stands on, south is the road onward to the ж/д тупик. Two exits, because a bot in the only doorway is a coffin (ТЗ §13); no door in the west face, which is the side the west dirt road runs past — a doorway there would let anyone on that road shoot straight through the building. Replaces the solid house prop that stood in for this shop 3800 uu further north.",
+      "id": "bridge_gas_station", "pos": [-13500, -9000, 0], "size": [2200, 1500], "surface": "structure",
+      "doors": [ { "side": "E", "offset": 0, "width": 340 }, { "side": "S", "offset": 600, "width": 320 } ],
+      "interiorWalls": [
+        { "note": "зал | подсобка. The opening sits well south of where the служебная wall below meets this one, so no interior wall ever ends inside another's doorway.", "from": [-300, -720], "to": [-300, 720], "door": { "offset": -400, "width": 320 } },
+        { "note": "служебная, off the подсобка.", "from": [-300, 200], "to": [-1070, 200], "door": { "offset": 0, "width": 300 } }
+      ] },
+    { "note": "S04 D1 (ТЗ §28 / §9), проходим. A through-house at the west end of the village: north opens onto the village street and the run down from the bridge, which is where everyone arrives from; south opens onto the lane toward the scrap yard and the rail siding, which is where everyone is going. The two doorways are in different rooms on purpose — crossing the divider is the price of using the house as a shortcut. Replaces the westernmost solid village house.",
+      "id": "bridge_village_d1", "pos": [-6500, -10500, 0], "size": [2000, 1500], "surface": "timber",
+      "doors": [ { "side": "N", "offset": -200, "width": 320 }, { "side": "S", "offset": 500, "width": 300 } ],
+      "interiorWalls": [ { "from": [200, -720], "to": [200, 720], "door": { "offset": -200, "width": 300 } } ] },
+    { "note": "S05 D2 (ТЗ §28 / §9), проходим, 2 good. One room, two exits — the simplest walkable shape, kept simple on purpose so the three buildings cover a range. North faces the street between the two village rows, east faces the lane to the highway fork; both are sides people actually walk past. Replaces the solid house prop 707 uu away whose footprint this building sits on.",
+      "id": "bridge_village_d2", "pos": [-1500, -10500, 0], "size": [2200, 1600], "surface": "timber",
+      "doors": [ { "side": "N", "offset": 400, "width": 320 }, { "side": "E", "offset": -300, "width": 320 } ] }
+  ],
+
   "props": [
     { "note": "THE BRIDGE — deck, three lanes (1800 uu of roadway) spanning the whole 3600 uu ravine and running 900 uu onto each bank. Sunk to a 40 uu lip so the pawn steps onto it instead of being stopped by it. Two lanes read as a footbridge from above; the main crossing has to be unmistakable.", "kind": "bridge_deck", "pos": [-600, -1800, 10], "yaw": 90 },
     { "kind": "bridge_deck", "pos": [0, -1800, 10], "yaw": 90 },
@@ -158,8 +175,7 @@
     { "kind": "car_wreck", "pos": [15600, 11400, 75], "yaw": 130 },
     { "kind": "crate", "pos": [17000, 12600, 70] },
 
-    { "note": "PETROL STATION (far half, west) — shop plus a pump row under a canopy. The pumps are the silhouette you navigate the south-west by.", "kind": "house", "pos": [-13500, -5200, 300], "yaw": 0 },
-    { "kind": "fuel_pump", "pos": [-12400, -4900, 110], "yaw": 0 },
+    { "note": "PETROL STATION FORECOURT (far half, west) — a pump row under a canopy. The shop that used to be the solid house here is now the walkable bridge_gas_station in \"buildings\", at the ТЗ §28 ledger coordinate 3800 uu south; the pumps stay where they were authored and remain the silhouette you navigate the south-west by.", "kind": "fuel_pump", "pos": [-12400, -4900, 110], "yaw": 0 },
     { "kind": "fuel_pump", "pos": [-12400, -5500, 110], "yaw": 0 },
     { "kind": "fuel_pump", "pos": [-12400, -6100, 110], "yaw": 0 },
     { "kind": "wall", "pos": [-12400, -4300, 140], "yaw": 0 },
@@ -171,13 +187,11 @@
     { "kind": "car_wreck", "pos": [-11600, -5200, 75], "yaw": 100 },
     { "kind": "crate", "pos": [-11900, -7100, 70] },
 
-    { "note": "VILLAGE — six houses in two staggered rows. The 1600 uu gaps between them are the fighting lanes, and the stagger stops any lane running clean through the village.", "kind": "house", "pos": [-2800, -8600, 300], "yaw": 4 },
-    { "kind": "house", "pos": [-200, -8600, 300], "yaw": 0 },
+    { "note": "VILLAGE — four solid houses in two staggered rows, plus the two walkable ones in \"buildings\" (D1 at the west end, D2 in the southern row). The 1600 uu gaps between them are the fighting lanes, and the stagger stops any lane running clean through the village.", "kind": "house", "pos": [-200, -8600, 300], "yaw": 0 },
     { "kind": "house", "pos": [2400, -8600, 300], "yaw": 354 },
-    { "kind": "house", "pos": [-1600, -11200, 300], "yaw": 0 },
     { "kind": "house", "pos": [1000, -11200, 300], "yaw": 5 },
     { "kind": "house", "pos": [3600, -11200, 300], "yaw": 0 },
-    { "kind": "wall", "pos": [-2800, -9800, 140], "yaw": 0 },
+    { "note": "Shifted 500 uu west of where it was authored: at x -2800 this fence overlapped bridge_village_d2's west wall by a 30 x 120 uu sliver.", "kind": "wall", "pos": [-3300, -9800, 140], "yaw": 0 },
     { "kind": "wall", "pos": [2400, -9800, 140], "yaw": 0 },
     { "kind": "wall", "pos": [-3600, -10400, 140], "yaw": 90 },
     { "kind": "wall", "pos": [4400, -9600, 140], "yaw": 90 },
@@ -191,7 +205,7 @@
     { "kind": "sandbag", "pos": [200, -7200, 55], "yaw": 0 },
     { "kind": "sandbag", "pos": [560, -7200, 55], "yaw": 0 },
     { "kind": "car_wreck", "pos": [3000, -7600, 75], "yaw": 15 },
-    { "kind": "crate", "pos": [-2600, -10600, 70] },
+    { "note": "Shifted 150 uu west of where it was authored: at x -2600 this crate was half-buried in bridge_village_d2's west wall. It now stands against the outside of it, which is where a crate by a house belongs.", "kind": "crate", "pos": [-2750, -10600, 70] },
 
     { "note": "RAIL SIDING (far half, south-west) — a stopped train. Long hard cover along one axis and nothing along the other, which makes approaching it a choice.", "kind": "freight_car", "pos": [-15500, -15600, 200], "yaw": 0 },
     { "kind": "freight_car", "pos": [-13900, -15600, 200], "yaw": 0 },
@@ -308,7 +322,7 @@
     { "id": "bridge_loot_15", "pos": [-250, 3150, 35], "tier": "military" },
     { "id": "bridge_loot_16", "pos": [15800, 9350, 35], "tier": "military" },
 
-    { "id": "bridge_loot_17", "note": "FAR HALF — the reason to cross. Petrol station.", "pos": [-13500, -4600, 35], "tier": "good" },
+    { "id": "bridge_loot_17", "note": "FAR HALF — the reason to cross. Moved 4400 uu south from the old shop door to ТЗ §29's L20 (зал АЗС, -13300,-8800), i.e. inside the walkable bridge_gas_station: a container you have to walk into a building for is the whole point of the building. Sarko.Map.BridgeBuildingsAreEnterable pins that it is not inside a wall.", "pos": [-13300, -8800, 35], "tier": "good" },
     { "id": "bridge_loot_18", "pos": [-12000, -5500, 35], "tier": "good" },
 
     { "id": "bridge_loot_19", "note": "FAR HALF — village, at the house doors.", "pos": [-200, -9200, 35], "tier": "good" },

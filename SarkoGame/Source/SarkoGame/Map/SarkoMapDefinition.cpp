@@ -13,10 +13,19 @@ namespace
 	 *  overlap ever registering, so it could never trigger. */
 	constexpr float MinExtractionRadiusUU = 100.f;
 
-	/** Reads a ["x","y","z"] array into a vector, naming the field and the index
-	 *  of any element that fails to parse. Each element is read with the
-	 *  try-form so a non-number is a named error instead of a silent 0.0. */
-	bool ReadVector(const TSharedPtr<FJsonObject>& Object, const FString& Field, FVector& Out, FString& OutError)
+	/**
+	 * Reads a fixed-length numeric array, naming the field and the index of any
+	 * element that is not a number. Shared by ReadVector and ReadVector2 so a
+	 * pair and a triple cannot drift apart in strictness.
+	 *
+	 * The element type is checked directly rather than through TryGetNumber, for
+	 * the same reason ReadOptionalNumber below does it: TJsonValueString overrides
+	 * TryGetNumber and runs the text through LexTryParseString, so `"pos":
+	 * ["0",0,0]` and `"size": ["2000",1500]` would parse silently and the map file
+	 * would grow strings where numbers belong with nothing to grep for.
+	 */
+	bool ReadNumberArray(const TSharedPtr<FJsonObject>& Object, const FString& Field,
+		int32 Expected, double* Out, FString& OutError)
 	{
 		const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
 		if (!Object->TryGetArrayField(Field, Array) || !Array)
@@ -24,24 +33,49 @@ namespace
 			OutError = FString::Printf(TEXT("'%s' is missing or not an array"), *Field);
 			return false;
 		}
-		if (Array->Num() != 3)
+		if (Array->Num() != Expected)
 		{
-			OutError = FString::Printf(TEXT("'%s' must have exactly 3 numbers, found %d"), *Field, Array->Num());
+			OutError = FString::Printf(TEXT("'%s' must have exactly %d numbers, found %d"),
+				*Field, Expected, Array->Num());
 			return false;
 		}
-		double Components[3] = { 0.0, 0.0, 0.0 };
-		for (int32 Index = 0; Index < 3; ++Index)
+		for (int32 Index = 0; Index < Expected; ++Index)
 		{
-			if (!(*Array)[Index]->TryGetNumber(Components[Index]))
+			const TSharedPtr<FJsonValue>& Element = (*Array)[Index];
+			if (!Element.IsValid() || Element->Type != EJson::Number)
 			{
 				OutError = FString::Printf(TEXT("'%s[%d]' is not a number"), *Field, Index);
 				return false;
 			}
+			Out[Index] = Element->AsNumber();
+		}
+		return true;
+	}
+
+	/** Reads a [x, y, z] array into a vector. */
+	bool ReadVector(const TSharedPtr<FJsonObject>& Object, const FString& Field, FVector& Out, FString& OutError)
+	{
+		double Components[3] = { 0.0, 0.0, 0.0 };
+		if (!ReadNumberArray(Object, Field, 3, Components, OutError))
+		{
+			return false;
 		}
 		Out = FVector(
 			static_cast<float>(Components[0]),
 			static_cast<float>(Components[1]),
 			static_cast<float>(Components[2]));
+		return true;
+	}
+
+	/** Reads an [x, y] pair. Same discipline as ReadVector, one axis shorter. */
+	bool ReadVector2(const TSharedPtr<FJsonObject>& Object, const FString& Field, FVector2D& Out, FString& OutError)
+	{
+		double Components[2] = { 0.0, 0.0 };
+		if (!ReadNumberArray(Object, Field, 2, Components, OutError))
+		{
+			return false;
+		}
+		Out = FVector2D(static_cast<float>(Components[0]), static_cast<float>(Components[1]));
 		return true;
 	}
 
@@ -243,6 +277,45 @@ namespace
 		OutYaw = 0.0;
 		return ReadOptionalNumber(Object, TEXT("yaw"), OutYaw, OutError);
 	}
+
+	/** Reads a doorway object. `side` is required for a perimeter door only. */
+	bool ReadDoor(const TSharedPtr<FJsonObject>& Object, bool bNeedsSide, FSarkoBuildingDoor& Out, FString& OutError)
+	{
+		if (bNeedsSide)
+		{
+			FString SideName;
+			if (!ReadOptionalString(Object, TEXT("side"), SideName, OutError))
+			{
+				return false;
+			}
+			if (SideName.IsEmpty())
+			{
+				OutError = TEXT("'side' is missing or empty");
+				return false;
+			}
+			if (!SarkoMap::ParseBuildingSide(SideName, Out.Side))
+			{
+				OutError = FString::Printf(TEXT("'side' must be N, E, S or W, found '%s'"), *SideName);
+				return false;
+			}
+		}
+		double Offset = 0.0;
+		if (!ReadOptionalNumber(Object, TEXT("offset"), Offset, OutError))
+		{
+			return false;
+		}
+		Out.OffsetUU = static_cast<float>(Offset);
+
+		// Width has a real default (300, the ТЗ's preferred opening) but a
+		// present-and-unparseable value is still an error, not a silent 300.
+		double Width = static_cast<double>(Out.WidthUU);
+		if (!ReadOptionalNumber(Object, TEXT("width"), Width, OutError))
+		{
+			return false;
+		}
+		Out.WidthUU = static_cast<float>(Width);
+		return true;
+	}
 }
 
 bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefinition, FString& OutError)
@@ -341,6 +414,142 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 				return false;
 			}
 			OutDefinition.Blocks.Add(Block);
+		}
+	}
+
+	// buildings
+	const TArray<TSharedPtr<FJsonValue>>* Buildings = nullptr;
+	if (!TryGetOptionalArrayField(Root, TEXT("buildings"), Buildings, OutError))
+	{
+		return false;
+	}
+	if (Buildings)
+	{
+		for (int32 Index = 0; Index < Buildings->Num(); ++Index)
+		{
+			const TSharedPtr<FJsonObject>* Object = nullptr;
+			if (!(*Buildings)[Index]->TryGetObject(Object) || !Object)
+			{
+				OutError = FString::Printf(TEXT("buildings[%d]: not an object"), Index);
+				return false;
+			}
+			FSarkoBuilding Building;
+			// Required, unlike every other section's id: a building's id is the
+			// prefix of every wall id it generates, so an anonymous building
+			// would emit walls named "_north_0" and collide with the next one.
+			if (!ReadOptionalString(*Object, TEXT("id"), Building.Id, OutError) || Building.Id.IsEmpty())
+			{
+				OutError = FString::Printf(TEXT("buildings[%d]: 'id' is missing, empty or not a string"), Index);
+				return false;
+			}
+			if (!ReadVector(*Object, TEXT("pos"), Building.Location, OutError) ||
+				!ReadVector2(*Object, TEXT("size"), Building.SizeUU, OutError))
+			{
+				OutError = FString::Printf(TEXT("buildings[%d] ('%s'): %s"), Index, *Building.Id, *OutError);
+				return false;
+			}
+			double Yaw = 0.0;
+			double WallHeight = static_cast<double>(Building.WallHeightUU);
+			double WallThickness = static_cast<double>(Building.WallThicknessUU);
+			if (!ReadOptionalNumber(*Object, TEXT("yaw"), Yaw, OutError) ||
+				!ReadOptionalNumber(*Object, TEXT("wallHeight"), WallHeight, OutError) ||
+				!ReadOptionalNumber(*Object, TEXT("wallThickness"), WallThickness, OutError) ||
+				!ReadOptionalSurface(*Object, Building.Surface, OutError))
+			{
+				OutError = FString::Printf(TEXT("buildings[%d] ('%s'): %s"), Index, *Building.Id, *OutError);
+				return false;
+			}
+			Building.Yaw = static_cast<float>(Yaw);
+			Building.WallHeightUU = static_cast<float>(WallHeight);
+			Building.WallThicknessUU = static_cast<float>(WallThickness);
+
+			const TArray<TSharedPtr<FJsonValue>>* Doors = nullptr;
+			if (!TryGetOptionalArrayField(*Object, TEXT("doors"), Doors, OutError))
+			{
+				OutError = FString::Printf(TEXT("buildings[%d] ('%s'): %s"), Index, *Building.Id, *OutError);
+				return false;
+			}
+			if (Doors)
+			{
+				for (int32 DoorIndex = 0; DoorIndex < Doors->Num(); ++DoorIndex)
+				{
+					const TSharedPtr<FJsonObject>* DoorObject = nullptr;
+					if (!(*Doors)[DoorIndex]->TryGetObject(DoorObject) || !DoorObject)
+					{
+						OutError = FString::Printf(TEXT("buildings[%d] ('%s'): doors[%d] is not an object"),
+							Index, *Building.Id, DoorIndex);
+						return false;
+					}
+					FSarkoBuildingDoor Door;
+					if (!ReadDoor(*DoorObject, /*bNeedsSide*/ true, Door, OutError))
+					{
+						OutError = FString::Printf(TEXT("buildings[%d] ('%s'): doors[%d]: %s"),
+							Index, *Building.Id, DoorIndex, *OutError);
+						return false;
+					}
+					Building.Doors.Add(Door);
+				}
+			}
+
+			const TArray<TSharedPtr<FJsonValue>>* Walls = nullptr;
+			if (!TryGetOptionalArrayField(*Object, TEXT("interiorWalls"), Walls, OutError))
+			{
+				OutError = FString::Printf(TEXT("buildings[%d] ('%s'): %s"), Index, *Building.Id, *OutError);
+				return false;
+			}
+			if (Walls)
+			{
+				for (int32 WallIndex = 0; WallIndex < Walls->Num(); ++WallIndex)
+				{
+					const TSharedPtr<FJsonObject>* WallObject = nullptr;
+					if (!(*Walls)[WallIndex]->TryGetObject(WallObject) || !WallObject)
+					{
+						OutError = FString::Printf(TEXT("buildings[%d] ('%s'): interiorWalls[%d] is not an object"),
+							Index, *Building.Id, WallIndex);
+						return false;
+					}
+					FSarkoBuildingInteriorWall Wall;
+					if (!ReadVector2(*WallObject, TEXT("from"), Wall.From, OutError) ||
+						!ReadVector2(*WallObject, TEXT("to"), Wall.To, OutError))
+					{
+						OutError = FString::Printf(TEXT("buildings[%d] ('%s'): interiorWalls[%d]: %s"),
+							Index, *Building.Id, WallIndex, *OutError);
+						return false;
+					}
+					if ((*WallObject)->HasField(TEXT("door")))
+					{
+						const TSharedPtr<FJsonObject>* DoorObject = nullptr;
+						if (!(*WallObject)->TryGetObjectField(TEXT("door"), DoorObject) || !DoorObject)
+						{
+							OutError = FString::Printf(
+								TEXT("buildings[%d] ('%s'): interiorWalls[%d]: 'door' is present but not an object"),
+								Index, *Building.Id, WallIndex);
+							return false;
+						}
+						if (!ReadDoor(*DoorObject, /*bNeedsSide*/ false, Wall.Door, OutError))
+						{
+							OutError = FString::Printf(TEXT("buildings[%d] ('%s'): interiorWalls[%d]: %s"),
+								Index, *Building.Id, WallIndex, *OutError);
+							return false;
+						}
+						Wall.bHasDoor = true;
+					}
+					Building.InteriorWalls.Add(Wall);
+				}
+			}
+
+			// Expand here and throw the result away. ToLayout has no error
+			// channel, so every geometric rule the expander enforces has to be
+			// checked at load time, where the message reaches a person — and the
+			// only way to check them all is to run the real function.
+			TArray<FSarkoCoverBlock> Scratch;
+			FString ExpandError;
+			if (!ExpandBuilding(Building, Scratch, ExpandError))
+			{
+				OutError = FString::Printf(TEXT("buildings[%d]: %s"), Index, *ExpandError);
+				return false;
+			}
+			OutDefinition.Buildings.Add(Building);
 		}
 	}
 
@@ -669,6 +878,38 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 		return false;
 	}
 
+	// The GENERATED wall ids share that one namespace, and nothing above can see
+	// them: CollectIds walks the authored file, while ExpandBuilding invents
+	// "<buildingId>_<side>_<n>" and "<buildingId>_interior<w>_<n>" for every
+	// segment. Both end up in Layout.Cover side by side, so an authored block
+	// called "shed_north_0" next to a building called "shed" would put two
+	// different boxes under one name and "the wall at shed_north_0" would mean
+	// whichever the reader found first. Checked here, once, at load: a building's
+	// own id is already unique, but the derived names are not implied by that —
+	// a building "a" with an interior wall and a building "a_interior0" would
+	// both be legal ids and could still collide downstream.
+	{
+		TSet<FString> Taken(Ids);
+		TArray<FSarkoCoverBlock> Walls;
+		FString ExpandError;
+		if (!ExpandBuildings(OutDefinition.Buildings, Walls, ExpandError))
+		{
+			OutError = ExpandError;
+			return false;
+		}
+		for (const FSarkoCoverBlock& Wall : Walls)
+		{
+			if (Taken.Contains(Wall.Id))
+			{
+				OutError = FString::Printf(
+					TEXT("the wall id '%s' generated by a building is already used elsewhere in the file; rename the building or the entry that claims that name"),
+					*Wall.Id);
+				return false;
+			}
+			Taken.Add(Wall.Id);
+		}
+	}
+
 	return true;
 }
 
@@ -677,6 +918,24 @@ FSarkoMapLayout SarkoMap::ToLayout(const FSarkoMapDefinition& Definition)
 	FSarkoMapLayout Layout;
 	Layout.Extent = Definition.ExtentUU;
 	Layout.Cover = Definition.Blocks;
+
+	// Authored blocks first, then every building's walls in author order, so an
+	// index into Layout.Cover means the same thing on every machine. Expansion
+	// cannot fail here: ParseDefinition already ran the expander on every
+	// building and refused the file if any of them was broken.
+	TArray<FSarkoCoverBlock> BuildingWalls;
+	FString ExpandError;
+	if (ExpandBuildings(Definition.Buildings, BuildingWalls, ExpandError))
+	{
+		Layout.Cover.Append(BuildingWalls);
+	}
+	else
+	{
+		// Unreachable via LoadDefinitionFromDisk. Reachable if someone hands
+		// ToLayout a definition they built in code, which is why it logs instead
+		// of silently producing a map with no buildings in it.
+		UE_LOG(LogTemp, Error, TEXT("SarkoMap: building expansion failed in ToLayout: %s"), *ExpandError);
+	}
 
 	Layout.PlayerStarts.Reserve(Definition.PlayerSpawns.Num());
 	for (const FTransform& Spawn : Definition.PlayerSpawns)
@@ -744,6 +1003,7 @@ bool SarkoMap::CollectIds(const FSarkoMapDefinition& Definition, TArray<FString>
 	};
 
 	for (int32 I = 0; I < Definition.Blocks.Num(); ++I)         { if (!Take(Definition.Blocks[I].Id, TEXT("blocks"), I))            { return false; } }
+	for (int32 I = 0; I < Definition.Buildings.Num(); ++I)      { if (!Take(Definition.Buildings[I].Id, TEXT("buildings"), I))      { return false; } }
 	for (int32 I = 0; I < Definition.Props.Num(); ++I)          { if (!Take(Definition.Props[I].Id, TEXT("props"), I))              { return false; } }
 	for (int32 I = 0; I < Definition.Containers.Num(); ++I)     { if (!Take(Definition.Containers[I].Id, TEXT("containers"), I))    { return false; } }
 	for (int32 I = 0; I < Definition.PlayerSpawnIds.Num(); ++I) { if (!Take(Definition.PlayerSpawnIds[I], TEXT("playerSpawns"), I)) { return false; } }
@@ -778,6 +1038,7 @@ bool SarkoMap::RequireIdentifiedEntries(const FSarkoMapDefinition& Definition, F
 		return false;
 	}
 
+	for (int32 I = 0; I < Definition.Buildings.Num(); ++I)      { if (!Require(Definition.Buildings[I].Id, TEXT("buildings"), I))      { return false; } }
 	for (int32 I = 0; I < Definition.Containers.Num(); ++I)     { if (!Require(Definition.Containers[I].Id, TEXT("containers"), I))    { return false; } }
 	for (int32 I = 0; I < Definition.PlayerSpawnIds.Num(); ++I) { if (!Require(Definition.PlayerSpawnIds[I], TEXT("playerSpawns"), I)) { return false; } }
 	for (int32 I = 0; I < Definition.BotSpawns.Num(); ++I)      { if (!Require(Definition.BotSpawns[I].Id, TEXT("botSpawns"), I))      { return false; } }

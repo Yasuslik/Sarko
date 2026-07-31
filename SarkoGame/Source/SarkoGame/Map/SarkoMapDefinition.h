@@ -5,6 +5,7 @@
 // Included, not forward-declared: FSarkoItemStack is a USTRUCT held by value in
 // FSarkoLootContainerSpot::FixedItems below, so the full type has to be here.
 #include "Loot/SarkoItemCatalog.h"
+#include "Map/SarkoBuildings.h"
 #include "Map/SarkoMapBuilder.h"
 
 #include "SarkoMapDefinition.generated.h"
@@ -131,6 +132,14 @@ struct FSarkoMapDefinition
 
 	UPROPERTY()
 	TArray<FSarkoCoverBlock> Blocks;
+
+	/**
+	 * Walkable buildings, one declaration each. ToLayout expands them into
+	 * Layout.Cover alongside the authored blocks — there is no second spawn
+	 * path and no building actor, because a building IS its walls.
+	 */
+	UPROPERTY()
+	TArray<FSarkoBuilding> Buildings;
 
 	UPROPERTY()
 	TArray<FSarkoMapProp> Props;

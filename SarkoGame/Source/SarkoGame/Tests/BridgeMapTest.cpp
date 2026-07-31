@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 
 #include "Core/SarkoRaidSettings.h"
+#include "Map/SarkoBuildings.h"
 #include "Map/SarkoMapDefinition.h"
 #include "Map/SarkoMapKinds.h"
 
@@ -13,18 +14,10 @@ namespace
 		return SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Out, Error);
 	}
 
-	bool IsInsideBlock(const FVector& Point, const TArray<FSarkoCoverBlock>& Blocks)
-	{
-		for (const FSarkoCoverBlock& Block : Blocks)
-		{
-			const FVector Local = Block.Rotation.UnrotateVector(Point - Block.Location);
-			if (FMath::Abs(Local.X) <= Block.Extent.X && FMath::Abs(Local.Y) <= Block.Extent.Y)
-			{
-				return true;
-			}
-		}
-		return false;
-	}
+	// There is deliberately no file-local point-in-block helper any more.
+	// SarkoMap::IsPointInsideBlocksXY is the one predicate, and it is the one the
+	// expander's own invariants use: two copies is exactly how one of them ends
+	// up not knowing about building walls.
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -90,11 +83,14 @@ bool FSarkoBridgeMapIsValid::RunTest(const FString& Parameters)
 	for (const FTransform& Spawn : Map.PlayerSpawns)
 	{
 		CheckInside(Spawn.GetLocation(), TEXT("a player spawn"));
-		TestFalse(TEXT("no player spawn sits inside a block"), IsInsideBlock(Spawn.GetLocation(), Map.Blocks));
+		TestFalse(TEXT("no player spawn sits inside a block"),
+			SarkoMap::IsPointInsideBlocksXY(
+				FVector2D(Spawn.GetLocation().X, Spawn.GetLocation().Y), Map.Blocks));
 	}
 	for (const FSarkoBotSpot& Bot : Map.BotSpawns)
 	{
-		TestFalse(TEXT("no bot spawn sits inside a block"), IsInsideBlock(Bot.Location, Map.Blocks));
+		TestFalse(TEXT("no bot spawn sits inside a block"),
+			SarkoMap::IsPointInsideBlocksXY(FVector2D(Bot.Location.X, Bot.Location.Y), Map.Blocks));
 	}
 
 	// Every prop kind resolves, or that prop silently does not appear.
@@ -181,6 +177,84 @@ bool FSarkoBridgeRiskGradientExists::RunTest(const FString& Parameters)
 		}
 	}
 	TestTrue(TEXT("the best loot is across the ravine"), FarGoodLoot >= 4);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBridgeBuildingsAreEnterable,
+	"Sarko.Map.BridgeBuildingsAreEnterable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBridgeBuildingsAreEnterable::RunTest(const FString& Parameters)
+{
+	FSarkoMapDefinition Map;
+	FString Error;
+	if (!LoadBridge(Map, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json failed to load: %s"), *Error));
+		return false;
+	}
+
+	TestTrue(TEXT("the sector has walkable buildings at all"), Map.Buildings.Num() >= 3);
+
+	const FSarkoMapLayout Layout = SarkoMap::ToLayout(Map);
+	for (const FSarkoBuilding& Building : Map.Buildings)
+	{
+		TestFalse(FString::Printf(TEXT("building '%s' is named"), *Building.Id), Building.Id.IsEmpty());
+		TestTrue(FString::Printf(TEXT("building '%s' is inside the sector"), *Building.Id),
+			FMath::Abs(Building.Location.X) <= Map.ExtentUU && FMath::Abs(Building.Location.Y) <= Map.ExtentUU);
+		// ТЗ §13: two exits or none. The expander enforces it, but a shipped
+		// walkable building with zero doors would pass that and still be a box.
+		TestTrue(FString::Printf(TEXT("building '%s' is closed or has two exits"), *Building.Id),
+			Building.Doors.Num() == 0 || Building.Doors.Num() >= 2);
+
+		// The centre of every building is standable. This is the one assertion
+		// that would catch "the expander emitted a floor" or "the interior walls
+		// filled the room" in real authored data rather than in a fixture.
+		if (Building.Doors.Num() > 0)
+		{
+			TestFalse(FString::Printf(TEXT("building '%s' has a standable interior"), *Building.Id),
+				SarkoMap::IsPointInsideBlocksXY(
+					FVector2D(Building.Location.X, Building.Location.Y), Layout.Cover));
+		}
+	}
+
+	// Every id in the spawned layout names exactly one box. The parser refuses a
+	// collision between an authored block id and a generated wall id
+	// (Sarko.Map.BuildingsFailLoudly pins the rule); this is the same rule
+	// checked against the real file, which is where it would actually bite.
+	TSet<FString> SeenIds;
+	for (const FSarkoCoverBlock& Block : Layout.Cover)
+	{
+		if (Block.Id.IsEmpty())
+		{
+			continue;
+		}
+		TestFalse(FString::Printf(TEXT("layout id '%s' is not a duplicate"), *Block.Id),
+			SeenIds.Contains(Block.Id));
+		SeenIds.Add(Block.Id);
+	}
+
+	// Nobody spawns inside a wall — now including building walls, which the old
+	// version of this check could not see because it only looked at Map.Blocks.
+	for (const FTransform& Spawn : Map.PlayerSpawns)
+	{
+		TestFalse(TEXT("no player spawn sits inside a building wall"),
+			SarkoMap::IsPointInsideBlocksXY(
+				FVector2D(Spawn.GetLocation().X, Spawn.GetLocation().Y), Layout.Cover));
+	}
+	for (const FSarkoBotSpot& Bot : Map.BotSpawns)
+	{
+		TestFalse(FString::Printf(TEXT("bot '%s' does not spawn inside a wall"), *Bot.Id),
+			SarkoMap::IsPointInsideBlocksXY(FVector2D(Bot.Location.X, Bot.Location.Y), Layout.Cover));
+	}
+	// ТЗ §29: "перед контейнером 120 uu свободно" — a container buried in a wall
+	// cannot be looted, and a building wall is the easiest thing to bury one in.
+	for (const FSarkoLootContainerSpot& Spot : Map.Containers)
+	{
+		TestFalse(FString::Printf(TEXT("container '%s' is not inside a wall"), *Spot.Id),
+			SarkoMap::IsPointInsideBlocksXY(FVector2D(Spot.Location.X, Spot.Location.Y), Layout.Cover));
+	}
 	return true;
 }
 
