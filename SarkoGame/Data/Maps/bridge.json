@@ -151,7 +151,7 @@
     { "kind": "crate", "pos": [-16000, 17600, 70] },
     { "kind": "crate", "pos": [-18000, 15200, 70] },
     { "kind": "wall", "pos": [-14400, 18000, 140], "yaw": 0 },
-    { "kind": "car_wreck", "pos": [-15000, 17200, 75], "yaw": 45 },
+    { "note": "Moved 400 west and 500 south of where it was authored: ТЗ §8's spawn 03 at (-15000,+17000) stood inside this wreck's footprint. It is now L03's остов.", "kind": "car_wreck", "pos": [-15400, 16700, 75], "yaw": 30 },
     { "kind": "crate", "pos": [-15200, 16000, 70] },
 
     { "note": "BUS STOP — a landmark on the way east, and the first real cover after spawn.", "kind": "bus", "pos": [-6200, 16400, 160], "yaw": 0 },
@@ -327,89 +327,75 @@
   ],
 
   "containers": [
-    { "id": "bridge_loot_01", "note": "NEAR HALF — junk only. Props are solid boxes for now, so a container 'in' a wreck or a house sits at its tail or its door, touching it: inside a solid box it could never be reached.", "pos": [-17400, 16350, 35], "tier": "junk" },
-    { "id": "bridge_loot_02", "pos": [-16000, 17350, 35], "tier": "junk" },
-    { "id": "bridge_loot_03", "pos": [-18000, 14950, 35], "tier": "junk" },
-    { "id": "bridge_loot_04", "pos": [-260, 18250, 35], "tier": "junk" },
-    { "id": "bridge_loot_05", "pos": [-230, 15450, 35], "tier": "junk" },
-    { "id": "bridge_loot_06", "pos": [240, 9550, 35], "tier": "junk" },
-    { "id": "bridge_loot_07", "pos": [-240, 6150, 35], "tier": "junk" },
-    { "id": "bridge_loot_08", "pos": [-2450, 17000, 35], "tier": "junk" },
-    { "id": "bridge_loot_09", "pos": [-6000, 16150, 35], "tier": "junk" },
-    { "id": "bridge_loot_10", "pos": [16400, 10550, 35], "tier": "junk" },
-    { "id": "bridge_loot_11", "pos": [-10200, 8550, 35], "tier": "junk" },
-    { "id": "bridge_loot_12", "pos": [250, 10950, 35], "tier": "junk" },
+    { "note": "SPAWN CAMP (ТЗ §29 L01-L03) — the three junk containers. §29 has L13/L18/L25/L30 as junk too, but the owner's Bridge_West split is 3 junk, so junk is exactly the spawn camp: the first container the player ever opens teaches the interaction and holds nothing worth dying for.",
+      "id": "bridge_loot_l01", "pos": [-17800, 17100, 35], "tier": "junk" },
+    { "note": "L02 'дерево'. There is no tree kind and cannot be one (a canopy hides the player from a top-down camera), so this stands beside a treeline clump — see the flag list.",
+      "id": "bridge_loot_l02", "pos": [-16400, 18100, 35], "tier": "junk" },
+    { "note": "L03 'остов', shifted +100,+100 from §29's (-15100,+16600) so it stands 153 uu clear of the wreck's face rather than 53 — ТЗ §29 wants 120 uu free in front of a container.",
+      "id": "bridge_loot_l03", "pos": [-15000, 16700, 35], "tier": "junk" },
 
-    { "id": "bridge_loot_13", "note": "CHECKPOINT and the strongpoint in the ruins — military, the first loot worth stopping for.", "pos": [-1600, 3450, 35], "tier": "military" },
-    { "id": "bridge_loot_14", "pos": [700, 3650, 35], "tier": "military" },
-    { "id": "bridge_loot_15", "pos": [-250, 3150, 35], "tier": "military" },
-    { "id": "bridge_loot_16", "pos": [15800, 9350, 35], "tier": "military" },
+    { "note": "THE PIPE CROSSING (L13, L18, L19). Re-tiered junk -> common per the owner's split. L19 (техдвор, south of the crossing) is where Task 5 puts the medkit: spec §6.5 teaches healing before the first bot, and the first bot is at the gas station.",
+      "id": "bridge_loot_l13", "pos": [-14200, 3300, 35], "tier": "common" },
+    { "id": "bridge_loot_l18", "pos": [-14800, -3800, 35], "tier": "common" },
+    { "id": "bridge_loot_l19", "pos": [-13300, -4600, 35], "tier": "common" },
 
-    { "id": "bridge_loot_17", "note": "FAR HALF — the reason to cross. Moved 4400 uu south from the old shop door to ТЗ §29's L20 (зал АЗС, -13300,-8800), i.e. inside the walkable bridge_gas_station: a container you have to walk into a building for is the whole point of the building. Sarko.Map.BridgeBuildingsAreEnterable pins that it is not inside a wall.", "pos": [-13300, -8800, 35], "tier": "good" },
-    { "id": "bridge_loot_18", "pos": [-12000, -5500, 35], "tier": "good" },
+    { "note": "THE GAS STATION (L20-L25). L20 is the зал, inside the walkable bridge_gas_station: a container you have to walk into a building for is the whole point of the building.",
+      "id": "bridge_loot_l20", "pos": [-13300, -8800, 35], "tier": "common" },
+    { "note": "L21, подсобка — the west room, 285 uu clear of both interior walls.",
+      "id": "bridge_loot_l21", "pos": [-14100, -9100, 35], "tier": "good" },
+    { "note": "L22, shifted +200 in y from §29's (-13000,-9800), which is 50 uu OUTSIDE the building's south wall. It is now at the south end of the зал.",
+      "id": "bridge_loot_l22", "pos": [-13000, -9600, 35], "tier": "good" },
+    { "note": "L23, стойка, the sector's only med container. Shifted 50 west of §29's (-12500,-8400) so it stands 120 uu off the east wall's inner face rather than 70 — ТЗ §29 wants 80.",
+      "id": "bridge_loot_l23", "pos": [-12550, -8400, 35], "tier": "med" },
+    { "note": "L24, фургон — beside the trailer Task 4 authors at (-15000,-7900).",
+      "id": "bridge_loot_l24", "pos": [-15000, -7600, 35], "tier": "good" },
+    { "note": "L25, inside сарай S02 (Task 4). Re-tiered junk -> common.",
+      "id": "bridge_loot_l25", "pos": [-15700, -10500, 35], "tier": "common" },
 
-    { "id": "bridge_loot_19", "note": "FAR HALF — village, at the house doors.", "pos": [-200, -9200, 35], "tier": "good" },
-    { "id": "bridge_loot_20", "pos": [2400, -9200, 35], "tier": "good" },
-    { "id": "bridge_loot_21", "pos": [1000, -10600, 35], "tier": "good" },
-    { "id": "bridge_loot_22", "pos": [3600, -10600, 35], "tier": "good" },
-    { "id": "bridge_loot_23", "pos": [-1400, -9350, 35], "tier": "good" },
-
-    { "id": "bridge_loot_24", "note": "FAR HALF — rail siding.", "pos": [-13900, -15200, 35], "tier": "good" },
-    { "id": "bridge_loot_25", "pos": [-12300, -15200, 35], "tier": "military" },
-    { "id": "bridge_loot_26", "pos": [-11500, -14550, 35], "tier": "good" },
-
-    { "id": "bridge_loot_27", "note": "FAR HALF — water tower.", "pos": [7600, -6950, 35], "tier": "military" },
-
-    { "id": "bridge_loot_28", "note": "FAR HALF — industrial yard, the best of it.", "pos": [16000, -14800, 35], "tier": "good" },
-    { "id": "bridge_loot_29", "pos": [17800, -16900, 35], "tier": "good" },
-    { "id": "bridge_loot_30", "pos": [16800, -16150, 35], "tier": "good" },
-    { "id": "bridge_loot_31", "pos": [13800, -18200, 35], "tier": "good" },
-    { "id": "bridge_loot_32", "pos": [18400, -14800, 35], "tier": "military" },
-
-    { "id": "bridge_loot_33", "note": "FAR HALF — scrap yard and farm compound.", "pos": [-5600, -13150, 35], "tier": "good" },
-    { "id": "bridge_loot_34", "pos": [-7400, -13100, 35], "tier": "good" },
-    { "id": "bridge_loot_35", "pos": [10500, -10400, 35], "tier": "good" },
-    { "id": "bridge_loot_36", "pos": [10600, -11750, 35], "tier": "good" },
-    { "id": "bridge_loot_37", "pos": [16000, -17850, 35], "tier": "good" },
-
-    { "id": "bridge_loot_38", "note": "FAR HALF — cement works, the field, the southern homestead.", "pos": [-17400, -6750, 35], "tier": "good" },
-    { "id": "bridge_loot_39", "pos": [-18000, -10400, 35], "tier": "military" },
-    { "id": "bridge_loot_40", "pos": [1000, -17550, 35], "tier": "good" },
-    { "id": "bridge_loot_41", "pos": [6800, -16950, 35], "tier": "good" },
-    { "id": "bridge_loot_42", "pos": [7800, -17600, 35], "tier": "good" }
+    { "note": "THE RAIL DEPOT (L26-L30) — the deep end of the route, and the only place with military. L26 is the разгрузка pad, north of the warehouse.",
+      "id": "bridge_loot_l26", "pos": [-15800, -16600, 35], "tier": "good" },
+    { "id": "bridge_loot_l27", "pos": [-11200, -17500, 35], "tier": "good" },
+    { "note": "L28, inside the диспетчерская (Task 4).",
+      "id": "bridge_loot_l28", "pos": [-12600, -16900, 35], "tier": "common" },
+    { "note": "L29, паллеты, inside the warehouse's east room (Task 4). Re-tiered common -> good.",
+      "id": "bridge_loot_l29", "pos": [-14500, -18100, 35], "tier": "good" },
+    { "note": "L30, упор. Re-tiered junk -> common.",
+      "id": "bridge_loot_l30", "pos": [-17200, -17400, 35], "tier": "common" },
+    { "note": "MILITARY — no ledger row. ТЗ §29 puts no military west of the bridge (its four are the КПП and the промзона, all behind the closure), and the owner's Bridge_West split asks for two. They are here, at the deepest point of the route, and they retire when §29's four arrive with Stage D. This one is inside the warehouse's west room.",
+      "id": "bridge_loot_rail_mil_01", "pos": [-15600, -17600, 35], "tier": "military" },
+    { "note": "The second, beside the вагон at the depot's east end — the furthest point from E1, which is what makes carrying it home a decision.",
+      "id": "bridge_loot_rail_mil_02", "pos": [-10700, -17500, 35], "tier": "military" }
   ],
 
   "playerSpawns": [
-    { "id": "bridge_spawn_01", "note": "North-west, behind the broken fence, facing south-east into the sector. All four are clear of every block and at least 400 uu from any prop.", "pos": [-16800, 17400, 150], "yaw": -45 },
-    { "id": "bridge_spawn_02", "pos": [-16000, 16800, 150], "yaw": -45 },
-    { "id": "bridge_spawn_03", "pos": [-17400, 16200, 150], "yaw": -45 },
-    { "id": "bridge_spawn_04", "pos": [-15800, 15600, 150], "yaw": -45 }
+    { "note": "ТЗ §8's four, verbatim. One is chosen per raid. All four sit behind the broken fence at the north-west corner, facing south-east into the sector, and clear of every block — including Task 2's north and west world border, which starts at y = +19700 and x = -19700.",
+      "id": "bridge_spawn_01", "pos": [-18000, 17500, 150], "yaw": -45 },
+    { "id": "bridge_spawn_02", "pos": [-16500, 18500, 150], "yaw": -45 },
+    { "id": "bridge_spawn_03", "pos": [-15000, 17000, 150], "yaw": -45 },
+    { "id": "bridge_spawn_04", "pos": [-17500, 15000, 150], "yaw": -45 }
   ],
 
   "botSpawns": [
-    { "id": "bridge_bot_01", "note": "Near half: two, and no more. Eight bots that all heard the player and converged turned a firefight into an execution, so they are spread far enough apart (hearing radius is 1800 uu) that they cannot all arrive together.", "pos": [16000, 10500, 150], "zone": "near" },
-    { "id": "bridge_bot_02", "pos": [1200, 4400, 150], "zone": "mid" },
+    { "note": "THE GAS STATION — two, per the owner's split. §11's АЗС парковка, verbatim.",
+      "id": "bridge_bot_gas_forecourt", "pos": [-12500, -7500, 150], "zone": "mid" },
+    { "note": "§11's АЗС двор (-15000,-10500) shifted +400,-200 — the ledger point is exactly on сарай S02's east wall centre line, and a bot spawned inside a wall is the oldest bug on this map. §11 allows +/-300-800.",
+      "id": "bridge_bot_gas_yard", "pos": [-14600, -10700, 150], "zone": "deep" },
 
-    { "id": "bridge_bot_03", "note": "The crossings, south side: whoever heard you go in is between you and home on the way out.", "pos": [-1700, -2800, 150], "zone": "mid" },
-    { "id": "bridge_bot_04", "pos": [12800, -2600, 150], "zone": "mid" },
-
-    { "id": "bridge_bot_05", "note": "Far half: eight, one per point of interest.", "pos": [-12500, -5600, 150], "zone": "deep" },
-    { "id": "bridge_bot_06", "pos": [1200, -9200, 150], "zone": "deep" },
-    { "id": "bridge_bot_07", "pos": [3000, -12400, 150], "zone": "deep" },
-    { "id": "bridge_bot_08", "pos": [7200, -8200, 150], "zone": "deep" },
-    { "id": "bridge_bot_09", "pos": [-12000, -16800, 150], "zone": "deep" },
-    { "id": "bridge_bot_10", "pos": [-15000, -14400, 150], "zone": "deep" },
-    { "id": "bridge_bot_11", "pos": [16000, -14800, 150], "zone": "deep" },
-    { "id": "bridge_bot_12", "pos": [17600, -18200, 150], "zone": "deep" },
-    { "id": "bridge_bot_13", "pos": [-6400, -14800, 150], "zone": "deep" },
-    { "id": "bridge_bot_14", "pos": [11000, -12800, 150], "zone": "deep" },
-    { "id": "bridge_bot_15", "pos": [-17600, -8800, 150], "zone": "deep" },
-    { "id": "bridge_bot_16", "pos": [6600, -17400, 150], "zone": "deep" }
+    { "note": "THE RAIL DEPOT — four, per the owner's split. These two are §11's ж/д запад and ж/д разгрузка, verbatim.",
+      "id": "bridge_bot_rail_west", "pos": [-16000, -16500, 150], "zone": "deep" },
+    { "id": "bridge_bot_rail_dock", "pos": [-11000, -17500, 150], "zone": "deep" },
+    { "note": "The two the owner's count adds beyond §11's west entries. Placed at the depot's own sub-areas and spaced so no two of the six can hear one shot: the closest pair on this map is rail_dock and rail_dispatcher at 2052 uu, against an 1800 uu hearing radius.",
+      "id": "bridge_bot_rail_warehouse", "pos": [-14600, -18600, 150], "zone": "deep" },
+    { "note": "Shifted 400 south of the plan's (-12400,-15600): that point is INSIDE the freight car at (-12300,-15600), whose body is 1400 x 300 uu — a bot spawned inside a solid prop is the same bug the gas_yard note above is about, and no map test sees it because the invariants check blocks and building walls, not props. At y = -16000 it stands 250 uu clear of the car's south face, on the диспетчерская side of the train beside L28. §11 allows +/-300-800.",
+      "id": "bridge_bot_rail_dispatcher", "pos": [-12400, -16000, 150], "zone": "deep" }
   ],
 
   "extractions": [
-    { "id": "bridge_extract_north_path", "note": "North edge only. The east and south edges become passages into neighbouring sectors when the map grows to 800 x 800, and an extraction there would vanish.", "pos": [-14500, 18600, 0], "radiusUU": 500, "name": "Северная тропа" },
-    { "id": "bridge_extract_north_highway", "pos": [-1500, 18700, 0], "radiusUU": 500, "name": "Шоссе на север" },
-    { "id": "bridge_extract_east_cordon", "pos": [11000, 18600, 0], "radiusUU": 500, "name": "Восточный кордон" }
+    { "note": "E1 (ТЗ §12), the pipes route, and the only extraction a Bridge_West player can reach. §12's trigger is ~1000x700; a 500 uu radius is the round equivalent. Task 2's north border leaves a 1200 uu mouth at exactly this x so E1 is the one gap in the treeline — the way out of the world.",
+      "id": "bridge_extract_north_path", "pos": [-15500, 19500, 0], "radiusUU": 500, "name": "Северная тропа" },
+    { "note": "E2 (ТЗ §12), the main exit after the bridge. Behind the closure until Stage D; kept in data because §12 lists three and because Sarko.Extract.BridgeExtractionsAreReachableAndDistinct checks they never overlap.",
+      "id": "bridge_extract_north_highway", "pos": [-1000, 19500, 0], "radiusUU": 500, "name": "Шоссе на север" },
+    { "note": "E3 (ТЗ §12), after the ford. Behind the closure until Stage D.",
+      "id": "bridge_extract_east_cordon", "pos": [14500, 19500, 0], "radiusUU": 500, "name": "Восточный кордон" }
   ]
 }

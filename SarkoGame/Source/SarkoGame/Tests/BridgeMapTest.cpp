@@ -496,4 +496,119 @@ bool FSarkoBridgeStaysInsideTheActorBudget::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBridgeWestLedgerIsAuthored,
+	"Sarko.Map.BridgeWestLedgerIsAuthored",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
+{
+	FSarkoMapDefinition Map;
+	FString Error;
+	if (!LoadBridge(Map, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json failed to load: %s"), *Error));
+		return false;
+	}
+
+	// The owner's Bridge_West numbers, as numbers. The full map's 42/16 move to
+	// docs/design/bridge-full-map-tz.md as the acceptance bar for Stage D; this
+	// is the bar for the sector that ships now.
+	TestEqual(TEXT("nineteen containers"), Map.Containers.Num(), 19);
+	TestEqual(TEXT("six bots"), Map.BotSpawns.Num(), 6);
+	TestEqual(TEXT("four player spawns"), Map.PlayerSpawns.Num(), 4);
+	TestEqual(TEXT("three extractions, one of them reachable"), Map.Extractions.Num(), 3);
+
+	// 3 junk / 7 common / 6 good / 1 med / 2 military.
+	TMap<FName, int32> Tiers;
+	for (const FSarkoLootContainerSpot& Spot : Map.Containers)
+	{
+		Tiers.FindOrAdd(Spot.Tier)++;
+	}
+	TestEqual(TEXT("three junk"), Tiers.FindRef(TEXT("junk")), 3);
+	TestEqual(TEXT("seven common"), Tiers.FindRef(TEXT("common")), 7);
+	TestEqual(TEXT("six good"), Tiers.FindRef(TEXT("good")), 6);
+	TestEqual(TEXT("one med"), Tiers.FindRef(TEXT("med")), 1);
+	TestEqual(TEXT("two military"), Tiers.FindRef(TEXT("military")), 2);
+
+	// The active third: the barrier Task 2 builds runs at x = -6100 north of the
+	// ravine and x = -9100 south of it, so nothing the player is meant to reach
+	// may be authored east of those lines. Checked as data rather than left to
+	// the closure, because a container behind the barrier is loot that exists,
+	// is on the ledger, and can never be picked up.
+	const auto InActiveThird = [](const FVector& P)
+	{
+		return P.Y > 0.f ? P.X <= -6100.f : P.X <= -9100.f;
+	};
+	for (const FSarkoLootContainerSpot& Spot : Map.Containers)
+	{
+		TestTrue(FString::Printf(TEXT("container '%s' is inside the active third"), *Spot.Id),
+			InActiveThird(Spot.Location));
+	}
+	for (const FSarkoBotSpot& Bot : Map.BotSpawns)
+	{
+		TestTrue(FString::Printf(TEXT("bot '%s' is inside the active third"), *Bot.Id),
+			InActiveThird(Bot.Location));
+	}
+	for (const FTransform& Spawn : Map.PlayerSpawns)
+	{
+		TestTrue(TEXT("every player spawn is inside the active third"),
+			InActiveThird(Spawn.GetLocation()));
+	}
+
+	// ТЗ §11: the first fight is one bot. Eight bots that all heard the player
+	// and converged turned a firefight into an execution once already, and the
+	// hearing radius is 1800 uu — so no two bots may be able to hear the same
+	// shot. This is the whole reason six positions were chosen by hand.
+	for (int32 A = 0; A < Map.BotSpawns.Num(); ++A)
+	{
+		for (int32 B = A + 1; B < Map.BotSpawns.Num(); ++B)
+		{
+			const float Distance = FVector2D(
+				Map.BotSpawns[A].Location.X - Map.BotSpawns[B].Location.X,
+				Map.BotSpawns[A].Location.Y - Map.BotSpawns[B].Location.Y).Size();
+			TestTrue(FString::Printf(TEXT("bots '%s' and '%s' are %.0f uu apart (>= 1800)"),
+				*Map.BotSpawns[A].Id, *Map.BotSpawns[B].Id, Distance), Distance >= 1800.f);
+		}
+	}
+
+	// ТЗ §8: "бот не виден при появлении". The nearest bot is a whole zone away.
+	for (const FTransform& Spawn : Map.PlayerSpawns)
+	{
+		for (const FSarkoBotSpot& Bot : Map.BotSpawns)
+		{
+			const float Distance = FVector2D(
+				Spawn.GetLocation().X - Bot.Location.X,
+				Spawn.GetLocation().Y - Bot.Location.Y).Size();
+			TestTrue(FString::Printf(TEXT("bot '%s' is not visible from a spawn (%.0f uu)"),
+				*Bot.Id, Distance), Distance >= 6000.f);
+		}
+	}
+
+	// ТЗ §12's E1, to the unit. This is the one extraction a Bridge_West player
+	// can reach, and the tutorial's last teaching beat is standing in it.
+	const FSarkoExtractionSpot* E1 = Map.Extractions.FindByPredicate(
+		[](const FSarkoExtractionSpot& Spot) { return Spot.Id == TEXT("bridge_extract_north_path"); });
+	TestNotNull(TEXT("E1 exists by id"), E1);
+	if (E1)
+	{
+		TestTrue(TEXT("E1 is at ТЗ §12's (-15500, +19500)"),
+			FMath::IsNearlyEqual(static_cast<float>(E1->Location.X), -15500.f, 1.f) &&
+			FMath::IsNearlyEqual(static_cast<float>(E1->Location.Y), 19500.f, 1.f));
+		TestTrue(TEXT("E1 is inside the active third"), InActiveThird(E1->Location));
+	}
+	// E2 and E3 are data behind the closure, deliberately: ТЗ §12 lists three and
+	// Stage D opens them. They must NOT be inside the active third, or the sector
+	// would ship with three working exits and no reason to learn the route.
+	for (const FSarkoExtractionSpot& Spot : Map.Extractions)
+	{
+		if (Spot.Id != TEXT("bridge_extract_north_path"))
+		{
+			TestFalse(FString::Printf(TEXT("extraction '%s' is behind the closure"), *Spot.Id),
+				InActiveThird(Spot.Location));
+		}
+	}
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS
