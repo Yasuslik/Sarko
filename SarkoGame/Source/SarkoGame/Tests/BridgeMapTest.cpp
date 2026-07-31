@@ -487,12 +487,41 @@ bool FSarkoBridgeStaysInsideTheActorBudget::RunTest(const FString& Parameters)
 	AddInfo(FString::Printf(TEXT("bridge.json spawns %d actors (%d blocks+walls, %d prop actors from %d props)"),
 		Actors, Layout.Cover.Num(), SarkoMap::CountPropActors(Map), Map.Props.Num()));
 
-	// 450 is the ceiling for Stage B. Stage C's full ledger (≈20 buildings, a
-	// treeline border, the north filled per §15) will pass it, and that is the
-	// point at which instanced static meshes stop being premature — see the
-	// Global Constraints. A failure here is not a bug, it is that decision
-	// coming due.
-	TestTrue(FString::Printf(TEXT("the sector spawns at most 450 actors (it spawns %d)"), Actors), Actors <= 450);
+	// 560 is Bridge_West's ceiling, and it is a DECISION rather than a drift.
+	//
+	// Where the number comes from. With the east closure, the world border and
+	// ТЗ §15's fill of the north in, the bill is 459: 1 floor, 32 authored blocks
+	// (12 of them the closure and the border), 32 walls expanded from 5 buildings,
+	// 363 prop actors from 351 authored props (the difference is the composite
+	// kinds — pylons, road signs, trailers), 19 containers, 3 extraction pads, 6
+	// bots, the pawn and two lights. The three camps, the tutorial loot layout and
+	// the landmark pass still to come add ~70 more, which is the ~529 the
+	// Bridge_West plan projects. 560 leaves about thirty of headroom over that:
+	// enough for a crate beside a container, not enough to hide a fill that
+	// doubled.
+	//
+	// Instancing was considered here and deliberately NOT taken. What costs money
+	// is draw calls, and SpawnMeshBox -> PaintFlat gives every actor its own
+	// UMaterialInstanceDynamic — UE only auto-instances primitives that share a
+	// mesh AND a material, so moving these into HISM components would not reduce
+	// the draw count until the per-actor MIDs go away first. The cheap mitigation
+	// is therefore one shared material instance per ESarkoSurface (eleven instead
+	// of five hundred), which is a change to the single spawn path and belongs
+	// with its own before/after measurement, not inside a content stage. The
+	// saving that WAS available here has been taken: the closure is 12 blocks
+	// instead of ~50 tiled treeline props.
+	//
+	// The trigger that reopens this: a PACKAGED iOS build that misses 30 fps in
+	// this sector. Response order is (1) shared per-surface material instances,
+	// measured; (2) HISM per (mesh, surface) pair for the fill kinds only — rock,
+	// bush, log, fence_section, treeline, about 150 of the prop actors; (3)
+	// cutting content. Never (3) first. Nothing this stage added ticks, allocates
+	// per frame or replicates, which is why 500-odd static cubes is not where
+	// ТЗ §16's budget is expected to break.
+	//
+	// A failure here still means what it always meant: not a bug, but this
+	// decision coming due again.
+	TestTrue(FString::Printf(TEXT("the sector spawns at most 560 actors (it spawns %d)"), Actors), Actors <= 560);
 	return true;
 }
 

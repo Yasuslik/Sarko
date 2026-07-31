@@ -388,8 +388,16 @@ bool FSarkoPropActorCountIsWithinTheMobileBudget::RunTest(const FString& Paramet
 	const int32 PropActors = SarkoMap::CountPropActors(Map);
 	TestTrue(TEXT("every prop resolves, so the count is not silently short"),
 		PropActors >= Map.Props.Num());
+	// 420 for Bridge_West: the sector carries 363 prop actors from 351 authored
+	// props with ТЗ §15's fill of the north in (about 150 of them are rocks,
+	// bushes, logs, fences and treeline), and projects to ~388 once the three
+	// camps and the landmark pass land. Raised from 400 in the same commit that
+	// raised the total ceiling to 560, and for the same documented reasons — see
+	// Sarko.Map.BridgeStaysInsideTheActorBudget, which carries the whole argument
+	// and the trigger that would reverse it (a packaged iOS build that misses 30
+	// fps in this sector).
 	TestTrue(FString::Printf(TEXT("props stay inside the mobile actor budget (%d)"), PropActors),
-		PropActors <= 400);
+		PropActors <= 420);
 
 	// Was an equality until Stage C: the shipped map used no composite kind, so
 	// actors and authored entries were the same number. Bridge_West places
