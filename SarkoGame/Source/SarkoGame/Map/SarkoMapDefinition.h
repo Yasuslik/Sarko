@@ -5,6 +5,7 @@
 // Included, not forward-declared: FSarkoItemStack is a USTRUCT held by value in
 // FSarkoLootContainerSpot::FixedItems below, so the full type has to be here.
 #include "Loot/SarkoItemCatalog.h"
+#include "Map/SarkoBuildings.h"
 #include "Map/SarkoMapBuilder.h"
 
 #include "SarkoMapDefinition.generated.h"
@@ -14,6 +15,10 @@ USTRUCT()
 struct FSarkoMapProp
 {
 	GENERATED_BODY()
+
+	/** Optional stable name (ТЗ §18). See FSarkoCoverBlock::Id. */
+	UPROPERTY()
+	FString Id;
 
 	UPROPERTY()
 	FName Kind;
@@ -30,6 +35,14 @@ USTRUCT()
 struct FSarkoLootContainerSpot
 {
 	GENERATED_BODY()
+
+	/**
+	 * Stable name (ТЗ §18). Required on a shipped map — a container is a row in
+	 * the loot ledger, and an anonymous one cannot be audited against it. See
+	 * SarkoMap::RequireIdentifiedEntries.
+	 */
+	UPROPERTY()
+	FString Id;
 
 	UPROPERTY()
 	FVector Location = FVector::ZeroVector;
@@ -61,6 +74,13 @@ struct FSarkoExtractionSpot
 {
 	GENERATED_BODY()
 
+	/**
+	 * Stable name (ТЗ §18), required on a shipped map. Distinct from Name below:
+	 * Id is what code and reports say, Name is what the player is shown.
+	 */
+	UPROPERTY()
+	FString Id;
+
 	UPROPERTY()
 	FVector Location = FVector::ZeroVector;
 
@@ -76,6 +96,10 @@ USTRUCT()
 struct FSarkoBotSpot
 {
 	GENERATED_BODY()
+
+	/** Stable name (ТЗ §18), required on a shipped map. */
+	UPROPERTY()
+	FString Id;
 
 	UPROPERTY()
 	FVector Location = FVector::ZeroVector;
@@ -109,6 +133,14 @@ struct FSarkoMapDefinition
 	UPROPERTY()
 	TArray<FSarkoCoverBlock> Blocks;
 
+	/**
+	 * Walkable buildings, one declaration each. ToLayout expands them into
+	 * Layout.Cover alongside the authored blocks — there is no second spawn
+	 * path and no building actor, because a building IS its walls.
+	 */
+	UPROPERTY()
+	TArray<FSarkoBuilding> Buildings;
+
 	UPROPERTY()
 	TArray<FSarkoMapProp> Props;
 
@@ -117,6 +149,15 @@ struct FSarkoMapDefinition
 
 	UPROPERTY()
 	TArray<FTransform> PlayerSpawns;
+
+	/**
+	 * Ids for PlayerSpawns, index-aligned. A player spawn is an FTransform —
+	 * an engine type with nowhere to put a name — so its id rides alongside.
+	 * ParseDefinition always appends to both arrays in the same iteration, and
+	 * a test pins that the lengths agree.
+	 */
+	UPROPERTY()
+	TArray<FString> PlayerSpawnIds;
 
 	UPROPERTY()
 	TArray<FSarkoBotSpot> BotSpawns;
@@ -141,6 +182,28 @@ namespace SarkoMap
 	/** Reduces a definition to the layout the existing spawn code consumes. */
 	FSarkoMapLayout ToLayout(const FSarkoMapDefinition& Definition);
 
-	/** Reads Data/Maps/<MapId>.json from the project directory. */
+	/**
+	 * Reads Data/Maps/<MapId>.json from the project directory. Stricter than
+	 * ParseDefinition: a map that ships must also satisfy
+	 * RequireIdentifiedEntries.
+	 */
 	bool LoadDefinitionFromDisk(const FString& MapId, FSarkoMapDefinition& OutDefinition, FString& OutError);
+
+	/**
+	 * Every id in the definition, in file order. Fails (naming the id) on a
+	 * duplicate: ids are a single namespace across the whole file, because the
+	 * thing that reads them — a report, a test, a person — does not know or
+	 * care which section an object was declared in.
+	 */
+	bool CollectIds(const FSarkoMapDefinition& Definition, TArray<FString>& OutIds, FString& OutError);
+
+	/**
+	 * The stricter rule for a map that ships: every container, player spawn,
+	 * bot spawn, extraction and building must be named. Enforced by
+	 * LoadDefinitionFromDisk, not by ParseDefinition — a test fixture built
+	 * from a string literal has no reason to name anything, and making the
+	 * pure parser strict here would break every fixture in the suite and the
+	 * promise that an older map file still loads.
+	 */
+	bool RequireIdentifiedEntries(const FSarkoMapDefinition& Definition, FString& OutError);
 }

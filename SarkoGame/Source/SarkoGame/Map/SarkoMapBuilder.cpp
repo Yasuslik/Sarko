@@ -2,10 +2,13 @@
 
 #include "Components/DirectionalLightComponent.h"
 #include "Components/LightComponent.h"
+#include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/DirectionalLight.h"
+#include "Engine/SkyLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
+#include "Engine/TextureCube.h"
 #include "Loot/SarkoExtractionZone.h"
 #include "Loot/SarkoLootContainer.h"
 #include "Map/SarkoMapDefinition.h"
@@ -17,40 +20,34 @@
 namespace
 {
 	/**
-	 * Sun angle. Steep rather than horizontal so a top-down camera sees lit
-	 * surfaces rather than long shadows across everything.
-	 */
-	const FRotator SunRotation(-55.f, 30.f, 0.f);
-
-	/** Bright enough to read grey boxes on a phone screen in daylight. */
-	constexpr float SunIntensityLux = 6.f;
-
-	/**
-	 * Exactly one directional light — the sun.
+	 * The sun, plus an ambient term.
 	 *
-	 * Not two. The mobile forward shading path supports a single directional
-	 * light, and a second one makes the engine warn on screen that lights are
-	 * "competing to be the single one used for forward shading" and then pick
-	 * one by brightness. A fill light from the opposite side is the obvious way
-	 * to stop cover's shadowed faces going black, and it is exactly what this
-	 * renderer cannot have.
+	 * Exactly one directional light. Not two: the mobile forward shading path
+	 * supports a single directional light, and a second one makes the engine warn
+	 * on screen that lights are "competing to be the single one used for forward
+	 * shading" and then pick one by brightness. A fill light from the opposite
+	 * side is the obvious way to stop cover's shadowed faces going black, and it
+	 * is exactly what this renderer cannot have.
 	 *
-	 * Not a SkyLight for the ambient either: a sky light needs a cubemap or a
-	 * scene to capture, and this level is empty and this project authors no
-	 * assets, so it would light the scene with the black it found. The shadowed
-	 * sides instead read via the sun's shadow softness and the material's own
-	 * base colour, which is enough for grey boxes.
+	 * The ambient is therefore a SkyLight, which contributes spherical-harmonic
+	 * irradiance rather than a second shaded light. Its source is the engine's
+	 * own map-template cubemap referenced by path — NOT SLS_CapturedScene, which
+	 * would capture this level (no sky, no atmosphere, nothing beyond the floor)
+	 * and light the scene with the black it found. That was the original reason
+	 * for having no ambient at all, and a shipped cubemap is the way around it
+	 * without authoring an asset.
 	 *
-	 * Movable mobility matters: this is spawned after BeginPlay, so there is no
-	 * baked lighting for a Static light to have contributed to, and a Static
-	 * light created at runtime lights nothing at all.
+	 * Movable mobility matters for both: these are spawned after BeginPlay, so
+	 * there is no baked lighting for a Static light to have contributed to, and
+	 * a Static light created at runtime lights nothing at all.
 	 */
 	void SpawnLighting(UWorld& World)
 	{
 		FActorSpawnParameters Params;
 		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-		ADirectionalLight* Sun = World.SpawnActor<ADirectionalLight>(FVector(0.f, 0.f, 5000.f), SunRotation, Params);
+		ADirectionalLight* Sun = World.SpawnActor<ADirectionalLight>(
+			FVector(0.f, 0.f, 5000.f), SarkoMap::Lighting::SunRotation, Params);
 		if (!Sun)
 		{
 			UE_LOG(LogTemp, Error, TEXT("SarkoMap: failed to spawn the sun; the raid will render black"));
@@ -58,18 +55,56 @@ namespace
 		}
 
 		Sun->SetMobility(EComponentMobility::Movable);
-		if (ULightComponent* Component = Sun->GetLightComponent())
+		if (UDirectionalLightComponent* SunComponent = Cast<UDirectionalLightComponent>(Sun->GetLightComponent()))
 		{
-			Component->SetIntensity(SunIntensityLux);
-			Component->SetLightColor(FLinearColor(1.f, 0.97f, 0.92f));
-			Component->SetCastShadows(true);
+			SunComponent->SetIntensity(SarkoMap::Lighting::SunIntensityLux);
+			SunComponent->SetLightColor(FLinearColor(1.f, 0.97f, 0.92f));
+			SunComponent->SetCastShadows(true);
+			// Lifts cast shadows off black without removing them. A shader
+			// constant, so this line is free.
+			SunComponent->SetShadowAmount(SarkoMap::Lighting::ShadowAmount);
+		}
+
+		ASkyLight* Sky = World.SpawnActor<ASkyLight>(FVector(0.f, 0.f, 5000.f), FRotator::ZeroRotator, Params);
+		if (!Sky)
+		{
+			// Not fatal: the sun still lights the scene, the shadowed sides just
+			// go dark again.
+			UE_LOG(LogTemp, Error, TEXT("SarkoMap: failed to spawn the sky light; shadowed faces will read as black"));
+			return;
+		}
+		if (USkyLightComponent* SkyComponent = Sky->GetLightComponent())
+		{
+			UTextureCube* Cubemap = LoadObject<UTextureCube>(nullptr, SarkoMap::Lighting::AmbientCubemapPath);
+			if (!Cubemap)
+			{
+				// A sky light with SLS_SpecifiedCubemap and a null cubemap is
+				// invalid and contributes nothing, so say so loudly rather than
+				// leaving a light in the scene that does not light.
+				UE_LOG(LogTemp, Error, TEXT("SarkoMap: ambient cubemap '%s' failed to load; there will be no ambient light"),
+					SarkoMap::Lighting::AmbientCubemapPath);
+				return;
+			}
+			SkyComponent->SetMobility(EComponentMobility::Movable);
+			SkyComponent->SourceType = ESkyLightSourceType::SLS_SpecifiedCubemap;
+			SkyComponent->CubemapResolution = SarkoMap::Lighting::AmbientCubemapResolution;
+			SkyComponent->bLowerHemisphereIsBlack = false;
+			SkyComponent->LowerHemisphereColor = SarkoMap::Lighting::GroundBounceColour;
+			SkyComponent->SetCubemap(Cubemap);
+			SkyComponent->SetIntensity(SarkoMap::Lighting::AmbientIntensity);
+			SkyComponent->SetLightColor(SarkoMap::Lighting::AmbientColour);
+			// Once. There is no time of day and nothing in the sky moves, so a
+			// real-time capture would re-render a cubemap every frame on a phone
+			// to produce the same numbers.
+			SkyComponent->RecaptureSky();
 		}
 	}
 
 	/**
-	 * Paints one primitive a flat colour.
+	 * The one material instance for a surface, made once and handed to every
+	 * component that wants it.
 	 *
-	 * This exists because of a rendering bug, not for art's sake.
+	 * This material exists because of a rendering bug, not for art's sake.
 	 * /Engine/BasicShapes/Cube ships with /Engine/EngineMaterials/WorldGridMaterial
 	 * in its material slot — the engine's grey checkerboard placeholder — and
 	 * nothing here was overriding it. That material is a texture, and the floor
@@ -90,10 +125,42 @@ namespace
 	 * The parameter is called "Color" in current engine versions and "BaseColor"
 	 * in older copies, so both are set — the same belt-and-braces the loot
 	 * container and the extraction pad already use against this material.
+	 *
+	 * The colour of a block is a pure function of its surface — eleven surfaces,
+	 * eleven looks — so a unique UMaterialInstanceDynamic per component per slot
+	 * was 344 distinct material proxies on the shipped map describing eleven
+	 * distinct appearances, and would be around 550 once Stage C's ledger is
+	 * authored. That is not a memory argument: a unique material is a unique
+	 * shader binding, which is exactly what stops the renderer batching identical
+	 * static meshes, and it is the thing an instanced-static-mesh migration would
+	 * have to undo first. Sharing costs nothing — nothing here ever animates a
+	 * parameter, and if anything ever needs to, it needs its OWN instance and
+	 * should say so rather than quietly relying on every block having one.
+	 *
+	 * Rooted rather than owned by a component. A MID created by
+	 * CreateAndSetMaterialInstanceDynamicFromMaterial is outered to the component
+	 * that made it, which is fine while that component is the only user and a
+	 * dangling pointer in this cache the moment the level is torn down and the
+	 * next raid asks for the same surface — and this game travels between the
+	 * shelter and a raid repeatedly. Eleven permanently-rooted objects is the
+	 * whole cost of never having to reason about that.
+	 *
+	 * Game thread only, like everything else in this file.
 	 */
-	void PaintFlat(UStaticMeshComponent& Component, const FLinearColor& Tint, float Roughness)
+	UMaterialInstanceDynamic* SharedFlatMaterial(ESarkoSurface Surface)
 	{
 		static const TCHAR* BasicShapeMaterialPath = TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial");
+		static TMap<uint8, UMaterialInstanceDynamic*> Cache;
+
+		const uint8 Key = static_cast<uint8>(Surface);
+		if (UMaterialInstanceDynamic** Existing = Cache.Find(Key))
+		{
+			if (IsValid(*Existing))
+			{
+				return *Existing;
+			}
+			Cache.Remove(Key);
+		}
 
 		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, BasicShapeMaterialPath);
 		if (!Base)
@@ -101,20 +168,39 @@ namespace
 			// Not fatal: the geometry is still there and still blocks bullets, it
 			// just keeps the engine's speckled placeholder material.
 			UE_LOG(LogTemp, Error, TEXT("SarkoMap: '%s' failed to load; geometry keeps the engine grid material"), BasicShapeMaterialPath);
-			return;
+			return nullptr;
 		}
 
+		UMaterialInstanceDynamic* Material = UMaterialInstanceDynamic::Create(Base, nullptr);
+		if (!Material)
+		{
+			UE_LOG(LogTemp, Error, TEXT("SarkoMap: could not create a material instance for surface '%s'"),
+				*SarkoMap::SurfaceName(Surface));
+			return nullptr;
+		}
+
+		const FLinearColor Tint = SarkoMap::Palette::ColourFor(Surface);
+		Material->SetVectorParameterValue(TEXT("Color"), Tint);
+		Material->SetVectorParameterValue(TEXT("BaseColor"), Tint);
+		Material->SetScalarParameterValue(TEXT("Roughness"), SarkoMap::Palette::RoughnessFor(Surface));
+		Material->AddToRoot();
+
+		Cache.Add(Key, Material);
+		return Material;
+	}
+
+	/** Assigns that shared instance to every slot the component has. */
+	void PaintFlat(UStaticMeshComponent& Component, ESarkoSurface Surface)
+	{
+		UMaterialInstanceDynamic* Material = SharedFlatMaterial(Surface);
+		if (!Material)
+		{
+			return;
+		}
 		const int32 SlotCount = FMath::Max(Component.GetNumMaterials(), 1);
 		for (int32 Slot = 0; Slot < SlotCount; ++Slot)
 		{
-			UMaterialInstanceDynamic* Material = Component.CreateAndSetMaterialInstanceDynamicFromMaterial(Slot, Base);
-			if (!Material)
-			{
-				continue;
-			}
-			Material->SetVectorParameterValue(TEXT("Color"), Tint);
-			Material->SetVectorParameterValue(TEXT("BaseColor"), Tint);
-			Material->SetScalarParameterValue(TEXT("Roughness"), Roughness);
+			Component.SetMaterial(Slot, Material);
 		}
 	}
 
@@ -133,7 +219,7 @@ namespace
 	 * to assign the mesh, scale and collision, then lock it back to Static.
 	 */
 	void SpawnMeshBox(UWorld& World, UStaticMesh* Mesh, const FVector& Location, const FRotator& Rotation, const FVector& Extent, bool bCollides,
-		const FLinearColor& Tint, float Roughness)
+		ESarkoSurface Surface)
 	{
 		FActorSpawnParameters Params;
 		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
@@ -156,7 +242,7 @@ namespace
 			// is: a Static component that has already begun play is the awkward
 			// case, and there is no reason to find out the hard way which of its
 			// setters tolerate it.
-			PaintFlat(*Component, Tint, Roughness);
+			PaintFlat(*Component, Surface);
 			Component->SetMobility(EComponentMobility::Static);
 		}
 	}
@@ -181,13 +267,19 @@ void SarkoMap::SpawnLayout(UWorld& World, const FSarkoMapLayout& Layout)
 	}
 
 	// Floor: one flattened cube covering the play area.
-	SpawnMeshBox(World, CubeMesh, FVector(0.f, 0.f, -25.f), FRotator::ZeroRotator, FVector(Layout.Extent, Layout.Extent, 25.f), true,
-		Palette::Ground, Palette::GroundRoughness);
+	SpawnMeshBox(World, CubeMesh, FVector(0.f, 0.f, -25.f), FRotator::ZeroRotator,
+		FVector(Layout.Extent, Layout.Extent, 25.f), true, ESarkoSurface::Ground);
 
+	// One loop, one spawn path, for cover *and* for the flat surfaces (roads,
+	// water, the ravine bed) that ТЗ §14 wants — the only difference between
+	// them is a colour lookup and a collision flag, both carried on the block.
+	// A block authored before either field existed is Structure and colliding,
+	// so this is byte-identical to what it replaced for every block on the
+	// shipped map today.
 	for (const FSarkoCoverBlock& Block : Layout.Cover)
 	{
-		SpawnMeshBox(World, CubeMesh, Block.Location, Block.Rotation, Block.Extent, true,
-			Palette::Structure, Palette::StructureRoughness);
+		SpawnMeshBox(World, CubeMesh, Block.Location, Block.Rotation, Block.Extent, Block.bBlocksMovement,
+			Block.Surface);
 	}
 }
 
@@ -206,24 +298,38 @@ void SarkoMap::SpawnProps(UWorld& World, const FSarkoMapDefinition& Definition)
 			continue;
 		}
 
-		UStaticMesh* Mesh = Cast<UStaticMesh>(Kind.Mesh.TryLoad());
-		if (!Mesh)
+		// One actor per part. A single-box kind — which is all eleven kinds the
+		// shipped map uses — has one part with a zero offset, so this is the same
+		// single spawn it always was, at the same transform.
+		const FRotator Rotation(0.f, Prop.Yaw, 0.f);
+		for (const FSarkoPropPart& Part : Kind.Parts)
 		{
-			UE_LOG(LogTemp, Error, TEXT("SarkoMap: mesh missing for kind '%s'"), *Prop.Kind.ToString());
-			++Skipped;
-			continue;
+			UStaticMesh* Mesh = Cast<UStaticMesh>(Part.Mesh.TryLoad());
+			if (!Mesh)
+			{
+				UE_LOG(LogTemp, Error, TEXT("SarkoMap: mesh missing for kind '%s'"), *Prop.Kind.ToString());
+				++Skipped;
+				continue;
+			}
+			// The part's offset is authored in the prop's own frame, so it
+			// rotates with the prop: a road sign's plate stays over its post at
+			// any yaw. The arithmetic lives in PartWorldLocation so it can be
+			// asserted under -nullrhi, where there is no world to spawn into.
+			const FVector PartLocation = PartWorldLocation(Prop.Location, Prop.Yaw, Part);
+			// Colour comes from the part's surface rather than a per-prop choice:
+			// the read the player needs from above is "ground versus thing
+			// standing on it", and every legacy kind is Structure, which is the
+			// exact grey props were painted before surfaces existed.
+			SpawnMeshBox(World, Mesh, PartLocation, Rotation, Part.Extent, Part.bBlocksMovement,
+				Part.Surface);
 		}
-
-		// Props share the cover grey rather than getting a colour each: the read
-		// the player needs from above is "ground versus thing standing on it",
-		// and a per-kind palette would compete with the blue/red that carries
-		// friend/foe.
-		SpawnMeshBox(World, Mesh, Prop.Location, FRotator(0.f, Prop.Yaw, 0.f), Kind.Extent, Kind.bBlocksMovement,
-			Palette::Structure, Palette::StructureRoughness);
 	}
 
-	UE_LOG(LogTemp, Display, TEXT("SarkoMap: spawned %d props, skipped %d"),
-		Definition.Props.Num() - Skipped, Skipped);
+	// Skipped counts *parts* that did not appear (plus one per unknown kind,
+	// which is a deliberate approximation of "at least one thing is missing").
+	// Both totals are named so the line cannot mislead once composites exist.
+	UE_LOG(LogTemp, Display, TEXT("SarkoMap: spawned %d prop actors from %d authored props, skipped %d parts"),
+		CountPropActors(Definition) - Skipped, Definition.Props.Num(), Skipped);
 }
 
 void SarkoMap::SpawnLootContainers(UWorld& World, const FSarkoMapDefinition& Definition)

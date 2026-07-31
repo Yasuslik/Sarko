@@ -1590,7 +1590,14 @@ bool FSarkoNewPropKindsExist::RunTest(const FString& Parameters)
 			TestTrue(FString::Printf(TEXT("'%s' part %d names an engine mesh"), *Kind.ToString(), Index),
 				Piece.Mesh.ToString().StartsWith(TEXT("/Engine/BasicShapes/")));
 			TestTrue(FString::Printf(TEXT("'%s' part %d is on or above the floor"), *Kind.ToString(), Index),
-				Piece.Offset.Z - Piece.Extent.Z >= -1.f);
+				Kind.Parts.Num() == 1
+					? Piece.Offset.IsNearlyZero()
+					: Piece.Offset.Z - Piece.Extent.Z >= -1.f);
+			// Gated deliberately. Offset is measured from the PROP's origin, and
+			// it is the JSON `pos.z` that carries a single-box kind's half-height
+			// (the authoring convention this task documents). Ungated, this line
+			// fails for every single-box kind: 0 - 140 < -1. Task 3's implementer
+			// hit exactly this and fixed it there; the same fix belongs here.
 		}
 	}
 

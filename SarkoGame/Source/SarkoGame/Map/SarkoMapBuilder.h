@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 
+#include "Map/SarkoMapPalette.h"
+
 #include "SarkoMapBuilder.generated.h"
 
 // Forward-declared at global scope, not inside namespace SarkoMap below: an
@@ -23,6 +25,14 @@ struct FSarkoCoverBlock
 {
 	GENERATED_BODY()
 
+	/**
+	 * Optional stable name (ТЗ §18). Optional on a block because there are
+	 * hundreds and none is referenced individually; carried anyway so an
+	 * expanded building's walls can be traced back to their building.
+	 */
+	UPROPERTY()
+	FString Id;
+
 	UPROPERTY()
 	FVector Location = FVector::ZeroVector;
 
@@ -31,6 +41,27 @@ struct FSarkoCoverBlock
 
 	UPROPERTY()
 	FVector Extent = FVector(200.f, 200.f, 150.f);
+
+	/**
+	 * What this block is made of, for colour. Structure by default, so every
+	 * block authored before surfaces existed keeps the grey it had.
+	 */
+	UPROPERTY()
+	ESarkoSurface Surface = ESarkoSurface::Structure;
+
+	/**
+	 * False turns the block into a flat surface the player walks over: a road,
+	 * a water strip, a ravine bed. True — the default — is cover, which is what
+	 * every block in the sector was before this field existed.
+	 *
+	 * "Does not block movement" is literal and total: the spawned actor gets
+	 * ECollisionEnabled::NoCollision, so it stops neither pawns nor bullets nor
+	 * line traces. A road is paint on the floor. Everything that reads a block
+	 * as *data* still sees it — CollectIds names it, ToLayout carries it, the
+	 * palette colours it — only the physics body is gone.
+	 */
+	UPROPERTY()
+	bool bBlocksMovement = true;
 };
 
 /**
@@ -59,36 +90,62 @@ struct FSarkoMapLayout
 
 namespace SarkoMap
 {
+	// The palette (ESarkoSurface, Palette::ColourFor, the named constants) lives
+	// in Map/SarkoMapPalette.h, included above: the kind table needs it too, and
+	// it must not have to include the spawner to get a colour.
+
 	/**
-	 * The sector palette, §14 of the map design: ground muted green-brown,
-	 * everything built on it a neutral grey that reads as a different material.
+	 * The sector's lighting, in the header so the numbers the readability
+	 * argument rests on can be asserted rather than trusted.
 	 *
-	 * These are linear-space base colours, not sRGB swatches — they are fed
-	 * straight into a material's BaseColor, which is linear. An sRGB value
-	 * pasted here comes out roughly twice as bright as intended.
-	 *
-	 * Exposed in the header rather than buried in the .cpp so the contrast the
-	 * whole readability argument rests on is something a test can assert.
+	 * Mobile forward shading supports exactly ONE directional light — a second
+	 * makes the engine warn on screen that lights are "competing to be the
+	 * single one used for forward shading" and then pick one by brightness. The
+	 * ambient here is a sky light, which is spherical-harmonic irradiance and
+	 * not a second directional light, so it does not touch that path.
 	 */
-	namespace Palette
+	namespace Lighting
 	{
+		/** Steep rather than horizontal, so a top-down camera sees lit surfaces. */
+		const FRotator SunRotation(-55.f, 30.f, 0.f);
+
+		/** Bright enough to read grey boxes on a phone screen in daylight. */
+		constexpr float SunIntensityLux = 6.f;
+
 		/**
-		 * Ground: desaturated olive/khaki. Dark enough that grey cover sits on
-		 * top of it rather than dissolving into it — which is exactly what
-		 * happened before, when floor and cover both wore the engine grid
-		 * material and measured (156,155,151) against (158,157,153) in the same
-		 * frame. Three levels apart is not cover.
+		 * How much of the sun's shadow is actually occluded. 1.0 is the engine
+		 * default and produced near-black stripes beside every wall; 0.0 removes
+		 * shadows entirely, which would undo the reason virtual shadow maps are
+		 * deliberately enabled in DefaultEngine.ini. This is a scalar in the
+		 * light's shader parameters: it costs nothing at all.
 		 */
-		const FLinearColor Ground(0.046f, 0.051f, 0.028f);
+		constexpr float ShadowAmount = 0.6f;
 
-		/** Cover and props: neutral grey, deliberately much lighter than the ground. */
-		const FLinearColor Structure(0.150f, 0.150f, 0.155f);
+		/**
+		 * The engine's own map-template ambient cubemap, referenced by path —
+		 * this project authors no assets. A sky light with SLS_SpecifiedCubemap
+		 * and no cubemap is treated as INVALID by the engine and contributes
+		 * nothing, so a broken path here is a silent loss of all ambient;
+		 * Sarko.Config.LightingHasAnAmbientTerm pins that it resolves.
+		 */
+		const TCHAR* const AmbientCubemapPath = TEXT("/Engine/MapTemplates/Sky/DaylightAmbientCubemap.DaylightAmbientCubemap");
 
-		/** Ground roughness. Near-matte, so a 400 m plane cannot catch a specular sheet. */
-		constexpr float GroundRoughness = 0.92f;
+		/** Captured once at spawn. 32 keeps the processed cubemap around 50 KB. */
+		constexpr int32 AmbientCubemapResolution = 32;
 
-		/** Cover roughness. Slightly glossier than the ground, which helps the edges catch light. */
-		constexpr float StructureRoughness = 0.75f;
+		/** Enough to lift unlit faces off black, far short of flattening the sun. */
+		constexpr float AmbientIntensity = 1.0f;
+
+		/** Cool, against the sun's warm — a shadowed wall reads blue-grey, not black. */
+		const FLinearColor AmbientColour(0.55f, 0.62f, 0.78f);
+
+		/**
+		 * The lower hemisphere. bLowerHemisphereIsBlack is turned off so the
+		 * undersides of things are not pure black, but this stays dim: a bright
+		 * ground bounce lights everything from below and reads as a missing
+		 * shadow.
+		 */
+		const FLinearColor GroundBounceColour(0.050f, 0.045f, 0.030f);
 	}
 
 	/** Spawns floor and cover for a layout using engine primitive meshes. */

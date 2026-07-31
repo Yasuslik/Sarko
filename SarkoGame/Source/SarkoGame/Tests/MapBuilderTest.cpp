@@ -2,6 +2,10 @@
 
 #include "Core/SarkoRaidSettings.h"
 #include "Map/SarkoMapBuilder.h"
+#include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
+#include "UObject/SoftObjectPath.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -74,6 +78,282 @@ bool FSarkoPaletteSeparatesGroundFromCover::RunTest(const FString& Parameters)
 	// A big flat plane with a low roughness becomes a mirror for the sun.
 	TestTrue(TEXT("ground is matte"), GroundRoughness > 0.8f && GroundRoughness <= 1.f);
 	TestTrue(TEXT("cover roughness is sane"), StructureRoughness > 0.f && StructureRoughness <= 1.f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoSurfacePaletteIsReadable,
+	"Sarko.Config.SurfacePaletteIsReadable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * The whole readability argument of ТЗ §14, written down as assertions. These
+ * are not style preferences: a top-down player reads the map by luminance
+ * first, and every relation below was chosen because its opposite made
+ * something unreadable in a real frame.
+ */
+bool FSarkoSurfacePaletteIsReadable::RunTest(const FString& Parameters)
+{
+	using namespace SarkoMap;
+	using namespace SarkoMap::Palette;
+
+	const auto Lum = [](const FLinearColor& C) { return 0.2126f * C.R + 0.7152f * C.G + 0.0722f * C.B; };
+	const auto Spread = [](const FLinearColor& C)
+	{
+		return FMath::Max3(C.R, C.G, C.B) - FMath::Min3(C.R, C.G, C.B);
+	};
+
+	// Every enum value must have a colour, a roughness and a name. The Count
+	// sentinel makes this loop exhaustive: adding a twelfth surface and
+	// forgetting a switch case fails here instead of shipping black geometry.
+	for (uint8 Raw = 0; Raw < static_cast<uint8>(ESarkoSurface::Count); ++Raw)
+	{
+		const ESarkoSurface Surface = static_cast<ESarkoSurface>(Raw);
+		const FString Name = SurfaceName(Surface);
+		TestFalse(FString::Printf(TEXT("surface %d has a name"), Raw), Name.IsEmpty());
+
+		ESarkoSurface RoundTripped = ESarkoSurface::Count;
+		TestTrue(FString::Printf(TEXT("'%s' parses back"), *Name), ParseSurfaceName(Name, RoundTripped));
+		TestEqual(FString::Printf(TEXT("'%s' round-trips"), *Name),
+			static_cast<uint8>(RoundTripped), Raw);
+
+		const FLinearColor Colour = ColourFor(Surface);
+		TestTrue(FString::Printf(TEXT("'%s' is in gamut"), *Name),
+			Colour.R >= 0.f && Colour.G >= 0.f && Colour.B >= 0.f &&
+			Colour.R <= 1.f && Colour.G <= 1.f && Colour.B <= 1.f);
+		TestTrue(FString::Printf(TEXT("'%s' is lit, not black"), *Name), Lum(Colour) > 0.005f);
+		const float Roughness = RoughnessFor(Surface);
+		TestTrue(FString::Printf(TEXT("'%s' has a sane roughness"), *Name),
+			Roughness > 0.f && Roughness <= 1.f);
+	}
+
+	// No two surfaces may be the same colour — two names for one look is a
+	// palette that silently lost a distinction.
+	for (uint8 A = 0; A < static_cast<uint8>(ESarkoSurface::Count); ++A)
+	{
+		for (uint8 B = A + 1; B < static_cast<uint8>(ESarkoSurface::Count); ++B)
+		{
+			const FLinearColor First = ColourFor(static_cast<ESarkoSurface>(A));
+			const FLinearColor Second = ColourFor(static_cast<ESarkoSurface>(B));
+			TestFalse(FString::Printf(TEXT("'%s' and '%s' are not the same colour"),
+				*SurfaceName(static_cast<ESarkoSurface>(A)), *SurfaceName(static_cast<ESarkoSurface>(B))),
+				First.Equals(Second, 0.004f));
+		}
+	}
+
+	const float GroundLum = Lum(ColourFor(ESarkoSurface::Ground));
+
+	// ТЗ §14, clause by clause.
+	TestTrue(TEXT("a dirt road is lighter than the ground it cuts through"),
+		Lum(ColourFor(ESarkoSurface::Dirt)) > GroundLum * 1.6f);
+	TestTrue(TEXT("asphalt is darker than the ground"),
+		Lum(ColourFor(ESarkoSurface::Asphalt)) < GroundLum);
+	TestTrue(TEXT("the bridge deck contrasts hard against its own asphalt"),
+		Lum(ColourFor(ESarkoSurface::Concrete)) > Lum(ColourFor(ESarkoSurface::Asphalt)) * 4.f);
+	{
+		const FLinearColor Water = ColourFor(ESarkoSurface::Water);
+		TestTrue(TEXT("water is blue-grey: blue leads, red trails"), Water.B > Water.G && Water.G > Water.R);
+		TestTrue(TEXT("water is darker than the ground, so the ravine reads as depth"),
+			Lum(Water) < GroundLum);
+	}
+	{
+		const FLinearColor Rust = ColourFor(ESarkoSurface::Rust);
+		TestTrue(TEXT("rust is red-dominant"), Rust.R > Rust.G && Rust.G > Rust.B);
+		TestTrue(TEXT("rust separates from the ground by brightness too"),
+			Lum(Rust) > GroundLum * 1.4f);
+	}
+	{
+		const FLinearColor Timber = ColourFor(ESarkoSurface::Timber);
+		TestTrue(TEXT("the village tone is warm"), Timber.R > Timber.B * 2.f);
+		TestTrue(TEXT("the village tone is brighter than the ground"), Lum(Timber) > GroundLum * 1.8f);
+	}
+	{
+		const FLinearColor Veg = ColourFor(ESarkoSurface::Vegetation);
+		TestTrue(TEXT("vegetation is green-dominant"), Veg.G > Veg.R && Veg.G > Veg.B);
+		TestTrue(TEXT("a treeline is darker than the ground it borders, so it reads as a wall"),
+			Lum(Veg) < GroundLum);
+	}
+	TestTrue(TEXT("the ravine bed is the darkest thing in the sector"),
+		Lum(ColourFor(ESarkoSurface::Ravine)) < Lum(ColourFor(ESarkoSurface::Water)));
+	{
+		const FLinearColor Green = ColourFor(ESarkoSurface::Extraction);
+		TestTrue(TEXT("the extraction is unmistakably green"), Green.G > Green.R * 2.f && Green.G > Green.B * 2.f);
+		TestTrue(TEXT("the extraction is the brightest surface in the sector"), Lum(Green) > 0.3f);
+	}
+
+	// The colour budget belongs to the characters. Every *world* surface stays
+	// muted; the three gameplay tints do not. This is the constraint that lets
+	// §14's palette exist without competing with friend/foe reading.
+	for (uint8 Raw = 0; Raw < static_cast<uint8>(ESarkoSurface::Count); ++Raw)
+	{
+		const ESarkoSurface Surface = static_cast<ESarkoSurface>(Raw);
+		if (Surface == ESarkoSurface::Extraction)
+		{
+			continue; // deliberately loud: it is a gameplay marker, not scenery
+		}
+		const FLinearColor Colour = ColourFor(Surface);
+		TestTrue(FString::Printf(TEXT("'%s' is muted enough not to fight the characters"),
+			*SurfaceName(Surface)),
+			FMath::Max3(Colour.R, Colour.G, Colour.B) < 0.35f && Spread(Colour) < 0.20f);
+	}
+
+	// The two original constants still mean what the previous palette test says
+	// they mean, and the lookup agrees with them.
+	TestTrue(TEXT("ColourFor(Ground) is the Ground constant"), ColourFor(ESarkoSurface::Ground).Equals(Ground, 0.0001f));
+	TestTrue(TEXT("ColourFor(Structure) is the Structure constant"), ColourFor(ESarkoSurface::Structure).Equals(Structure, 0.0001f));
+	TestEqual(TEXT("RoughnessFor(Ground) is GroundRoughness"), RoughnessFor(ESarkoSurface::Ground), GroundRoughness);
+	TestEqual(TEXT("RoughnessFor(Structure) is StructureRoughness"), RoughnessFor(ESarkoSurface::Structure), StructureRoughness);
+
+	ESarkoSurface Unknown = ESarkoSurface::Count;
+	TestFalse(TEXT("an unknown surface name does not parse"), ParseSurfaceName(TEXT("chartreuse"), Unknown));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoLightingHasAnAmbientTerm,
+	"Sarko.Config.LightingHasAnAmbientTerm",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * Automation runs under -nullrhi and can see nothing, so this cannot assert that
+ * the frame looks right — the offscreen screenshot does that. What it CAN pin is
+ * every way the ambient silently does not exist: a cubemap path that does not
+ * resolve (a sky light with SLS_SpecifiedCubemap and no cubemap is invalid and
+ * contributes nothing at all), an intensity of zero, a shadow lift that lifts
+ * nothing, or an ambient bright enough to flatten the sun out of the frame.
+ */
+bool FSarkoLightingHasAnAmbientTerm::RunTest(const FString& Parameters)
+{
+	using namespace SarkoMap::Lighting;
+
+	// The one failure mode that produces no log, no warning and no ambient: a
+	// typo'd or moved engine asset path. Checked as a package rather than a
+	// LoadObject so it is safe with no RHI.
+	const FString Package = FSoftObjectPath(FString(AmbientCubemapPath)).GetLongPackageName();
+	TestFalse(TEXT("the ambient cubemap path names a package"), Package.IsEmpty());
+	TestTrue(FString::Printf(TEXT("the ambient cubemap package '%s' exists"), *Package),
+		FPackageName::DoesPackageExist(Package));
+	TestTrue(TEXT("the ambient cubemap is an engine asset, not one we authored"),
+		Package.StartsWith(TEXT("/Engine/")));
+
+	TestTrue(TEXT("the ambient actually contributes"), AmbientIntensity > 0.f);
+	TestTrue(TEXT("the ambient does not flatten the sun out of the frame"), AmbientIntensity < SunIntensityLux);
+	TestTrue(TEXT("the ambient cubemap is small enough for a phone"),
+		AmbientCubemapResolution > 0 && AmbientCubemapResolution <= 64);
+
+	// Cool sky against a warm sun: the shadowed side of a wall should read as a
+	// different colour temperature, not merely a darker grey.
+	TestTrue(TEXT("the sky fill is cool"), AmbientColour.B > AmbientColour.R);
+	// The ground bounce exists but is dim — bLowerHemisphereIsBlack false with a
+	// bright lower colour lights the undersides of everything and looks like a
+	// missing shadow.
+	const auto Lum = [](const FLinearColor& C) { return 0.2126f * C.R + 0.7152f * C.G + 0.0722f * C.B; };
+	TestTrue(TEXT("the ground bounce is present"), Lum(GroundBounceColour) > 0.f);
+	TestTrue(TEXT("the ground bounce is dimmer than the sky"),
+		Lum(GroundBounceColour) < Lum(AmbientColour) * 0.5f);
+
+	// A shadow lift of 1.0 is what the engine already does, and 0.0 removes
+	// shadows entirely — which would undo the reason virtual shadow maps were
+	// deliberately re-enabled in DefaultEngine.ini.
+	TestTrue(TEXT("shadows are lifted but not removed"), ShadowAmount > 0.2f && ShadowAmount < 1.f);
+
+	// The sun still comes from above, or a top-down camera sees mostly shadow.
+	TestTrue(TEXT("the sun is steep, not horizontal"), SunRotation.Pitch < -30.0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoEngineMeshPathsResolve,
+	"Sarko.Config.EngineMeshPathsResolve",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoEngineMeshPathsResolve::RunTest(const FString& Parameters)
+{
+	// Every engine asset this project reaches by literal string, in one place.
+	// A moved or renamed engine asset produces a log line at runtime and nothing
+	// else — geometry simply does not appear, or keeps the grid material.
+	const TArray<FString> Paths = {
+		TEXT("/Engine/BasicShapes/Cube.Cube"),
+		TEXT("/Engine/BasicShapes/Cylinder.Cylinder"),
+		TEXT("/Engine/BasicShapes/Sphere.Sphere"),
+		TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"),
+		TEXT("/Engine/MapTemplates/Sky/DaylightAmbientCubemap.DaylightAmbientCubemap"),
+	};
+	for (const FString& Path : Paths)
+	{
+		const FString Package = FSoftObjectPath(Path).GetLongPackageName();
+		TestTrue(FString::Printf(TEXT("'%s' exists"), *Path), FPackageName::DoesPackageExist(Package));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoPackagingSettingsLiveInTheGameIni,
+	"Sarko.Config.PackagingSettingsLiveInTheGameIni",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * The three packaging lines are in DefaultGame.ini and NOT in DefaultEngine.ini.
+ *
+ * This is a test about which FILE a section is in, which is why it reads the files
+ * off disk instead of asking GConfig or the settings object: in the wrong file
+ * every line is silently inert, and a test that queries the merged config sees the
+ * same "nothing configured" whether the section is misplaced or simply absent.
+ *
+ * UProjectPackagingSettings is UCLASS(config=Game), so the cooker and UAT read it
+ * from the Game ini hierarchy and never look in the Engine one. The block lived in
+ * DefaultEngine.ini until 2026-08-03 and did nothing there — no error, no warning,
+ * and an editor that behaves perfectly, because the editor loads Data/ off the
+ * filesystem and hard-loads nothing from the cook lines. The cost was a device
+ * build with no bridge.json staged (an empty raid), an uncooked mannequin (an
+ * invisible character) and no ambient cubemap. All three appear only on hardware,
+ * and none of them says why.
+ *
+ * The negative half matters as much as the positive: putting the section back in
+ * DefaultEngine.ini "as well, to be safe" would look like belt and braces and be
+ * two copies of one setting, one of which is dead and would drift.
+ */
+bool FSarkoPackagingSettingsLiveInTheGameIni::RunTest(const FString& Parameters)
+{
+	const FString ConfigDir = FPaths::ProjectConfigDir();
+
+	FString GameIni;
+	const bool bReadGame = FFileHelper::LoadFileToString(GameIni, *(ConfigDir / TEXT("DefaultGame.ini")));
+	TestTrue(TEXT("DefaultGame.ini is readable"), bReadGame);
+
+	FString EngineIni;
+	const bool bReadEngine = FFileHelper::LoadFileToString(EngineIni, *(ConfigDir / TEXT("DefaultEngine.ini")));
+	TestTrue(TEXT("DefaultEngine.ini is readable"), bReadEngine);
+	if (!bReadGame || !bReadEngine)
+	{
+		return false;
+	}
+
+	// The section header, because a key in the right file under no section (or
+	// under the previous one) is just as dead as a key in the wrong file.
+	TestTrue(TEXT("DefaultGame.ini declares the packaging section"),
+		GameIni.Contains(TEXT("[/Script/UnrealEd.ProjectPackagingSettings]")));
+
+	// Data/ staged as non-UFS: bridge.json is read with FFileHelper at runtime, not
+	// cooked as a UAsset, so without this line the map file is simply absent from a
+	// packaged build and the raid comes up empty.
+	TestTrue(TEXT("Data is staged as non-UFS"),
+		GameIni.Contains(TEXT("DirectoriesToAlwaysStageAsNonUFS=(Path=\"Data\")")));
+	// Both LoadObject-by-literal-path assets: nothing hard-references them, so the
+	// cooker has no reason to include them and the editor cannot tell the
+	// difference.
+	TestTrue(TEXT("the mannequin directory is force-cooked"),
+		GameIni.Contains(TEXT("DirectoriesToAlwaysCook=(Path=\"/Game/Mannequins\")")));
+	TestTrue(TEXT("the ambient cubemap directory is force-cooked"),
+		GameIni.Contains(TEXT("DirectoriesToAlwaysCook=(Path=\"/Engine/MapTemplates/Sky\")")));
+
+	// And nothing packaging-related in the Engine ini, where it would be inert.
+	TestFalse(TEXT("DefaultEngine.ini does not claim the packaging section"),
+		EngineIni.Contains(TEXT("ProjectPackagingSettings")));
+	TestFalse(TEXT("DefaultEngine.ini does not stage directories"),
+		EngineIni.Contains(TEXT("DirectoriesToAlwaysStageAsNonUFS")));
+	TestFalse(TEXT("DefaultEngine.ini does not force-cook directories"),
+		EngineIni.Contains(TEXT("DirectoriesToAlwaysCook")));
 	return true;
 }
 

@@ -121,6 +121,67 @@ bool FSarkoMapDefinitionRejectsBadInput::RunTest(const FString& Parameters)
 		// fixedItems has its own bad-case table next to its positive case, in
 		// Sarko.Loot.ContainersMayCarryFixedItems — including the empty-list and
 		// fractional-qty rows, which belong beside their siblings rather than here.
+		//
+		// The three optional *string* fields, for the same reason 'id' has its
+		// own row in Sarko.Map.RejectsBadIds: TryGetStringField is not a type
+		// check. FJsonValueNumber and FJsonValueBoolean both override
+		// TryGetString and stringify, so `"tier": 7` used to parse as the tier
+		// FName "7" — a value that looks authored, cannot be found by grepping
+		// the map file, and silently joins whatever loot table happens to be
+		// keyed "7" (today: none, so the container rolls nothing).
+		{ TEXT("tier is a number"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"containers":[{"pos":[250,0,0],"tier":7}]})") },
+		{ TEXT("zone is a number"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"botSpawns":[{"pos":[250,0,0],"zone":3}]})") },
+		{ TEXT("extraction name is a bool"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"extractions":[{"pos":[250,0,0],"name":true}]})") },
+		// The same defect on the *number* side, and the dangerous half of it: the
+		// "yaw is a string" row above passes even untightened, because "abc" does
+		// not parse as a number. A quoted numeral does. TJsonValueString overrides
+		// TryGetNumber, so `"yaw": "45"` used to succeed and yield 45 — a map file
+		// that quietly holds strings where numbers belong, with nothing warning
+		// and nothing to grep for. These two rows fail with a silent success
+		// rather than a wrong value, which is why they are here and not implied
+		// by the row above.
+		{ TEXT("yaw is a quoted numeral"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":"45"}]})") },
+		{ TEXT("radiusUU is a quoted numeral"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"extractions":[{"pos":[250,0,0],"radiusUU":"400"}]})") },
+		// And the same defect on the two REQUIRED root numbers, which the optional
+		// tightening above did not reach. Both values below are the map's real ones,
+		// so the wrong behaviour is a completely silent success: the sector still
+		// comes out 400 m across and the raid still lasts fifteen minutes, and the
+		// only evidence is a pair of quotes nobody would think to grep for. A map
+		// file that holds strings where numbers belong breaks the first time
+		// anything reads it strictly, long after the quotes were introduced.
+		{ TEXT("extentUU is a quoted numeral"),
+			TEXT(R"({"id":"x","extentUU":"20000","raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}]})") },
+		{ TEXT("raidDurationSeconds is a quoted numeral"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":"900","playerSpawns":[{"pos":[0,0,0],"yaw":0}]})") },
+		// The last three reads that still went through TryGetStringField, i.e. that
+		// still stringified a number. Ranked by consequence rather than by tidiness:
+		//
+		// A prop's 'kind' is the dangerous one. FName("7") is not a kind FindPropKind
+		// knows, so SpawnProps logs and skips — the prop silently never spawns, from
+		// a file that parses and a map that loads. Stage C authors hundreds of props;
+		// one of them missing is not something anyone would notice.
+		{ TEXT("prop kind is a number"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"props":[{"pos":[100,100,0],"kind":7}]})") },
+		// The root 'id' becomes the map id "7": everything works and the map cannot
+		// be found by searching the file for its own name.
+		{ TEXT("root id is a number"),
+			TEXT(R"({"id":7,"extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}]})") },
+		// A fixed item's 'item' was caught downstream by the catalog lookup, but
+		// reported as "'7' is not in Data/Items/items.json" — true, and it sends the
+		// reader hunting for a missing item instead of a stray pair of quotes.
+		{ TEXT("fixedItems item is a number"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"containers":[{"pos":[250,0,0],"fixedItems":[{"item":7,"qty":1}]}]})") },
 	};
 
 	for (const TPair<FString, FString>& Case : BadCases)
@@ -215,17 +276,917 @@ bool FSarkoPropKindsAreComplete::RunTest(const FString& Parameters)
 		FSarkoPropKind Resolved;
 		const bool bFound = SarkoMap::FindPropKind(Kind, Resolved);
 		TestTrue(FString::Printf(TEXT("kind '%s' resolves"), *Kind.ToString()), bFound);
-		if (bFound)
+		if (!bFound)
 		{
-			TestTrue(FString::Printf(TEXT("kind '%s' has a positive extent"), *Kind.ToString()),
-				Resolved.Extent.GetMin() > 0.f);
-			TestTrue(FString::Printf(TEXT("kind '%s' names a mesh"), *Kind.ToString()),
-				Resolved.Mesh.IsValid() || !Resolved.Mesh.ToString().IsEmpty());
+			continue;
 		}
+		// A kind with no parts resolves successfully and spawns nothing — the
+		// worst possible outcome, because the map looks authored and is empty.
+		TestTrue(FString::Printf(TEXT("kind '%s' has at least one part"), *Kind.ToString()),
+			Resolved.Parts.Num() >= 1);
+
+		// "Above the floor" is only a statement about a COMPOSITE kind, and this
+		// is the trap the authoring convention exists to name. A part's Offset is
+		// measured from the *prop's* origin, not from the floor. A single-box
+		// kind is authored with pos.z = the kind's half-height in the map file, so
+		// its one part is correctly at Offset.Z = 0 and its bottom is at the
+		// floor only once the prop's own location is added — Offset.Z - Extent.Z
+		// is -half-height for every one of the eleven legacy kinds, and asserting
+		// otherwise would demand that all 238 shipped props be re-authored. A
+		// composite is authored with pos.z = 0 instead, so there its part offsets
+		// ARE heights above the floor and the check is meaningful.
+		const bool bComposite = Resolved.Parts.Num() > 1;
+		for (int32 Index = 0; Index < Resolved.Parts.Num(); ++Index)
+		{
+			const FSarkoPropPart& Part = Resolved.Parts[Index];
+			TestTrue(FString::Printf(TEXT("kind '%s' part %d has a positive extent"), *Kind.ToString(), Index),
+				Part.Extent.GetMin() > 0.f);
+			TestTrue(FString::Printf(TEXT("kind '%s' part %d names a mesh"), *Kind.ToString(), Index),
+				!Part.Mesh.ToString().IsEmpty());
+			if (bComposite)
+			{
+				// A part whose bottom is underground is invisible, and if it
+				// collides it is an invisible wall. Tolerance of 1 uu for a part
+				// authored flush with the floor.
+				TestTrue(FString::Printf(TEXT("kind '%s' part %d sits on or above the floor"), *Kind.ToString(), Index),
+					Part.Offset.Z - Part.Extent.Z >= -1.f);
+			}
+			else
+			{
+				// The single-box counterpart of the same invariant, and the one
+				// that actually keeps the shipped map still: no offset at all.
+				TestTrue(FString::Printf(TEXT("single-box kind '%s' has no offset"), *Kind.ToString()),
+					Part.Offset.IsNearlyZero());
+			}
+		}
+	}
+
+	// The eleven kinds that existed before parts did must be single-box and must
+	// keep their exact extents, because bridge.json's 238 props are placed with
+	// pos.z equal to the kind's own half-height. A changed half-height sinks or
+	// floats every instance of that kind at once.
+	const TArray<TPair<FName, FVector>> LegacyExtents = {
+		{ TEXT("wall"),        FVector(400.f, 60.f, 140.f) },
+		{ TEXT("car_wreck"),   FVector(230.f, 95.f, 75.f) },
+		{ TEXT("bus"),         FVector(600.f, 130.f, 160.f) },
+		{ TEXT("house"),       FVector(500.f, 400.f, 300.f) },
+		{ TEXT("fuel_pump"),   FVector(60.f, 40.f, 110.f) },
+		{ TEXT("freight_car"), FVector(700.f, 150.f, 200.f) },
+		{ TEXT("water_tower"), FVector(220.f, 220.f, 700.f) },
+		{ TEXT("sandbag"),     FVector(180.f, 70.f, 55.f) },
+		{ TEXT("crate"),       FVector(70.f, 70.f, 70.f) },
+		{ TEXT("pipe"),        FVector(90.f, 90.f, 600.f) },
+		{ TEXT("bridge_deck"), FVector(900.f, 300.f, 30.f) },
+	};
+	for (const TPair<FName, FVector>& Expected : LegacyExtents)
+	{
+		FSarkoPropKind Resolved;
+		if (!SarkoMap::FindPropKind(Expected.Key, Resolved) || Resolved.Parts.Num() != 1)
+		{
+			AddError(FString::Printf(TEXT("kind '%s' must still be a single box"), *Expected.Key.ToString()));
+			continue;
+		}
+		TestTrue(FString::Printf(TEXT("kind '%s' keeps its extent"), *Expected.Key.ToString()),
+			Resolved.Parts[0].Extent.Equals(Expected.Value, 0.01f));
+		TestTrue(FString::Printf(TEXT("kind '%s' keeps its zero offset"), *Expected.Key.ToString()),
+			Resolved.Parts[0].Offset.IsNearlyZero());
+		TestTrue(FString::Printf(TEXT("kind '%s' still blocks movement"), *Expected.Key.ToString()),
+			Resolved.Parts[0].bBlocksMovement);
+		// The mesh matters as much as the extent: swapping a cylinder for a cube
+		// keeps every number in this table true and still changes the map.
+		TestTrue(FString::Printf(TEXT("kind '%s' keeps a basic-shape mesh"), *Expected.Key.ToString()),
+			Resolved.Parts[0].Mesh.ToString().StartsWith(TEXT("/Engine/BasicShapes/")));
+		// Every legacy kind was painted Palette::Structure before surfaces
+		// existed, so anything else here repaints the shipped map.
+		TestEqual(FString::Printf(TEXT("kind '%s' keeps the structure surface"), *Expected.Key.ToString()),
+			static_cast<uint8>(Resolved.Parts[0].Surface), static_cast<uint8>(ESarkoSurface::Structure));
 	}
 
 	FSarkoPropKind Unknown;
 	TestFalse(TEXT("an unknown kind does not resolve"), SarkoMap::FindPropKind(TEXT("nonsense"), Unknown));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoPropActorCountIsWithinTheMobileBudget,
+	"Sarko.Map.PropActorCountIsWithinTheMobileBudget",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoPropActorCountIsWithinTheMobileBudget::RunTest(const FString& Parameters)
+{
+	// Composite kinds make one authored prop cost several actors, and ТЗ §16 is
+	// a budget, not advice. This is the number that decides when instancing
+	// stops being premature: see the Global Constraints' actor tally.
+	FSarkoMapDefinition Map;
+	FString Error;
+	if (!SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Map, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json failed to load: %s"), *Error));
+		return false;
+	}
+
+	const int32 PropActors = SarkoMap::CountPropActors(Map);
+	TestTrue(TEXT("every prop resolves, so the count is not silently short"),
+		PropActors >= Map.Props.Num());
+	TestTrue(FString::Printf(TEXT("props stay inside the mobile actor budget (%d)"), PropActors),
+		PropActors <= 400);
+
+	// The shipped map is all single-box kinds today, so the count must equal the
+	// authored count exactly. This is the assertion that would catch a part
+	// leaking into a legacy kind — a looser >= would not.
+	TestEqual(TEXT("the shipped map is one actor per authored prop"), PropActors, Map.Props.Num());
+
+	// One authored prop of a single-box kind is exactly one actor: this is the
+	// promise that adding parts cost the existing map nothing.
+	FSarkoMapDefinition OneCrate;
+	FString ParseError;
+	const FString Json = TEXT(R"({
+		"id": "one",
+		"extentUU": 20000,
+		"raidDurationSeconds": 900,
+		"playerSpawns": [ { "pos": [0, 0, 100], "yaw": 0 } ],
+		"props": [ { "kind": "crate", "pos": [100, 100, 70] } ]
+	})");
+	if (!SarkoMap::ParseDefinition(Json, OneCrate, ParseError))
+	{
+		AddError(FString::Printf(TEXT("fixture failed to parse: %s"), *ParseError));
+		return false;
+	}
+	TestEqual(TEXT("a single-box prop is one actor"), SarkoMap::CountPropActors(OneCrate), 1);
+
+	// An unknown kind spawns nothing, so it must count as nothing — otherwise
+	// the budget number would be optimistic in exactly the case where the map
+	// is broken.
+	FSarkoMapDefinition Nonsense;
+	const FString BadJson = TEXT(R"({
+		"id": "bad",
+		"extentUU": 20000,
+		"raidDurationSeconds": 900,
+		"playerSpawns": [ { "pos": [0, 0, 100], "yaw": 0 } ],
+		"props": [ { "kind": "nonsense", "pos": [0, 0, 0] } ]
+	})");
+	if (SarkoMap::ParseDefinition(BadJson, Nonsense, ParseError))
+	{
+		TestEqual(TEXT("an unresolvable kind contributes no actors"), SarkoMap::CountPropActors(Nonsense), 0);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoMapIdsAreOptionalAndUnique,
+	"Sarko.Map.IdsAreOptionalAndUnique",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoMapIdsAreOptionalAndUnique::RunTest(const FString& Parameters)
+{
+	// Ids are how a report, a bug and a test all name the same object (ТЗ §18).
+	// Optional in the pure parser so every fixture in this suite stays valid;
+	// unique always, because two objects answering to one name is worse than
+	// neither having one — a fix applied to "bridge_house_d1" would silently
+	// land on whichever of them the code happened to find first.
+	const FString Json = TEXT(R"({
+		"id": "test",
+		"extentUU": 20000,
+		"raidDurationSeconds": 900,
+		"blocks": [ { "id": "b1", "kind": "wall", "pos": [0, 0, 100], "extent": [100, 100, 100] } ],
+		"props": [ { "id": "p1", "kind": "crate", "pos": [200, 0, 70] } ],
+		"containers": [ { "id": "c1", "pos": [250, 0, 0], "tier": "junk" } ],
+		"playerSpawns": [ { "id": "s1", "pos": [-16000, 17000, 100], "yaw": 135 } ],
+		"botSpawns": [ { "id": "n1", "pos": [8000, -12000, 100], "zone": "deep" } ],
+		"extractions": [ { "id": "e1", "pos": [-14000, 19000, 0], "radiusUU": 400, "name": "North" } ]
+	})");
+
+	FSarkoMapDefinition Definition;
+	FString Error;
+	const bool bParsed = SarkoMap::ParseDefinition(Json, Definition, Error);
+	TestTrue(FString::Printf(TEXT("a fully identified map parses: %s"), *Error), bParsed);
+	if (!bParsed)
+	{
+		return false;
+	}
+	TestEqual(TEXT("no error on success"), Error, FString());
+	TestEqual(TEXT("a block's id is read"), Definition.Blocks[0].Id, FString(TEXT("b1")));
+	TestEqual(TEXT("a prop's id is read"), Definition.Props[0].Id, FString(TEXT("p1")));
+	TestEqual(TEXT("a container's id is read"), Definition.Containers[0].Id, FString(TEXT("c1")));
+	TestEqual(TEXT("a bot's id is read"), Definition.BotSpawns[0].Id, FString(TEXT("n1")));
+	TestEqual(TEXT("an extraction's id is read"), Definition.Extractions[0].Id, FString(TEXT("e1")));
+	// Player spawns are FTransforms and cannot carry a field, so their ids ride
+	// a parallel array. The arrays must stay index-aligned or an id names the
+	// wrong spawn, which is worse than no id at all.
+	TestEqual(TEXT("player spawn ids are index-aligned with the spawns"),
+		Definition.PlayerSpawnIds.Num(), Definition.PlayerSpawns.Num());
+	TestEqual(TEXT("a player spawn's id is read"), Definition.PlayerSpawnIds[0], FString(TEXT("s1")));
+
+	// Every id collected, in file order, from one call.
+	TArray<FString> Ids;
+	FString CollectError;
+	TestTrue(TEXT("ids collect cleanly"), SarkoMap::CollectIds(Definition, Ids, CollectError));
+	TestEqual(TEXT("six ids in the file, six collected"), Ids.Num(), 6);
+
+	// The same fixture with no ids at all must still parse: this is the promise
+	// that a hand-written map from before this task keeps working.
+	FSarkoMapDefinition Anonymous;
+	TestTrue(TEXT("a map with no ids anywhere still parses"),
+		SarkoMap::ParseDefinition(MinimalMapJson, Anonymous, Error));
+	TArray<FString> NoIds;
+	TestTrue(TEXT("collecting from an anonymous map is not an error"),
+		SarkoMap::CollectIds(Anonymous, NoIds, CollectError));
+	TestEqual(TEXT("an anonymous map yields no ids"), NoIds.Num(), 0);
+	// An anonymous map still gets one id per spawn slot, or RequireIdentifiedEntries
+	// would walk a shorter array than the spawns it is supposed to be checking.
+	TestEqual(TEXT("an anonymous map's spawn ids are still index-aligned"),
+		Anonymous.PlayerSpawnIds.Num(), Anonymous.PlayerSpawns.Num());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoMapRejectsBadIds,
+	"Sarko.Map.RejectsBadIds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoMapRejectsBadIds::RunTest(const FString& Parameters)
+{
+	const TArray<TPair<FString, FString>> BadCases = {
+		// A duplicate across two *different* sections is the realistic mistake:
+		// copy a container line, paste it as a prop, forget to rename.
+		{ TEXT("duplicate id across sections"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"props":[{"id":"same","kind":"crate","pos":[100,100,70]}],
+				"containers":[{"id":"same","pos":[150,100,0],"tier":"junk"}]})") },
+		{ TEXT("duplicate id inside one section"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"props":[{"id":"same","kind":"crate","pos":[100,100,70]},{"id":"same","kind":"crate","pos":[300,100,70]}]})") },
+		// Present-but-empty is not "absent": it is a field the author started
+		// filling in and abandoned, and it would collide with the next one.
+		{ TEXT("empty id string"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"props":[{"id":"","kind":"crate","pos":[100,100,70]}]})") },
+		// Same discipline as every other optional field in this parser.
+		{ TEXT("id is a number"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"props":[{"id":7,"kind":"crate","pos":[100,100,70]}]})") },
+	};
+
+	for (const TPair<FString, FString>& Case : BadCases)
+	{
+		FSarkoMapDefinition Definition;
+		FString Error;
+		TestFalse(FString::Printf(TEXT("rejected: %s"), *Case.Key),
+			SarkoMap::ParseDefinition(Case.Value, Definition, Error));
+		TestFalse(FString::Printf(TEXT("names the problem: %s"), *Case.Key), Error.IsEmpty());
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoShippedMapsMustIdentifyEveryPlaceable,
+	"Sarko.Map.ShippedMapsMustIdentifyEveryPlaceable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoShippedMapsMustIdentifyEveryPlaceable::RunTest(const FString& Parameters)
+{
+	// The stricter rule that only the on-disk path enforces. Blocks and props
+	// are exempt because there are 246 of them and none is ever referred to
+	// individually; containers, spawns and extractions each carry state or a
+	// ledger row, so an anonymous one cannot be audited.
+	const FString Anonymous = TEXT(R"({
+		"id": "anon",
+		"extentUU": 20000,
+		"raidDurationSeconds": 900,
+		"playerSpawns": [ { "pos": [0, 0, 100], "yaw": 0 } ],
+		"containers": [ { "pos": [250, 0, 0], "tier": "junk" } ]
+	})");
+
+	FSarkoMapDefinition Definition;
+	FString Error;
+	if (!SarkoMap::ParseDefinition(Anonymous, Definition, Error))
+	{
+		AddError(FString::Printf(TEXT("fixture must still parse: %s"), *Error));
+		return false;
+	}
+	FString RequireError;
+	TestFalse(TEXT("an anonymous container fails the shipped-map rule"),
+		SarkoMap::RequireIdentifiedEntries(Definition, RequireError));
+	TestTrue(FString::Printf(TEXT("the failure names the section: %s"), *RequireError),
+		RequireError.Contains(TEXT("containers")));
+
+	// And the real map must pass it, through the real entry point. Both bools are
+	// computed before the message is formatted: FString::Printf's arguments are
+	// evaluated in an unspecified order, so an error read in the same expression
+	// that produces it prints empty exactly when it matters.
+	FSarkoMapDefinition Bridge;
+	FString LoadError;
+	const bool bBridgeLoaded = SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Bridge, LoadError);
+	TestTrue(FString::Printf(TEXT("bridge.json loads: %s"), *LoadError), bBridgeLoaded);
+	if (!bBridgeLoaded)
+	{
+		return false;
+	}
+	FString BridgeRequireError;
+	const bool bBridgeIdentified = SarkoMap::RequireIdentifiedEntries(Bridge, BridgeRequireError);
+	TestTrue(FString::Printf(TEXT("bridge.json identifies every placeable: %s"), *BridgeRequireError),
+		bBridgeIdentified);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBlocksCarrySurfaceAndCollision,
+	"Sarko.Map.BlocksCarrySurfaceAndCollision",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBlocksCarrySurfaceAndCollision::RunTest(const FString& Parameters)
+{
+	// A road and a water strip are flat boxes that must not be walked into, and
+	// a building wall is a coloured box that must be. One block type covers all
+	// of it with two optional fields, which is why there is no separate
+	// "surfaces" section and no second spawn path.
+	const FString Json = TEXT(R"({
+		"id": "test",
+		"extentUU": 20000,
+		"raidDurationSeconds": 900,
+		"playerSpawns": [ { "pos": [0, 0, 100], "yaw": 0 } ],
+		"blocks": [
+			{ "id": "wall", "pos": [0, 0, 175], "extent": [400, 15, 175] },
+			{ "id": "road", "pos": [0, 4000, 2], "extent": [550, 6000, 2], "surface": "asphalt", "blocksMovement": false },
+			{ "id": "creek", "pos": [0, -4000, 5], "extent": [20000, 700, 3], "surface": "water", "blocksMovement": false }
+		]
+	})");
+
+	FSarkoMapDefinition Definition;
+	FString Error;
+	const bool bParsed = SarkoMap::ParseDefinition(Json, Definition, Error);
+	TestTrue(FString::Printf(TEXT("surfaced blocks parse: %s"), *Error), bParsed);
+	if (!bParsed)
+	{
+		return false;
+	}
+	TestEqual(TEXT("three blocks"), Definition.Blocks.Num(), 3);
+
+	// Backward compatibility, stated as an assertion: a block written before
+	// this task means exactly what it meant before.
+	TestEqual(TEXT("an unsurfaced block defaults to Structure"),
+		static_cast<uint8>(Definition.Blocks[0].Surface), static_cast<uint8>(ESarkoSurface::Structure));
+	TestTrue(TEXT("an unsurfaced block still blocks movement"), Definition.Blocks[0].bBlocksMovement);
+
+	TestEqual(TEXT("the road's surface is read"),
+		static_cast<uint8>(Definition.Blocks[1].Surface), static_cast<uint8>(ESarkoSurface::Asphalt));
+	TestFalse(TEXT("the road does not block movement"), Definition.Blocks[1].bBlocksMovement);
+	TestEqual(TEXT("the water's surface is read"),
+		static_cast<uint8>(Definition.Blocks[2].Surface), static_cast<uint8>(ESarkoSurface::Water));
+	TestFalse(TEXT("the water does not block movement"), Definition.Blocks[2].bBlocksMovement);
+
+	// The layout is what the spawner consumes, so the two new fields have to
+	// survive the reduction or a road spawns as grey cover.
+	const FSarkoMapLayout Layout = SarkoMap::ToLayout(Definition);
+	TestEqual(TEXT("all three blocks reach the layout"), Layout.Cover.Num(), 3);
+	TestFalse(TEXT("the road is still non-colliding in the layout"), Layout.Cover[1].bBlocksMovement);
+	TestEqual(TEXT("the water is still water in the layout"),
+		static_cast<uint8>(Layout.Cover[2].Surface), static_cast<uint8>(ESarkoSurface::Water));
+
+	// A non-colliding block is still a first-class entry everywhere that reads
+	// blocks as data — only its physics body is gone. If a road stopped being
+	// id-bearing, Stage C could not reference it in a report.
+	TArray<FString> Ids;
+	FString IdError;
+	TestTrue(FString::Printf(TEXT("ids still collected across surfaces: %s"), *IdError),
+		SarkoMap::CollectIds(Definition, Ids, IdError));
+	TestTrue(TEXT("the non-colliding road keeps its id"), Ids.Contains(TEXT("road")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoRejectsBadSurfaceFields,
+	"Sarko.Map.RejectsBadSurfaceFields",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoRejectsBadSurfaceFields::RunTest(const FString& Parameters)
+{
+	// An unknown or mistyped surface must not silently fall back to grey: a
+	// typo in "asphalt" would produce a light grey highway across a dark map
+	// and look like a lighting bug.
+	const TArray<TPair<FString, FString>> BadCases = {
+		{ TEXT("unknown surface name"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"blocks":[{"pos":[0,0,100],"extent":[100,100,100],"surface":"tarmac"}]})") },
+		{ TEXT("surface is not a string"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"blocks":[{"pos":[0,0,100],"extent":[100,100,100],"surface":3}]})") },
+		{ TEXT("blocksMovement is not a bool"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"blocks":[{"pos":[0,0,100],"extent":[100,100,100],"blocksMovement":"no"}]})") },
+		// The nastier half of the same defect: FString::ToBool() answers "false"
+		// to anything it does not recognise, so a misspelt literal would parse
+		// as a wall with its collision quietly removed.
+		{ TEXT("blocksMovement is a misspelt bool literal"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"blocks":[{"pos":[0,0,100],"extent":[100,100,100],"blocksMovement":"ture"}]})") },
+	};
+
+	for (const TPair<FString, FString>& Case : BadCases)
+	{
+		FSarkoMapDefinition Definition;
+		FString Error;
+		TestFalse(FString::Printf(TEXT("rejected: %s"), *Case.Key),
+			SarkoMap::ParseDefinition(Case.Value, Definition, Error));
+		TestFalse(FString::Printf(TEXT("names the problem: %s"), *Case.Key), Error.IsEmpty());
+	}
+	return true;
+}
+
+namespace
+{
+	/**
+	 * How far above the floor a kind's tallest part reaches, in unreal units.
+	 *
+	 * The arithmetic differs by authoring convention and that is the whole trap
+	 * (see FSarkoPropPart::Offset). A SINGLE-BOX kind is placed in the map file
+	 * with pos.z equal to its own half-height, so its top is 2 * Extent.Z above the
+	 * floor. A COMPOSITE is placed with pos.z = 0 and each part carries its own
+	 * centre height, so its top is Offset.Z + Extent.Z.
+	 *
+	 * Using the composite formula for both — which reads naturally and is wrong —
+	 * halves every single-box kind's height, and then "a fence blocks sight" is a
+	 * claim about 92 uu instead of 184 and every threshold below means nothing.
+	 * That is exactly how car_wreck came to be described as chest-high cover at
+	 * 0.85x the pawn's own height.
+	 *
+	 * bOnlyColliding restricts the measurement to parts that actually stop the
+	 * player, because "is this cover" is a question about collision, not paint.
+	 */
+	float TopOfKindUU(const FSarkoPropKind& Kind, bool bOnlyColliding)
+	{
+		const bool bComposite = Kind.Parts.Num() > 1;
+		float Top = 0.f;
+		for (const FSarkoPropPart& Part : Kind.Parts)
+		{
+			if (bOnlyColliding && !Part.bBlocksMovement)
+			{
+				continue;
+			}
+			const float PartTop = bComposite
+				? static_cast<float>(Part.Offset.Z + Part.Extent.Z)
+				: 2.f * static_cast<float>(Part.Extent.Z);
+			Top = FMath::Max(Top, PartTop);
+		}
+		return Top;
+	}
+
+	/** How far above the floor a part's BOTTOM sits, by the same two conventions. */
+	float BottomOfPartUU(const FSarkoPropKind& Kind, const FSarkoPropPart& Part)
+	{
+		return Kind.Parts.Num() > 1
+			? static_cast<float>(Part.Offset.Z - Part.Extent.Z)
+			: 0.f;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoNewPropKindsExist,
+	"Sarko.Map.NewPropKindsExist",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoNewPropKindsExist::RunTest(const FString& Parameters)
+{
+	// Spec §5.3's vocabulary, by name. A missing kind here is a Stage C author
+	// discovering mid-sector that the thing the ТЗ asked for does not exist.
+	const TArray<FName> Required = {
+		TEXT("rock"), TEXT("bush"), TEXT("log"), TEXT("fence_section"), TEXT("road_sign"),
+		TEXT("concrete_barrier"), TEXT("trailer"), TEXT("pylon"), TEXT("treeline")
+	};
+
+	for (const FName& Kind : Required)
+	{
+		FSarkoPropKind Resolved;
+		const bool bFound = SarkoMap::FindPropKind(Kind, Resolved);
+		TestTrue(FString::Printf(TEXT("kind '%s' resolves"), *Kind.ToString()), bFound);
+		if (!bFound)
+		{
+			continue;
+		}
+		TestTrue(FString::Printf(TEXT("kind '%s' has parts"), *Kind.ToString()), Resolved.Parts.Num() >= 1);
+		for (int32 Index = 0; Index < Resolved.Parts.Num(); ++Index)
+		{
+			const FSarkoPropPart& Piece = Resolved.Parts[Index];
+			TestTrue(FString::Printf(TEXT("'%s' part %d has a positive extent"), *Kind.ToString(), Index),
+				Piece.Extent.GetMin() > 0.f);
+			TestTrue(FString::Printf(TEXT("'%s' part %d names an engine mesh"), *Kind.ToString(), Index),
+				Piece.Mesh.ToString().StartsWith(TEXT("/Engine/BasicShapes/")));
+			// Gated deliberately. Offset is measured from the PROP's origin, and
+			// it is the JSON `pos.z` that carries a single-box kind's half-height
+			// (the authoring convention this task documents). Ungated, this line
+			// fails for every single-box kind: 0 - 140 < -1.
+			TestTrue(FString::Printf(TEXT("'%s' part %d is on or above the floor"), *Kind.ToString(), Index),
+				Resolved.Parts.Num() == 1
+					? Piece.Offset.IsNearlyZero()
+					: Piece.Offset.Z - Piece.Extent.Z >= -1.f);
+		}
+	}
+
+	// The two composites are the reason parts exist. If either collapses back to
+	// one box, the abstraction bought nothing.
+	FSarkoPropKind Pylon;
+	if (SarkoMap::FindPropKind(TEXT("pylon"), Pylon))
+	{
+		TestTrue(TEXT("a pylon is composite"), Pylon.Parts.Num() >= 4);
+	}
+	FSarkoPropKind Sign;
+	if (SarkoMap::FindPropKind(TEXT("road_sign"), Sign))
+	{
+		TestTrue(TEXT("a road sign is a post and a plate"), Sign.Parts.Num() >= 2);
+	}
+
+	// Adding kinds must not add entries: bridge.json places none of the nine, so
+	// the shipped actor bill is unchanged and the iOS budget has not moved. If a
+	// later task starts placing them, THAT is where the count is allowed to grow.
+	FSarkoMapDefinition Bridge;
+	FString LoadError;
+	if (!SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Bridge, LoadError))
+	{
+		AddError(FString::Printf(TEXT("bridge.json failed to load: %s"), *LoadError));
+		return false;
+	}
+	for (const FSarkoMapProp& Prop : Bridge.Props)
+	{
+		TestFalse(FString::Printf(TEXT("bridge.json does not yet place '%s'"), *Prop.Kind.ToString()),
+			Required.Contains(Prop.Kind));
+	}
+	TestEqual(TEXT("the shipped map is still one actor per authored prop"),
+		SarkoMap::CountPropActors(Bridge), Bridge.Props.Num());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoPropKindScaleMatchesThePawn,
+	"Sarko.Map.PropKindScaleMatchesThePawn",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoPropKindScaleMatchesThePawn::RunTest(const FString& Parameters)
+{
+	// The pawn is ~176 uu tall. Whether a prop is shootable-over cover or a
+	// sight blocker is a gameplay fact, so it is asserted rather than left to
+	// whoever next edits a number in the table.
+	constexpr float PawnHeightUU = 176.f;
+
+	const auto TopOf = [this](FName Name, float& OutTop) -> bool
+	{
+		FSarkoPropKind Kind;
+		if (!SarkoMap::FindPropKind(Name, Kind) || Kind.Parts.Num() == 0)
+		{
+			AddError(FString::Printf(TEXT("kind '%s' does not resolve"), *Name.ToString()));
+			return false;
+		}
+		OutTop = TopOfKindUU(Kind, /*bOnlyColliding*/ true);
+		return true;
+	};
+
+	// Cover you shoot over: below the pawn's full height, above its knees.
+	float ShortestCoverUU = TNumericLimits<float>::Max();
+	for (const FName& Name : { FName(TEXT("car_wreck")), FName(TEXT("sandbag")),
+		FName(TEXT("concrete_barrier")), FName(TEXT("log")), FName(TEXT("rock")) })
+	{
+		float Top = 0.f;
+		if (TopOf(Name, Top))
+		{
+			TestTrue(FString::Printf(TEXT("'%s' can be shot over (%.0f uu)"), *Name.ToString(), Top),
+				Top < PawnHeightUU);
+			TestTrue(FString::Printf(TEXT("'%s' is tall enough to be cover (%.0f uu)"), *Name.ToString(), Top),
+				Top > 60.f);
+			ShortestCoverUU = FMath::Min(ShortestCoverUU, Top);
+		}
+	}
+
+	// Sight blockers: taller than the pawn, so they cut line of sight outright.
+	for (const FName& Name : { FName(TEXT("house")), FName(TEXT("wall")),
+		FName(TEXT("treeline")), FName(TEXT("fence_section")) })
+	{
+		float Top = 0.f;
+		if (TopOf(Name, Top))
+		{
+			TestTrue(FString::Printf(TEXT("'%s' blocks sight (%.0f uu)"), *Name.ToString(), Top),
+				Top >= PawnHeightUU);
+		}
+	}
+
+	// A bush the player cannot walk through is a snag, not decoration.
+	FSarkoPropKind Bush;
+	if (SarkoMap::FindPropKind(TEXT("bush"), Bush))
+	{
+		for (const FSarkoPropPart& Piece : Bush.Parts)
+		{
+			TestFalse(TEXT("a bush never blocks movement"), Piece.bBlocksMovement);
+		}
+		TestEqual(TEXT("a bush is vegetation"),
+			static_cast<uint8>(Bush.Parts[0].Surface), static_cast<uint8>(ESarkoSurface::Vegetation));
+	}
+
+	// A treeline is the map's boundary: impassable, dark green, and taller than
+	// anything the player can climb (there is no climbing).
+	FSarkoPropKind Treeline;
+	if (SarkoMap::FindPropKind(TEXT("treeline"), Treeline))
+	{
+		TestTrue(TEXT("a treeline blocks movement"), Treeline.Parts[0].bBlocksMovement);
+		TestEqual(TEXT("a treeline is vegetation"),
+			static_cast<uint8>(Treeline.Parts[0].Surface), static_cast<uint8>(ESarkoSurface::Vegetation));
+		TestTrue(TEXT("a treeline is long enough to tile into a border"),
+			Treeline.Parts[0].Extent.X >= 400.f);
+	}
+
+	// Nothing may be a skyscraper: the top-down camera frames the whole sector
+	// from 20000+ uu, and a 50 m prop is a smear across the frame.
+	const TArray<FName> AllKinds = {
+		TEXT("wall"), TEXT("car_wreck"), TEXT("bus"), TEXT("house"), TEXT("fuel_pump"),
+		TEXT("freight_car"), TEXT("water_tower"), TEXT("sandbag"), TEXT("crate"), TEXT("pipe"),
+		TEXT("bridge_deck"), TEXT("rock"), TEXT("bush"), TEXT("log"), TEXT("fence_section"),
+		TEXT("road_sign"), TEXT("concrete_barrier"), TEXT("trailer"), TEXT("pylon"), TEXT("treeline")
+	};
+	for (const FName& Name : AllKinds)
+	{
+		FSarkoPropKind Kind;
+		if (!SarkoMap::FindPropKind(Name, Kind))
+		{
+			AddError(FString::Printf(TEXT("kind '%s' does not resolve"), *Name.ToString()));
+			continue;
+		}
+		const float Top = TopOfKindUU(Kind, /*bOnlyColliding*/ false);
+		TestTrue(FString::Printf(TEXT("'%s' is under 25 m tall (%.0f uu)"), *Name.ToString(), Top),
+			Top <= 2500.f);
+		for (const FSarkoPropPart& Piece : Kind.Parts)
+		{
+			TestTrue(FString::Printf(TEXT("'%s' is under 20 m wide"), *Name.ToString()),
+				Piece.Extent.X <= 1000.f && Piece.Extent.Y <= 1000.f);
+
+			// The bush defect, generalised so it cannot come back under another
+			// name: a part that stands ON the floor and does NOT collide is a lie
+			// the player can only discover by walking into it, so it must not be
+			// tall enough to read as cover from above. Parts held overhead — a
+			// sign's plate, a pylon's crossarms — are exempt, because nobody takes
+			// cover behind something two and a half metres off the ground.
+			if (Piece.bBlocksMovement || BottomOfPartUU(Kind, Piece) > 60.f || ShortestCoverUU > 1e5f)
+			{
+				continue;
+			}
+			const bool bComposite = Kind.Parts.Num() > 1;
+			const float PartTop = bComposite
+				? static_cast<float>(Piece.Offset.Z + Piece.Extent.Z)
+				: 2.f * static_cast<float>(Piece.Extent.Z);
+			TestTrue(FString::Printf(
+				TEXT("'%s' is walk-through, so it must be shorter than real cover (%.0f uu vs %.0f uu)"),
+				*Name.ToString(), PartTop, ShortestCoverUU), PartTop < ShortestCoverUU);
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoCompositePartsRotateWithTheProp,
+	"Sarko.Map.CompositePartsRotateWithTheProp",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoCompositePartsRotateWithTheProp::RunTest(const FString& Parameters)
+{
+	// Until this task nothing in the table had a non-zero part offset, so the
+	// rotation in SpawnProps was dead arithmetic that no test could reach: every
+	// offset was zero, and zero is invariant under every yaw. The pylon's legs and
+	// the trailer's tow bar are the first offsets a yaw can act on, and getting
+	// the frame wrong here does not crash — it quietly slides half of every
+	// composite off the other half, at every angle except zero.
+	const FVector Origin(1000.f, -2000.f, 0.f);
+
+	FSarkoPropKind Pylon;
+	if (!SarkoMap::FindPropKind(TEXT("pylon"), Pylon) || Pylon.Parts.Num() < 2)
+	{
+		AddError(TEXT("the pylon must be composite for this test to mean anything"));
+		return false;
+	}
+	// Authored: leg at local (-140, 0, 900) — the west leg of an unrotated pylon.
+	const FSarkoPropPart& WestLeg = Pylon.Parts[0];
+	TestTrue(TEXT("the first pylon part is the offset leg this test assumes"),
+		WestLeg.Offset.Equals(FVector(-140.f, 0.f, 900.f), 0.01f));
+
+	// Yaw 0 is the identity, which is the promise that keeps every prop authored
+	// before parts existed at exactly its old transform.
+	TestTrue(TEXT("at yaw 0 a part sits at its raw offset"),
+		SarkoMap::PartWorldLocation(Origin, 0.f, WestLeg).Equals(Origin + WestLeg.Offset, 0.01f));
+
+	// Yaw 90 turns local +X into world +Y, so a leg 140 uu local-west lands 140 uu
+	// world-south. An inverse rotation — the easy mistake — puts it 140 uu north
+	// instead, which looks plausible until a second part disagrees.
+	TestTrue(TEXT("at yaw 90 the west leg swings to world -Y"),
+		SarkoMap::PartWorldLocation(Origin, 90.f, WestLeg)
+			.Equals(Origin + FVector(0.f, -140.f, 900.f), 0.01f));
+	TestTrue(TEXT("at yaw 180 the west leg swings to world +X"),
+		SarkoMap::PartWorldLocation(Origin, 180.f, WestLeg)
+			.Equals(Origin + FVector(140.f, 0.f, 900.f), 0.01f));
+
+	// Height is never touched by yaw: a rotation that leaked into Z would bury or
+	// float half a composite.
+	for (const float Yaw : { 0.f, 37.f, 90.f, 180.f, -45.f, 315.f })
+	{
+		for (const FSarkoPropPart& Part : Pylon.Parts)
+		{
+			const FVector World = SarkoMap::PartWorldLocation(Origin, Yaw, Part);
+			TestEqual(FString::Printf(TEXT("yaw %.0f does not change a part's height"), Yaw),
+				static_cast<float>(World.Z), static_cast<float>(Origin.Z + Part.Offset.Z), 0.01f);
+			// Rigid body, not a free-for-all: every part keeps its distance from
+			// the prop's origin, so the composite turns rather than deforming.
+			TestEqual(FString::Printf(TEXT("yaw %.0f preserves a part's distance from the origin"), Yaw),
+				static_cast<float>((World - Origin).Size()), static_cast<float>(Part.Offset.Size()), 0.01f);
+		}
+	}
+
+	// The design claim spelled out: the plate stays over the post at any yaw,
+	// because both are on the prop's own vertical axis.
+	FSarkoPropKind Sign;
+	if (SarkoMap::FindPropKind(TEXT("road_sign"), Sign) && Sign.Parts.Num() >= 2)
+	{
+		const FVector Post = SarkoMap::PartWorldLocation(Origin, 63.f, Sign.Parts[0]);
+		const FVector Plate = SarkoMap::PartWorldLocation(Origin, 63.f, Sign.Parts[1]);
+		TestEqual(TEXT("a road sign's plate stays directly over its post"),
+			static_cast<float>(FVector2D(Plate - Post).Size()), 0.f, 0.01f);
+		TestTrue(TEXT("and above it"), Plate.Z > Post.Z);
+	}
+
+	// An off-axis offset at an off-axis yaw, checked against arithmetic done by
+	// hand: the trailer's tow bar is 440 uu local-west, so at yaw 45 it is
+	// 440/sqrt(2) uu west and the same distance south.
+	FSarkoPropKind Trailer;
+	if (SarkoMap::FindPropKind(TEXT("trailer"), Trailer) && Trailer.Parts.Num() >= 2)
+	{
+		const FSarkoPropPart& TowBar = Trailer.Parts[1];
+		const float Diagonal = 440.f / FMath::Sqrt(2.f);
+		TestTrue(TEXT("the tow bar is the 440 uu offset this test assumes"),
+			FMath::IsNearlyEqual(static_cast<float>(TowBar.Offset.X), -440.f, 0.01f));
+		TestTrue(TEXT("at yaw 45 the tow bar lands on the diagonal"),
+			SarkoMap::PartWorldLocation(Origin, 45.f, TowBar).Equals(
+				Origin + FVector(-Diagonal, -Diagonal, static_cast<float>(TowBar.Offset.Z)), 0.05f));
+	}
+
+	// A single-box kind has a zero offset, so no yaw can move it at all — this is
+	// the assertion that pins that the 238 shipped props are untouched by any of
+	// the above.
+	FSarkoPropKind Crate;
+	if (SarkoMap::FindPropKind(TEXT("crate"), Crate) && Crate.Parts.Num() == 1)
+	{
+		for (const float Yaw : { 0.f, 35.f, 137.f, -90.f })
+		{
+			TestTrue(FString::Printf(TEXT("a single-box prop does not move at yaw %.0f"), Yaw),
+				SarkoMap::PartWorldLocation(Origin, Yaw, Crate.Parts[0]).Equals(Origin, 0.0001f));
+		}
+	}
+	return true;
+}
+
+#endif // WITH_AUTOMATION_TESTS
+
+#include "Map/SarkoBuildings.h"
+
+#if WITH_AUTOMATION_TESTS
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBuildingsParseAndReachTheLayout,
+	"Sarko.Map.BuildingsParseAndReachTheLayout",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBuildingsParseAndReachTheLayout::RunTest(const FString& Parameters)
+{
+	// One JSON object per building, and the spawner sees walls. If the walls do
+	// not reach Layout.Cover then buildings are decoration: the player walks
+	// through them and every test about doorways is describing nothing.
+	const FString Json = TEXT(R"({
+		"id": "test",
+		"extentUU": 20000,
+		"raidDurationSeconds": 900,
+		"playerSpawns": [ { "id": "s1", "pos": [0, 0, 100], "yaw": 0 } ],
+		"blocks": [ { "id": "rim", "pos": [0, 5000, 500], "extent": [2000, 300, 500] } ],
+		"buildings": [
+			{
+				"id": "test_shop",
+				"pos": [-13500, -9000, 0],
+				"size": [2200, 1500],
+				"surface": "timber",
+				"doors": [
+					{ "side": "E", "offset": 0, "width": 320 },
+					{ "side": "S", "offset": 600, "width": 300 }
+				],
+				"interiorWalls": [
+					{ "from": [-300, -720], "to": [-300, 720], "door": { "offset": 200, "width": 300 } }
+				]
+			},
+			{ "id": "test_bunker", "pos": [4000, 4000, 0], "size": [1200, 1000], "yaw": 45 }
+		]
+	})");
+
+	FSarkoMapDefinition Definition;
+	FString Error;
+	TestTrue(FString::Printf(TEXT("buildings parse: %s"), *Error),
+		SarkoMap::ParseDefinition(Json, Definition, Error));
+	TestEqual(TEXT("two buildings"), Definition.Buildings.Num(), 2);
+	if (Definition.Buildings.Num() != 2)
+	{
+		AddError(FString::Printf(TEXT("fixture failed to parse: %s"), *Error));
+		return false;
+	}
+	TestEqual(TEXT("the id is read"), Definition.Buildings[0].Id, FString(TEXT("test_shop")));
+	TestTrue(TEXT("the footprint is read"), Definition.Buildings[0].SizeUU.Equals(FVector2D(2200.f, 1500.f), 0.01f));
+	TestEqual(TEXT("the surface is read"),
+		static_cast<uint8>(Definition.Buildings[0].Surface), static_cast<uint8>(ESarkoSurface::Timber));
+	TestEqual(TEXT("both doors are read"), Definition.Buildings[0].Doors.Num(), 2);
+	TestEqual(TEXT("a door's side is read"),
+		static_cast<uint8>(Definition.Buildings[0].Doors[0].Side), static_cast<uint8>(ESarkoBuildingSide::East));
+	TestEqual(TEXT("a door's width is read"), Definition.Buildings[0].Doors[0].WidthUU, 320.f);
+	TestEqual(TEXT("the interior wall is read"), Definition.Buildings[0].InteriorWalls.Num(), 1);
+	TestTrue(TEXT("the interior wall's door is read"), Definition.Buildings[0].InteriorWalls[0].bHasDoor);
+	TestEqual(TEXT("wallHeight defaults to 350"), Definition.Buildings[0].WallHeightUU, 350.f);
+	TestEqual(TEXT("the second building's yaw is read"), Definition.Buildings[1].Yaw, 45.f);
+	// A building with no doors is legal — the ТЗ's four closed entries.
+	TestEqual(TEXT("a closed building has no doors"), Definition.Buildings[1].Doors.Num(), 0);
+
+	// The layout is what SpawnLayout consumes. Authored blocks first, then every
+	// building's walls, so an index into Layout.Cover means the same thing on
+	// every machine.
+	const FSarkoMapLayout Layout = SarkoMap::ToLayout(Definition);
+	TArray<FSarkoCoverBlock> ShopWalls;
+	TArray<FSarkoCoverBlock> BunkerWalls;
+	FString ExpandError;
+	SarkoMap::ExpandBuilding(Definition.Buildings[0], ShopWalls, ExpandError);
+	SarkoMap::ExpandBuilding(Definition.Buildings[1], BunkerWalls, ExpandError);
+	TestEqual(TEXT("the layout holds the authored block plus every expanded wall"),
+		Layout.Cover.Num(), 1 + ShopWalls.Num() + BunkerWalls.Num());
+	TestEqual(TEXT("the authored block comes first"), Layout.Cover[0].Id, FString(TEXT("rim")));
+	TestTrue(TEXT("the first expanded wall follows it"), Layout.Cover[1].Id.StartsWith(TEXT("test_shop")));
+
+	// And the doorway is a doorway in the LAYOUT, not merely in the expander:
+	// this is the end-to-end version of Task 5's invariant.
+	const float WallX = -13500.f + 2200.f * 0.5f - 30.f * 0.5f;
+	TestFalse(TEXT("the shop's east doorway is open in the spawned layout"),
+		SarkoMap::IsPointInsideBlocksXY(FVector2D(WallX, -9000.f), Layout.Cover));
+	TestTrue(TEXT("the shop's east wall is solid beside the doorway"),
+		SarkoMap::IsPointInsideBlocksXY(FVector2D(WallX, -9000.f + 400.f), Layout.Cover));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBuildingsFailLoudly,
+	"Sarko.Map.BuildingsFailLoudly",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBuildingsFailLoudly::RunTest(const FString& Parameters)
+{
+	// Broken building geometry must be a LOAD error, not a spawn-time surprise:
+	// ToLayout has no error channel, so anything that could fail has to fail in
+	// the parser, where the message reaches a human.
+	const TArray<TPair<FString, FString>> BadCases = {
+		{ TEXT("buildings is not an array"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],"buildings":{}})") },
+		{ TEXT("building with no id"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"buildings":[{"pos":[0,0,0],"size":[2000,1500]}]})") },
+		{ TEXT("building with no size"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"buildings":[{"id":"b","pos":[0,0,0]}]})") },
+		{ TEXT("size is not a pair"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"buildings":[{"id":"b","pos":[0,0,0],"size":[2000,1500,300]}]})") },
+		{ TEXT("a quoted numeral where a size belongs"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"buildings":[{"id":"b","pos":[0,0,0],"size":["2000",1500]}]})") },
+		{ TEXT("unknown door side"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"buildings":[{"id":"b","pos":[0,0,0],"size":[2000,1500],
+				"doors":[{"side":"up","offset":0,"width":300},{"side":"S","offset":0,"width":300}]}]})") },
+		// The expander's own rules must be reachable from the parser, or a
+		// 200 uu doorway ships and nobody finds out until a pawn sticks.
+		{ TEXT("doorway below the minimum"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"buildings":[{"id":"b","pos":[0,0,0],"size":[2000,1500],
+				"doors":[{"side":"E","offset":0,"width":200},{"side":"W","offset":0,"width":300}]}]})") },
+		{ TEXT("only one exit"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"buildings":[{"id":"b","pos":[0,0,0],"size":[2000,1500],"doors":[{"side":"E","offset":0,"width":300}]}]})") },
+		// Ids are one namespace across the whole file, buildings included.
+		{ TEXT("a building's id collides with a prop's"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"props":[{"id":"same","kind":"crate","pos":[100,100,70]}],
+				"buildings":[{"id":"same","pos":[0,0,0],"size":[2000,1500]}]})") },
+		// ...and generated wall ids share that namespace too. A hand-authored
+		// block called "b_north_0" and a building called "b" would put two
+		// different boxes in Layout.Cover under one name, so "the wall at
+		// b_north_0" would mean either of them depending on which loop found it
+		// first. Ruled out here rather than left to be discovered in a report.
+		{ TEXT("an authored block id collides with a generated wall id"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"blocks":[{"id":"b_north_0","pos":[5000,5000,100],"extent":[100,100,100]}],
+				"buildings":[{"id":"b","pos":[0,0,0],"size":[2000,1500]}]})") },
+	};
+
+	for (const TPair<FString, FString>& Case : BadCases)
+	{
+		FSarkoMapDefinition Definition;
+		FString Error;
+		TestFalse(FString::Printf(TEXT("rejected: %s"), *Case.Key),
+			SarkoMap::ParseDefinition(Case.Value, Definition, Error));
+		TestFalse(FString::Printf(TEXT("names the problem: %s"), *Case.Key), Error.IsEmpty());
+	}
 	return true;
 }
 

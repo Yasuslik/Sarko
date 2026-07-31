@@ -23,7 +23,47 @@
     { "note": "RAVINE — south rim, y = -1800. Gaps aligned with the north rim, or a crossing would end in a wall.", "kind": "wall", "pos": [-17200, -1800, 500], "extent": [2800, 300, 500] },
     { "kind": "wall", "pos": [-7350, -1800, 500], "extent": [6250, 300, 500] },
     { "kind": "wall", "pos": [6550, -1800, 500], "extent": [5450, 300, 500] },
-    { "kind": "wall", "pos": [17000, -1800, 500], "extent": [3000, 300, 500] }
+    { "kind": "wall", "pos": [17000, -1800, 500], "extent": [3000, 300, 500] },
+
+    { "note": "RAVINE BED — the VISUAL stand-in for a 400-700 uu dig (spec §5.2), not a pit. Flat, non-colliding, 4 uu thick, sitting ON the floor: cliffs plus a dark bed plus water read identically from a top-down camera, and a real hole buys fall damage, stuck pawns and nav holes on iOS for zero gameplay. Crossability is still the eight rim walls above, exactly as before — nothing here digs, and nothing here stops anyone.",
+      "id": "bridge_ravine_bed", "pos": [0, 0, 2], "extent": [20000, 2200, 2], "surface": "ravine", "blocksMovement": false },
+    { "note": "WATER — y = -700..+700 per ТЗ §5, on top of the bed (z 4..10). OPAQUE: a translucent material needs an authored asset and this project authors none (spec §5.2). Dark blue-grey on the darker bed reads as water from above; it will NOT read as water in a close-up, and the ford's 'мелкая вода' is this same tone rather than a lighter shallow. That is a shipped limitation, not a bug.",
+      "id": "bridge_ravine_water", "pos": [0, 0, 7], "extent": [20000, 700, 3], "surface": "water", "blocksMovement": false },
+
+    { "note": "HIGHWAY (ТЗ §7). Authored under the traffic jam that already exists rather than on §7's (-1500,+20000) -> (0,0) line: the 28 wrecks, the checkpoint and the bridge approach rails were all placed on a straight x~0 centreline, and asphalt on the §7 diagonal would leave the whole jam standing in the grass — which is also what breaks the firing line (§7). So: straight from the bridge deck to y=+16500, then a westward bend toward the north edge. Roads are z 0..6, i.e. 2 uu above the ravine bed, so the two never z-fight where they meet. 1200 wide, inside §7's 900-1300.",
+      "id": "bridge_road_highway_north", "pos": [0, 9600, 3], "extent": [600, 6900, 3], "surface": "asphalt", "blocksMovement": false },
+    { "note": "The bend toward §7's north end. Stops at x=-600 rather than -1500 so the northernmost wrecks stay ON the asphalt.",
+      "id": "bridge_road_highway_north_bend", "pos": [-300, 18250, 3], "extent": [600, 1775, 3], "surface": "asphalt", "blocksMovement": false, "yaw": 10 },
+    { "note": "South of the ravine the §7 line (0,0) -> (+1000,-10000) fits the existing content, so it is used verbatim: the wreck at (600,-9900) and the sandbags at y=-7200 sit on it.",
+      "id": "bridge_road_highway_south", "pos": [635, -6350, 3], "extent": [600, 3670, 3], "surface": "asphalt", "blocksMovement": false, "yaw": 6 },
+    { "note": "The village/промзона fork at (+1000,-10000) — an east-west bar, kept north of the house at (1000,-11200) so no road runs under a building.",
+      "id": "bridge_road_highway_fork", "pos": [400, -10350, 3], "extent": [1400, 350, 3], "surface": "asphalt", "blocksMovement": false },
+
+    { "note": "WEST DIRT ROAD (ТЗ §7): (-18000,+17000) -> (-15500,+11000) -> (-14500,+3000) -> pipes -> (-14500,-5000) -> АЗС. 650 wide (§7 wants 500-800) and LIGHTER than the ground (§14). This is Bridge_West's actual route, which is why it is the road that exists now; the east road, the village lanes and the ford's shallows are Stage C. Both pipe-crossing segments stop at the ravine bed's edge (y = +/-2200): the crossing itself is a walkway between pipes, not a road, and asphalt over the bed would z-fight a darker surface.",
+      "id": "bridge_road_west_spawn", "pos": [-16750, 14000, 3], "extent": [325, 3250, 3], "surface": "dirt", "blocksMovement": false, "yaw": 23 },
+    { "id": "bridge_road_west_upper", "pos": [-15000, 7000, 3], "extent": [325, 4030, 3], "surface": "dirt", "blocksMovement": false, "yaw": 7 },
+    { "id": "bridge_road_west_pipes_north", "pos": [-14500, 2600, 3], "extent": [325, 400, 3], "surface": "dirt", "blocksMovement": false },
+    { "id": "bridge_road_west_pipes_south", "pos": [-14500, -3600, 3], "extent": [325, 1400, 3], "surface": "dirt", "blocksMovement": false },
+    { "id": "bridge_road_west_station", "pos": [-14150, -6450, 3], "extent": [325, 1500, 3], "surface": "dirt", "blocksMovement": false, "yaw": 14 },
+    { "note": "The spur along the АЗС's north face into its forecourt, so the station reads as somewhere a road goes rather than a shed in a field. Held clear of the building's north wall (y = -8250) on purpose.",
+      "id": "bridge_road_station_yard", "pos": [-13300, -7950, 3], "extent": [1200, 250, 3], "surface": "dirt", "blocksMovement": false }
+  ],
+
+  "buildings": [
+    { "note": "S01 АЗС (ТЗ §28 / §9) at its ledger coordinate. Зал + подсобка + служебная, входы В и Ю exactly as ТЗ §9 names them: east is the forecourt the pump row stands on, south is the road onward to the ж/д тупик. Two exits, because a bot in the only doorway is a coffin (ТЗ §13); no door in the west face, which is the side the west dirt road runs past — a doorway there would let anyone on that road shoot straight through the building. Replaces the solid house prop that stood in for this shop 3800 uu further north.",
+      "id": "bridge_gas_station", "pos": [-13500, -9000, 0], "size": [2200, 1500], "surface": "structure",
+      "doors": [ { "side": "E", "offset": 0, "width": 340 }, { "side": "S", "offset": 600, "width": 320 } ],
+      "interiorWalls": [
+        { "note": "зал | подсобка. The opening sits well south of where the служебная wall below meets this one, so no interior wall ever ends inside another's doorway.", "from": [-300, -720], "to": [-300, 720], "door": { "offset": -400, "width": 320 } },
+        { "note": "служебная, off the подсобка.", "from": [-300, 200], "to": [-1070, 200], "door": { "offset": 0, "width": 300 } }
+      ] },
+    { "note": "S04 D1 (ТЗ §28 / §9), проходим. A through-house at the west end of the village: north opens onto the village street and the run down from the bridge, which is where everyone arrives from; south opens onto the lane toward the scrap yard and the rail siding, which is where everyone is going. The two doorways are in different rooms on purpose — crossing the divider is the price of using the house as a shortcut. Replaces the westernmost solid village house.",
+      "id": "bridge_village_d1", "pos": [-6500, -10500, 0], "size": [2000, 1500], "surface": "timber",
+      "doors": [ { "side": "N", "offset": -200, "width": 320 }, { "side": "S", "offset": 500, "width": 300 } ],
+      "interiorWalls": [ { "from": [200, -720], "to": [200, 720], "door": { "offset": -200, "width": 300 } } ] },
+    { "note": "S05 D2 (ТЗ §28 / §9), проходим, 2 good. One room, two exits — the simplest walkable shape, kept simple on purpose so the three buildings cover a range. North faces the street between the two village rows, east faces the lane to the highway fork; both are sides people actually walk past. Replaces the solid house prop 707 uu away whose footprint this building sits on.",
+      "id": "bridge_village_d2", "pos": [-1500, -10500, 0], "size": [2200, 1600], "surface": "timber",
+      "doors": [ { "side": "N", "offset": 400, "width": 320 }, { "side": "E", "offset": -300, "width": 320 } ] }
   ],
 
   "props": [
@@ -158,8 +198,7 @@
     { "kind": "car_wreck", "pos": [15600, 11400, 75], "yaw": 130 },
     { "kind": "crate", "pos": [17000, 12600, 70] },
 
-    { "note": "PETROL STATION (far half, west) — shop plus a pump row under a canopy. The pumps are the silhouette you navigate the south-west by.", "kind": "house", "pos": [-13500, -5200, 300], "yaw": 0 },
-    { "kind": "fuel_pump", "pos": [-12400, -4900, 110], "yaw": 0 },
+    { "note": "PETROL STATION FORECOURT (far half, west) — a pump row under a canopy. The shop that used to be the solid house here is now the walkable bridge_gas_station in \"buildings\", at the ТЗ §28 ledger coordinate 3800 uu south; the pumps stay where they were authored and remain the silhouette you navigate the south-west by.", "kind": "fuel_pump", "pos": [-12400, -4900, 110], "yaw": 0 },
     { "kind": "fuel_pump", "pos": [-12400, -5500, 110], "yaw": 0 },
     { "kind": "fuel_pump", "pos": [-12400, -6100, 110], "yaw": 0 },
     { "kind": "wall", "pos": [-12400, -4300, 140], "yaw": 0 },
@@ -171,13 +210,11 @@
     { "kind": "car_wreck", "pos": [-11600, -5200, 75], "yaw": 100 },
     { "kind": "crate", "pos": [-11900, -7100, 70] },
 
-    { "note": "VILLAGE — six houses in two staggered rows. The 1600 uu gaps between them are the fighting lanes, and the stagger stops any lane running clean through the village.", "kind": "house", "pos": [-2800, -8600, 300], "yaw": 4 },
-    { "kind": "house", "pos": [-200, -8600, 300], "yaw": 0 },
+    { "note": "VILLAGE — four solid houses in two staggered rows, plus the two walkable ones in \"buildings\" (D1 at the west end, D2 in the southern row). The 1600 uu gaps between them are the fighting lanes, and the stagger stops any lane running clean through the village.", "kind": "house", "pos": [-200, -8600, 300], "yaw": 0 },
     { "kind": "house", "pos": [2400, -8600, 300], "yaw": 354 },
-    { "kind": "house", "pos": [-1600, -11200, 300], "yaw": 0 },
     { "kind": "house", "pos": [1000, -11200, 300], "yaw": 5 },
     { "kind": "house", "pos": [3600, -11200, 300], "yaw": 0 },
-    { "kind": "wall", "pos": [-2800, -9800, 140], "yaw": 0 },
+    { "note": "Shifted 500 uu west of where it was authored: at x -2800 this fence overlapped bridge_village_d2's west wall by a 30 x 120 uu sliver.", "kind": "wall", "pos": [-3300, -9800, 140], "yaw": 0 },
     { "kind": "wall", "pos": [2400, -9800, 140], "yaw": 0 },
     { "kind": "wall", "pos": [-3600, -10400, 140], "yaw": 90 },
     { "kind": "wall", "pos": [4400, -9600, 140], "yaw": 90 },
@@ -191,7 +228,7 @@
     { "kind": "sandbag", "pos": [200, -7200, 55], "yaw": 0 },
     { "kind": "sandbag", "pos": [560, -7200, 55], "yaw": 0 },
     { "kind": "car_wreck", "pos": [3000, -7600, 75], "yaw": 15 },
-    { "kind": "crate", "pos": [-2600, -10600, 70] },
+    { "note": "Shifted 150 uu west of where it was authored: at x -2600 this crate was half-buried in bridge_village_d2's west wall. It now stands against the outside of it, which is where a crate by a house belongs.", "kind": "crate", "pos": [-2750, -10600, 70] },
 
     { "note": "RAIL SIDING (far half, south-west) — a stopped train. Long hard cover along one axis and nothing along the other, which makes approaching it a choice.", "kind": "freight_car", "pos": [-15500, -15600, 200], "yaw": 0 },
     { "kind": "freight_car", "pos": [-13900, -15600, 200], "yaw": 0 },
@@ -290,89 +327,89 @@
   ],
 
   "containers": [
-    { "note": "NEAR HALF — junk only. Props are solid boxes for now, so a container 'in' a wreck or a house sits at its tail or its door, touching it: inside a solid box it could never be reached.", "pos": [-17400, 16350, 35], "tier": "junk" },
-    { "pos": [-16000, 17350, 35], "tier": "junk" },
-    { "pos": [-18000, 14950, 35], "tier": "junk" },
-    { "pos": [-260, 18250, 35], "tier": "junk" },
-    { "pos": [-230, 15450, 35], "tier": "junk" },
-    { "pos": [240, 9550, 35], "tier": "junk" },
-    { "pos": [-240, 6150, 35], "tier": "junk" },
-    { "pos": [-2450, 17000, 35], "tier": "junk" },
-    { "pos": [-6000, 16150, 35], "tier": "junk" },
-    { "pos": [16400, 10550, 35], "tier": "junk" },
-    { "pos": [-10200, 8550, 35], "tier": "junk" },
-    { "pos": [250, 10950, 35], "tier": "junk" },
+    { "id": "bridge_loot_01", "note": "NEAR HALF — junk only. Props are solid boxes for now, so a container 'in' a wreck or a house sits at its tail or its door, touching it: inside a solid box it could never be reached.", "pos": [-17400, 16350, 35], "tier": "junk" },
+    { "id": "bridge_loot_02", "pos": [-16000, 17350, 35], "tier": "junk" },
+    { "id": "bridge_loot_03", "pos": [-18000, 14950, 35], "tier": "junk" },
+    { "id": "bridge_loot_04", "pos": [-260, 18250, 35], "tier": "junk" },
+    { "id": "bridge_loot_05", "pos": [-230, 15450, 35], "tier": "junk" },
+    { "id": "bridge_loot_06", "pos": [240, 9550, 35], "tier": "junk" },
+    { "id": "bridge_loot_07", "pos": [-240, 6150, 35], "tier": "junk" },
+    { "id": "bridge_loot_08", "pos": [-2450, 17000, 35], "tier": "junk" },
+    { "id": "bridge_loot_09", "pos": [-6000, 16150, 35], "tier": "junk" },
+    { "id": "bridge_loot_10", "pos": [16400, 10550, 35], "tier": "junk" },
+    { "id": "bridge_loot_11", "pos": [-10200, 8550, 35], "tier": "junk" },
+    { "id": "bridge_loot_12", "pos": [250, 10950, 35], "tier": "junk" },
 
-    { "note": "CHECKPOINT and the strongpoint in the ruins — military, the first loot worth stopping for.", "pos": [-1600, 3450, 35], "tier": "military" },
-    { "pos": [700, 3650, 35], "tier": "military" },
-    { "pos": [-250, 3150, 35], "tier": "military" },
-    { "pos": [15800, 9350, 35], "tier": "military" },
+    { "id": "bridge_loot_13", "note": "CHECKPOINT and the strongpoint in the ruins — military, the first loot worth stopping for.", "pos": [-1600, 3450, 35], "tier": "military" },
+    { "id": "bridge_loot_14", "pos": [700, 3650, 35], "tier": "military" },
+    { "id": "bridge_loot_15", "pos": [-250, 3150, 35], "tier": "military" },
+    { "id": "bridge_loot_16", "pos": [15800, 9350, 35], "tier": "military" },
 
-    { "note": "FAR HALF — the reason to cross. Petrol station.", "pos": [-13500, -4600, 35], "tier": "good" },
-    { "pos": [-12000, -5500, 35], "tier": "good" },
+    { "id": "bridge_loot_17", "note": "FAR HALF — the reason to cross. Moved 4400 uu south from the old shop door to ТЗ §29's L20 (зал АЗС, -13300,-8800), i.e. inside the walkable bridge_gas_station: a container you have to walk into a building for is the whole point of the building. Sarko.Map.BridgeBuildingsAreEnterable pins that it is not inside a wall.", "pos": [-13300, -8800, 35], "tier": "good" },
+    { "id": "bridge_loot_18", "pos": [-12000, -5500, 35], "tier": "good" },
 
-    { "note": "FAR HALF — village, at the house doors.", "pos": [-200, -9200, 35], "tier": "good" },
-    { "pos": [2400, -9200, 35], "tier": "good" },
-    { "pos": [1000, -10600, 35], "tier": "good" },
-    { "pos": [3600, -10600, 35], "tier": "good" },
-    { "pos": [-1400, -9350, 35], "tier": "good" },
+    { "id": "bridge_loot_19", "note": "FAR HALF — village, at the house doors.", "pos": [-200, -9200, 35], "tier": "good" },
+    { "id": "bridge_loot_20", "pos": [2400, -9200, 35], "tier": "good" },
+    { "id": "bridge_loot_21", "pos": [1000, -10600, 35], "tier": "good" },
+    { "id": "bridge_loot_22", "pos": [3600, -10600, 35], "tier": "good" },
+    { "id": "bridge_loot_23", "pos": [-1400, -9350, 35], "tier": "good" },
 
-    { "note": "FAR HALF — rail siding.", "pos": [-13900, -15200, 35], "tier": "good" },
-    { "pos": [-12300, -15200, 35], "tier": "military" },
-    { "pos": [-11500, -14550, 35], "tier": "good" },
+    { "id": "bridge_loot_24", "note": "FAR HALF — rail siding.", "pos": [-13900, -15200, 35], "tier": "good" },
+    { "id": "bridge_loot_25", "pos": [-12300, -15200, 35], "tier": "military" },
+    { "id": "bridge_loot_26", "pos": [-11500, -14550, 35], "tier": "good" },
 
-    { "note": "FAR HALF — water tower.", "pos": [7600, -6950, 35], "tier": "military" },
+    { "id": "bridge_loot_27", "note": "FAR HALF — water tower.", "pos": [7600, -6950, 35], "tier": "military" },
 
-    { "note": "FAR HALF — industrial yard, the best of it.", "pos": [16000, -14800, 35], "tier": "good" },
-    { "pos": [17800, -16900, 35], "tier": "good" },
-    { "pos": [16800, -16150, 35], "tier": "good" },
-    { "pos": [13800, -18200, 35], "tier": "good" },
-    { "pos": [18400, -14800, 35], "tier": "military" },
+    { "id": "bridge_loot_28", "note": "FAR HALF — industrial yard, the best of it.", "pos": [16000, -14800, 35], "tier": "good" },
+    { "id": "bridge_loot_29", "pos": [17800, -16900, 35], "tier": "good" },
+    { "id": "bridge_loot_30", "pos": [16800, -16150, 35], "tier": "good" },
+    { "id": "bridge_loot_31", "pos": [13800, -18200, 35], "tier": "good" },
+    { "id": "bridge_loot_32", "pos": [18400, -14800, 35], "tier": "military" },
 
-    { "note": "FAR HALF — scrap yard and farm compound.", "pos": [-5600, -13150, 35], "tier": "good" },
-    { "pos": [-7400, -13100, 35], "tier": "good" },
-    { "pos": [10500, -10400, 35], "tier": "good" },
-    { "pos": [10600, -11750, 35], "tier": "good" },
-    { "pos": [16000, -17850, 35], "tier": "good" },
+    { "id": "bridge_loot_33", "note": "FAR HALF — scrap yard and farm compound.", "pos": [-5600, -13150, 35], "tier": "good" },
+    { "id": "bridge_loot_34", "pos": [-7400, -13100, 35], "tier": "good" },
+    { "id": "bridge_loot_35", "pos": [10500, -10400, 35], "tier": "good" },
+    { "id": "bridge_loot_36", "pos": [10600, -11750, 35], "tier": "good" },
+    { "id": "bridge_loot_37", "pos": [16000, -17850, 35], "tier": "good" },
 
-    { "note": "FAR HALF — cement works, the field, the southern homestead.", "pos": [-17400, -6750, 35], "tier": "good" },
-    { "pos": [-18000, -10400, 35], "tier": "military" },
-    { "pos": [1000, -17550, 35], "tier": "good" },
-    { "pos": [6800, -16950, 35], "tier": "good" },
-    { "pos": [7800, -17600, 35], "tier": "good" }
+    { "id": "bridge_loot_38", "note": "FAR HALF — cement works, the field, the southern homestead.", "pos": [-17400, -6750, 35], "tier": "good" },
+    { "id": "bridge_loot_39", "pos": [-18000, -10400, 35], "tier": "military" },
+    { "id": "bridge_loot_40", "pos": [1000, -17550, 35], "tier": "good" },
+    { "id": "bridge_loot_41", "pos": [6800, -16950, 35], "tier": "good" },
+    { "id": "bridge_loot_42", "pos": [7800, -17600, 35], "tier": "good" }
   ],
 
   "playerSpawns": [
-    { "note": "North-west, behind the broken fence, facing south-east into the sector. All four are clear of every block and at least 400 uu from any prop.", "pos": [-16800, 17400, 150], "yaw": -45 },
-    { "pos": [-16000, 16800, 150], "yaw": -45 },
-    { "pos": [-17400, 16200, 150], "yaw": -45 },
-    { "pos": [-15800, 15600, 150], "yaw": -45 }
+    { "id": "bridge_spawn_01", "note": "North-west, behind the broken fence, facing south-east into the sector. All four are clear of every block and at least 400 uu from any prop.", "pos": [-16800, 17400, 150], "yaw": -45 },
+    { "id": "bridge_spawn_02", "pos": [-16000, 16800, 150], "yaw": -45 },
+    { "id": "bridge_spawn_03", "pos": [-17400, 16200, 150], "yaw": -45 },
+    { "id": "bridge_spawn_04", "pos": [-15800, 15600, 150], "yaw": -45 }
   ],
 
   "botSpawns": [
-    { "note": "Near half: two, and no more. Eight bots that all heard the player and converged turned a firefight into an execution, so they are spread far enough apart (hearing radius is 1800 uu) that they cannot all arrive together.", "pos": [16000, 10500, 150], "zone": "near" },
-    { "pos": [1200, 4400, 150], "zone": "mid" },
+    { "id": "bridge_bot_01", "note": "Near half: two, and no more. Eight bots that all heard the player and converged turned a firefight into an execution, so they are spread far enough apart (hearing radius is 1800 uu) that they cannot all arrive together.", "pos": [16000, 10500, 150], "zone": "near" },
+    { "id": "bridge_bot_02", "pos": [1200, 4400, 150], "zone": "mid" },
 
-    { "note": "The crossings, south side: whoever heard you go in is between you and home on the way out.", "pos": [-1700, -2800, 150], "zone": "mid" },
-    { "pos": [12800, -2600, 150], "zone": "mid" },
+    { "id": "bridge_bot_03", "note": "The crossings, south side: whoever heard you go in is between you and home on the way out.", "pos": [-1700, -2800, 150], "zone": "mid" },
+    { "id": "bridge_bot_04", "pos": [12800, -2600, 150], "zone": "mid" },
 
-    { "note": "Far half: eight, one per point of interest.", "pos": [-12500, -5600, 150], "zone": "deep" },
-    { "pos": [1200, -9200, 150], "zone": "deep" },
-    { "pos": [3000, -12400, 150], "zone": "deep" },
-    { "pos": [7200, -8200, 150], "zone": "deep" },
-    { "pos": [-12000, -16800, 150], "zone": "deep" },
-    { "pos": [-15000, -14400, 150], "zone": "deep" },
-    { "pos": [16000, -14800, 150], "zone": "deep" },
-    { "pos": [17600, -18200, 150], "zone": "deep" },
-    { "pos": [-6400, -14800, 150], "zone": "deep" },
-    { "pos": [11000, -12800, 150], "zone": "deep" },
-    { "pos": [-17600, -8800, 150], "zone": "deep" },
-    { "pos": [6600, -17400, 150], "zone": "deep" }
+    { "id": "bridge_bot_05", "note": "Far half: eight, one per point of interest.", "pos": [-12500, -5600, 150], "zone": "deep" },
+    { "id": "bridge_bot_06", "pos": [1200, -9200, 150], "zone": "deep" },
+    { "id": "bridge_bot_07", "pos": [3000, -12400, 150], "zone": "deep" },
+    { "id": "bridge_bot_08", "pos": [7200, -8200, 150], "zone": "deep" },
+    { "id": "bridge_bot_09", "pos": [-12000, -16800, 150], "zone": "deep" },
+    { "id": "bridge_bot_10", "pos": [-15000, -14400, 150], "zone": "deep" },
+    { "id": "bridge_bot_11", "pos": [16000, -14800, 150], "zone": "deep" },
+    { "id": "bridge_bot_12", "pos": [17600, -18200, 150], "zone": "deep" },
+    { "id": "bridge_bot_13", "pos": [-6400, -14800, 150], "zone": "deep" },
+    { "id": "bridge_bot_14", "pos": [11000, -12800, 150], "zone": "deep" },
+    { "id": "bridge_bot_15", "pos": [-17600, -8800, 150], "zone": "deep" },
+    { "id": "bridge_bot_16", "pos": [6600, -17400, 150], "zone": "deep" }
   ],
 
   "extractions": [
-    { "note": "North edge only. The east and south edges become passages into neighbouring sectors when the map grows to 800 x 800, and an extraction there would vanish.", "pos": [-14500, 18600, 0], "radiusUU": 500, "name": "Северная тропа" },
-    { "pos": [-1500, 18700, 0], "radiusUU": 500, "name": "Шоссе на север" },
-    { "pos": [11000, 18600, 0], "radiusUU": 500, "name": "Восточный кордон" }
+    { "id": "bridge_extract_north_path", "note": "North edge only. The east and south edges become passages into neighbouring sectors when the map grows to 800 x 800, and an extraction there would vanish.", "pos": [-14500, 18600, 0], "radiusUU": 500, "name": "Северная тропа" },
+    { "id": "bridge_extract_north_highway", "pos": [-1500, 18700, 0], "radiusUU": 500, "name": "Шоссе на север" },
+    { "id": "bridge_extract_east_cordon", "pos": [11000, 18600, 0], "radiusUU": 500, "name": "Восточный кордон" }
   ]
 }
