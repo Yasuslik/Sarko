@@ -16,7 +16,12 @@ TIMEOUT="${OVERVIEW_TIMEOUT:-240}"
 
 rm -rf "$SHOT_DIR"
 
-"$UE/Engine/Binaries/Mac/UnrealEditor-Cmd" "$PROJECT" /Engine/Maps/Entry \
+# ?game= is mandatory now. GlobalDefaultGameMode is the shelter, so a bare
+# /Engine/Maps/Entry boots the menu — which has no map to photograph and no
+# SarkoOverview exec on its player controller, so this script would hang for the
+# full timeout and report "no screenshot produced" with nothing explaining why.
+"$UE/Engine/Binaries/Mac/UnrealEditor-Cmd" "$PROJECT" \
+	"/Engine/Maps/Entry?game=/Script/SarkoGame.SarkoRaidGameMode" \
 	-game -RenderOffscreen -unattended -nosplash -ResX=1600 -ResY=1600 \
 	-ExecCmds="t.MaxFPS 10, SarkoOverview" > /dev/null 2>&1 &
 PID=$!
