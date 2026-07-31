@@ -395,10 +395,12 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 		}, nil
 	}
 
-	if err := addItemsTx(ctx, tx, playerID, items); err != nil {
-		return RaidResult{}, err
-	}
-
+	// Ordered players-before-stash_items deliberately. GrantStarterKit locks
+	// players then stash_items; if this function locked stash_items first it
+	// would close a cycle with it, and Postgres would abort one of the two.
+	// A deadlock here costs a player their whole extracted haul: the client does
+	// not retry a failed result submission, so the session would expire and the
+	// sweeper would close it as `died`.
 	// Spec §6.5: the tutorial completes on the first *successful* raid. Set in
 	// this transaction, so "the haul was credited" and "the tutorial is over"
 	// can never disagree — a separate call could be interrupted between them and
@@ -422,6 +424,10 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 			 WHERE id = $1 AND NOT tutorial_completed`, playerID); err != nil {
 			return RaidResult{}, fmt.Errorf("complete tutorial: %w", err)
 		}
+	}
+
+	if err := addItemsTx(ctx, tx, playerID, items); err != nil {
+		return RaidResult{}, err
 	}
 
 	itemsJSON, err := json.Marshal(items)
