@@ -94,6 +94,60 @@ namespace SarkoMap
 	// in Map/SarkoMapPalette.h, included above: the kind table needs it too, and
 	// it must not have to include the spawner to get a colour.
 
+	/**
+	 * The sector's lighting, in the header so the numbers the readability
+	 * argument rests on can be asserted rather than trusted.
+	 *
+	 * Mobile forward shading supports exactly ONE directional light — a second
+	 * makes the engine warn on screen that lights are "competing to be the
+	 * single one used for forward shading" and then pick one by brightness. The
+	 * ambient here is a sky light, which is spherical-harmonic irradiance and
+	 * not a second directional light, so it does not touch that path.
+	 */
+	namespace Lighting
+	{
+		/** Steep rather than horizontal, so a top-down camera sees lit surfaces. */
+		const FRotator SunRotation(-55.f, 30.f, 0.f);
+
+		/** Bright enough to read grey boxes on a phone screen in daylight. */
+		constexpr float SunIntensityLux = 6.f;
+
+		/**
+		 * How much of the sun's shadow is actually occluded. 1.0 is the engine
+		 * default and produced near-black stripes beside every wall; 0.0 removes
+		 * shadows entirely, which would undo the reason virtual shadow maps are
+		 * deliberately enabled in DefaultEngine.ini. This is a scalar in the
+		 * light's shader parameters: it costs nothing at all.
+		 */
+		constexpr float ShadowAmount = 0.6f;
+
+		/**
+		 * The engine's own map-template ambient cubemap, referenced by path —
+		 * this project authors no assets. A sky light with SLS_SpecifiedCubemap
+		 * and no cubemap is treated as INVALID by the engine and contributes
+		 * nothing, so a broken path here is a silent loss of all ambient;
+		 * Sarko.Config.LightingHasAnAmbientTerm pins that it resolves.
+		 */
+		const TCHAR* const AmbientCubemapPath = TEXT("/Engine/MapTemplates/Sky/DaylightAmbientCubemap.DaylightAmbientCubemap");
+
+		/** Captured once at spawn. 32 keeps the processed cubemap around 50 KB. */
+		constexpr int32 AmbientCubemapResolution = 32;
+
+		/** Enough to lift unlit faces off black, far short of flattening the sun. */
+		constexpr float AmbientIntensity = 1.0f;
+
+		/** Cool, against the sun's warm — a shadowed wall reads blue-grey, not black. */
+		const FLinearColor AmbientColour(0.55f, 0.62f, 0.78f);
+
+		/**
+		 * The lower hemisphere. bLowerHemisphereIsBlack is turned off so the
+		 * undersides of things are not pure black, but this stays dim: a bright
+		 * ground bounce lights everything from below and reads as a missing
+		 * shadow.
+		 */
+		const FLinearColor GroundBounceColour(0.050f, 0.045f, 0.030f);
+	}
+
 	/** Spawns floor and cover for a layout using engine primitive meshes. */
 	void SpawnLayout(UWorld& World, const FSarkoMapLayout& Layout);
 

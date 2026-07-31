@@ -2,10 +2,13 @@
 
 #include "Components/DirectionalLightComponent.h"
 #include "Components/LightComponent.h"
+#include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/DirectionalLight.h"
+#include "Engine/SkyLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
+#include "Engine/TextureCube.h"
 #include "Loot/SarkoExtractionZone.h"
 #include "Loot/SarkoLootContainer.h"
 #include "Map/SarkoMapDefinition.h"
@@ -17,40 +20,34 @@
 namespace
 {
 	/**
-	 * Sun angle. Steep rather than horizontal so a top-down camera sees lit
-	 * surfaces rather than long shadows across everything.
-	 */
-	const FRotator SunRotation(-55.f, 30.f, 0.f);
-
-	/** Bright enough to read grey boxes on a phone screen in daylight. */
-	constexpr float SunIntensityLux = 6.f;
-
-	/**
-	 * Exactly one directional light — the sun.
+	 * The sun, plus an ambient term.
 	 *
-	 * Not two. The mobile forward shading path supports a single directional
-	 * light, and a second one makes the engine warn on screen that lights are
-	 * "competing to be the single one used for forward shading" and then pick
-	 * one by brightness. A fill light from the opposite side is the obvious way
-	 * to stop cover's shadowed faces going black, and it is exactly what this
-	 * renderer cannot have.
+	 * Exactly one directional light. Not two: the mobile forward shading path
+	 * supports a single directional light, and a second one makes the engine warn
+	 * on screen that lights are "competing to be the single one used for forward
+	 * shading" and then pick one by brightness. A fill light from the opposite
+	 * side is the obvious way to stop cover's shadowed faces going black, and it
+	 * is exactly what this renderer cannot have.
 	 *
-	 * Not a SkyLight for the ambient either: a sky light needs a cubemap or a
-	 * scene to capture, and this level is empty and this project authors no
-	 * assets, so it would light the scene with the black it found. The shadowed
-	 * sides instead read via the sun's shadow softness and the material's own
-	 * base colour, which is enough for grey boxes.
+	 * The ambient is therefore a SkyLight, which contributes spherical-harmonic
+	 * irradiance rather than a second shaded light. Its source is the engine's
+	 * own map-template cubemap referenced by path — NOT SLS_CapturedScene, which
+	 * would capture this level (no sky, no atmosphere, nothing beyond the floor)
+	 * and light the scene with the black it found. That was the original reason
+	 * for having no ambient at all, and a shipped cubemap is the way around it
+	 * without authoring an asset.
 	 *
-	 * Movable mobility matters: this is spawned after BeginPlay, so there is no
-	 * baked lighting for a Static light to have contributed to, and a Static
-	 * light created at runtime lights nothing at all.
+	 * Movable mobility matters for both: these are spawned after BeginPlay, so
+	 * there is no baked lighting for a Static light to have contributed to, and
+	 * a Static light created at runtime lights nothing at all.
 	 */
 	void SpawnLighting(UWorld& World)
 	{
 		FActorSpawnParameters Params;
 		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-		ADirectionalLight* Sun = World.SpawnActor<ADirectionalLight>(FVector(0.f, 0.f, 5000.f), SunRotation, Params);
+		ADirectionalLight* Sun = World.SpawnActor<ADirectionalLight>(
+			FVector(0.f, 0.f, 5000.f), SarkoMap::Lighting::SunRotation, Params);
 		if (!Sun)
 		{
 			UE_LOG(LogTemp, Error, TEXT("SarkoMap: failed to spawn the sun; the raid will render black"));
@@ -58,11 +55,48 @@ namespace
 		}
 
 		Sun->SetMobility(EComponentMobility::Movable);
-		if (ULightComponent* Component = Sun->GetLightComponent())
+		if (UDirectionalLightComponent* SunComponent = Cast<UDirectionalLightComponent>(Sun->GetLightComponent()))
 		{
-			Component->SetIntensity(SunIntensityLux);
-			Component->SetLightColor(FLinearColor(1.f, 0.97f, 0.92f));
-			Component->SetCastShadows(true);
+			SunComponent->SetIntensity(SarkoMap::Lighting::SunIntensityLux);
+			SunComponent->SetLightColor(FLinearColor(1.f, 0.97f, 0.92f));
+			SunComponent->SetCastShadows(true);
+			// Lifts cast shadows off black without removing them. A shader
+			// constant, so this line is free.
+			SunComponent->SetShadowAmount(SarkoMap::Lighting::ShadowAmount);
+		}
+
+		ASkyLight* Sky = World.SpawnActor<ASkyLight>(FVector(0.f, 0.f, 5000.f), FRotator::ZeroRotator, Params);
+		if (!Sky)
+		{
+			// Not fatal: the sun still lights the scene, the shadowed sides just
+			// go dark again.
+			UE_LOG(LogTemp, Error, TEXT("SarkoMap: failed to spawn the sky light; shadowed faces will read as black"));
+			return;
+		}
+		if (USkyLightComponent* SkyComponent = Sky->GetLightComponent())
+		{
+			UTextureCube* Cubemap = LoadObject<UTextureCube>(nullptr, SarkoMap::Lighting::AmbientCubemapPath);
+			if (!Cubemap)
+			{
+				// A sky light with SLS_SpecifiedCubemap and a null cubemap is
+				// invalid and contributes nothing, so say so loudly rather than
+				// leaving a light in the scene that does not light.
+				UE_LOG(LogTemp, Error, TEXT("SarkoMap: ambient cubemap '%s' failed to load; there will be no ambient light"),
+					SarkoMap::Lighting::AmbientCubemapPath);
+				return;
+			}
+			SkyComponent->SetMobility(EComponentMobility::Movable);
+			SkyComponent->SourceType = ESkyLightSourceType::SLS_SpecifiedCubemap;
+			SkyComponent->CubemapResolution = SarkoMap::Lighting::AmbientCubemapResolution;
+			SkyComponent->bLowerHemisphereIsBlack = false;
+			SkyComponent->LowerHemisphereColor = SarkoMap::Lighting::GroundBounceColour;
+			SkyComponent->SetCubemap(Cubemap);
+			SkyComponent->SetIntensity(SarkoMap::Lighting::AmbientIntensity);
+			SkyComponent->SetLightColor(SarkoMap::Lighting::AmbientColour);
+			// Once. There is no time of day and nothing in the sky moves, so a
+			// real-time capture would re-render a cubemap every frame on a phone
+			// to produce the same numbers.
+			SkyComponent->RecaptureSky();
 		}
 	}
 

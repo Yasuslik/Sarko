@@ -2,6 +2,8 @@
 
 #include "Core/SarkoRaidSettings.h"
 #include "Map/SarkoMapBuilder.h"
+#include "Misc/PackageName.h"
+#include "UObject/SoftObjectPath.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -202,6 +204,84 @@ bool FSarkoSurfacePaletteIsReadable::RunTest(const FString& Parameters)
 
 	ESarkoSurface Unknown = ESarkoSurface::Count;
 	TestFalse(TEXT("an unknown surface name does not parse"), ParseSurfaceName(TEXT("chartreuse"), Unknown));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoLightingHasAnAmbientTerm,
+	"Sarko.Config.LightingHasAnAmbientTerm",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * Automation runs under -nullrhi and can see nothing, so this cannot assert that
+ * the frame looks right — the offscreen screenshot does that. What it CAN pin is
+ * every way the ambient silently does not exist: a cubemap path that does not
+ * resolve (a sky light with SLS_SpecifiedCubemap and no cubemap is invalid and
+ * contributes nothing at all), an intensity of zero, a shadow lift that lifts
+ * nothing, or an ambient bright enough to flatten the sun out of the frame.
+ */
+bool FSarkoLightingHasAnAmbientTerm::RunTest(const FString& Parameters)
+{
+	using namespace SarkoMap::Lighting;
+
+	// The one failure mode that produces no log, no warning and no ambient: a
+	// typo'd or moved engine asset path. Checked as a package rather than a
+	// LoadObject so it is safe with no RHI.
+	const FString Package = FSoftObjectPath(FString(AmbientCubemapPath)).GetLongPackageName();
+	TestFalse(TEXT("the ambient cubemap path names a package"), Package.IsEmpty());
+	TestTrue(FString::Printf(TEXT("the ambient cubemap package '%s' exists"), *Package),
+		FPackageName::DoesPackageExist(Package));
+	TestTrue(TEXT("the ambient cubemap is an engine asset, not one we authored"),
+		Package.StartsWith(TEXT("/Engine/")));
+
+	TestTrue(TEXT("the ambient actually contributes"), AmbientIntensity > 0.f);
+	TestTrue(TEXT("the ambient does not flatten the sun out of the frame"), AmbientIntensity < SunIntensityLux);
+	TestTrue(TEXT("the ambient cubemap is small enough for a phone"),
+		AmbientCubemapResolution > 0 && AmbientCubemapResolution <= 64);
+
+	// Cool sky against a warm sun: the shadowed side of a wall should read as a
+	// different colour temperature, not merely a darker grey.
+	TestTrue(TEXT("the sky fill is cool"), AmbientColour.B > AmbientColour.R);
+	// The ground bounce exists but is dim — bLowerHemisphereIsBlack false with a
+	// bright lower colour lights the undersides of everything and looks like a
+	// missing shadow.
+	const auto Lum = [](const FLinearColor& C) { return 0.2126f * C.R + 0.7152f * C.G + 0.0722f * C.B; };
+	TestTrue(TEXT("the ground bounce is present"), Lum(GroundBounceColour) > 0.f);
+	TestTrue(TEXT("the ground bounce is dimmer than the sky"),
+		Lum(GroundBounceColour) < Lum(AmbientColour) * 0.5f);
+
+	// A shadow lift of 1.0 is what the engine already does, and 0.0 removes
+	// shadows entirely — which would undo the reason virtual shadow maps were
+	// deliberately re-enabled in DefaultEngine.ini.
+	TestTrue(TEXT("shadows are lifted but not removed"), ShadowAmount > 0.2f && ShadowAmount < 1.f);
+
+	// The sun still comes from above, or a top-down camera sees mostly shadow.
+	TestTrue(TEXT("the sun is steep, not horizontal"), SunRotation.Pitch < -30.0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoEngineMeshPathsResolve,
+	"Sarko.Config.EngineMeshPathsResolve",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoEngineMeshPathsResolve::RunTest(const FString& Parameters)
+{
+	// Every engine asset this project reaches by literal string, in one place.
+	// A moved or renamed engine asset produces a log line at runtime and nothing
+	// else — geometry simply does not appear, or keeps the grid material.
+	const TArray<FString> Paths = {
+		TEXT("/Engine/BasicShapes/Cube.Cube"),
+		TEXT("/Engine/BasicShapes/Cylinder.Cylinder"),
+		TEXT("/Engine/BasicShapes/Sphere.Sphere"),
+		TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"),
+		TEXT("/Engine/MapTemplates/Sky/DaylightAmbientCubemap.DaylightAmbientCubemap"),
+	};
+	for (const FString& Path : Paths)
+	{
+		const FString Package = FSoftObjectPath(Path).GetLongPackageName();
+		TestTrue(FString::Printf(TEXT("'%s' exists"), *Path), FPackageName::DoesPackageExist(Package));
+	}
 	return true;
 }
 
