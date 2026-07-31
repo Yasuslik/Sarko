@@ -399,6 +399,31 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 		return RaidResult{}, err
 	}
 
+	// Spec §6.5: the tutorial completes on the first *successful* raid. Set in
+	// this transaction, so "the haul was credited" and "the tutorial is over"
+	// can never disagree — a separate call could be interrupted between them and
+	// leave a player who has banked tutorial loot still reading fixed lists.
+	//
+	// `AND NOT tutorial_completed` makes it a one-way latch and makes the
+	// statement a no-op for every raid after the first, so this costs one indexed
+	// row lookup per extraction and nothing else.
+	//
+	// Deliberately not reached on the two early-return paths above: a replay of
+	// an already-closed session must not re-latch anything (it credits nothing),
+	// and an expired session is closed as `died` regardless of what the client
+	// claimed, so it is not a successful raid.
+	//
+	// playerID is the value loaded from the session row, not p.PlayerID: the two
+	// are already proven equal by the token check above, and using the loaded one
+	// keeps every write in this function keyed off the row it locked.
+	if p.Outcome == domain.OutcomeExtracted {
+		if _, err := tx.Exec(ctx,
+			`UPDATE players SET tutorial_completed = true
+			 WHERE id = $1 AND NOT tutorial_completed`, playerID); err != nil {
+			return RaidResult{}, fmt.Errorf("complete tutorial: %w", err)
+		}
+	}
+
 	itemsJSON, err := json.Marshal(items)
 	if err != nil {
 		return RaidResult{}, fmt.Errorf("marshal result items: %w", err)

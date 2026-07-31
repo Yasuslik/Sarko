@@ -17,6 +17,12 @@ type Profile struct {
 	Stash         []domain.ItemStack `json:"stash"`
 	Tier          domain.Tier        `json:"vehicle_tier"`
 	UnlockedMaps  []string           `json:"unlocked_maps"`
+	// TutorialCompleted is false until the player's first *successful* raid
+	// (spec §6.5). While it is false the client uses the map's authored
+	// fixedItems instead of a seeded roll, so this field decides what is in
+	// every container of the next raid — which is why it is set inside
+	// SubmitResult's transaction and never anywhere else.
+	TutorialCompleted bool `json:"tutorial_completed"`
 }
 
 // UpsertPlayer returns the player id for a device, creating the player and its
@@ -100,10 +106,10 @@ func (s *Store) Profile(ctx context.Context, playerID string) (Profile, error) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	err = tx.QueryRow(ctx,
-		`SELECT p.schema_version, COALESCE(g.vehicle_tier, 'none')
+		`SELECT p.schema_version, COALESCE(g.vehicle_tier, 'none'), p.tutorial_completed
 		 FROM players p
 		 LEFT JOIN garage_progress g ON g.player_id = p.id
-		 WHERE p.id = $1`, playerID).Scan(&p.SchemaVersion, &p.Tier)
+		 WHERE p.id = $1`, playerID).Scan(&p.SchemaVersion, &p.Tier, &p.TutorialCompleted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Profile{}, ErrNotFound
 	}

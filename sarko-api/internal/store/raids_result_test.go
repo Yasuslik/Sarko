@@ -643,3 +643,121 @@ func TestPendingRaidExpiryReturnsLoadout(t *testing.T) {
 		t.Errorf("loadout was not returned: %v", profile.Stash)
 	}
 }
+
+func TestExtractedResultSetsTheTutorialFlag(t *testing.T) {
+	s := store.New(testutil.Pool(t))
+	ctx := context.Background()
+	playerID := seedPlayer(t, s, "device-tutorial-extract", nil)
+
+	// Before the first raid the flag must be false, because false is what puts a
+	// client into tutorial mode. A default of true would silently skip the
+	// tutorial for every player who ever existed.
+	profile, err := s.Profile(ctx, playerID)
+	if err != nil {
+		t.Fatalf("Profile: %v", err)
+	}
+	if profile.TutorialCompleted {
+		t.Fatal("a brand-new player is already marked as having completed the tutorial")
+	}
+
+	started, err := s.StartRaid(ctx, startParams(playerID, nil))
+	if err != nil {
+		t.Fatalf("StartRaid: %v", err)
+	}
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Hour); err != nil {
+		t.Fatalf("ConfirmRaid: %v", err)
+	}
+
+	if _, err := s.SubmitResult(ctx, store.SubmitResultParams{
+		PlayerID:     playerID,
+		SessionID:    started.SessionID,
+		SessionToken: started.SessionToken,
+		Outcome:      domain.OutcomeExtracted,
+		Items:        []domain.ItemStack{{ItemID: "scrap_metal", Quantity: 2}},
+	}); err != nil {
+		t.Fatalf("SubmitResult: %v", err)
+	}
+
+	profile, err = s.Profile(ctx, playerID)
+	if err != nil {
+		t.Fatalf("Profile after extraction: %v", err)
+	}
+	if !profile.TutorialCompleted {
+		t.Error("a successful extraction did not complete the tutorial")
+	}
+}
+
+func TestDiedResultLeavesTheTutorialFlagAlone(t *testing.T) {
+	// Spec §6.5: "dying replays the tutorial with the same static layout". So
+	// death must not set the flag — that is the whole difference between the two
+	// outcomes as far as the tutorial is concerned.
+	s := store.New(testutil.Pool(t))
+	ctx := context.Background()
+	playerID := seedPlayer(t, s, "device-tutorial-death", nil)
+
+	started, err := s.StartRaid(ctx, startParams(playerID, nil))
+	if err != nil {
+		t.Fatalf("StartRaid: %v", err)
+	}
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Hour); err != nil {
+		t.Fatalf("ConfirmRaid: %v", err)
+	}
+	if _, err := s.SubmitResult(ctx, store.SubmitResultParams{
+		PlayerID:     playerID,
+		SessionID:    started.SessionID,
+		SessionToken: started.SessionToken,
+		Outcome:      domain.OutcomeDied,
+		Items:        nil,
+	}); err != nil {
+		t.Fatalf("SubmitResult: %v", err)
+	}
+
+	profile, err := s.Profile(ctx, playerID)
+	if err != nil {
+		t.Fatalf("Profile: %v", err)
+	}
+	if profile.TutorialCompleted {
+		t.Error("dying completed the tutorial; it must replay instead")
+	}
+}
+
+func TestTutorialFlagNeverUnsetsAndSurvivesALaterDeath(t *testing.T) {
+	// One-way latch. The flag decides whether containers roll or read a fixed
+	// list, so a flag that could go back to false would put a veteran back into
+	// the tutorial's static loot — and, worse, make the loot a player sees depend
+	// on the order of their last two raids.
+	s := store.New(testutil.Pool(t))
+	ctx := context.Background()
+	playerID := seedPlayer(t, s, "device-tutorial-latch", nil)
+
+	raid := func(outcome domain.RaidOutcome) {
+		t.Helper()
+		started, err := s.StartRaid(ctx, startParams(playerID, nil))
+		if err != nil {
+			t.Fatalf("StartRaid(%s): %v", outcome, err)
+		}
+		if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Hour); err != nil {
+			t.Fatalf("ConfirmRaid(%s): %v", outcome, err)
+		}
+		if _, err := s.SubmitResult(ctx, store.SubmitResultParams{
+			PlayerID:     playerID,
+			SessionID:    started.SessionID,
+			SessionToken: started.SessionToken,
+			Outcome:      outcome,
+		}); err != nil {
+			t.Fatalf("SubmitResult(%s): %v", outcome, err)
+		}
+	}
+
+	raid(domain.OutcomeExtracted)
+	raid(domain.OutcomeDied)
+	raid(domain.OutcomeExtracted)
+
+	profile, err := s.Profile(ctx, playerID)
+	if err != nil {
+		t.Fatalf("Profile: %v", err)
+	}
+	if !profile.TutorialCompleted {
+		t.Error("the tutorial flag came back off after a death following a successful raid")
+	}
+}
