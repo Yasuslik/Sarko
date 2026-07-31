@@ -32,6 +32,19 @@ namespace
 			/* Structure  */ { SarkoMap::Palette::Structure,            SarkoMap::Palette::StructureRoughness },
 			/* Rust       */ { FLinearColor(0.160f, 0.070f, 0.036f),    0.85f },
 			/* Timber     */ { FLinearColor(0.185f, 0.100f, 0.055f),    0.80f },
+			// 2.4x the ground's luminance, and greyer than the village timber
+			// rather than darker — which is the second attempt. The first was
+			// 1.4x and a warm brown, chosen on the numbers, and in a frame it
+			// produced black posts with pale lit caps: a trunk is VERTICAL, and
+			// this sector's sun sits 55 degrees up, so a trunk's sides receive a
+			// fraction of the light the flat ground does. Two surfaces that
+			// separate on paper do not separate when one of them is a wall.
+			//
+			// Greyer rather than simply brighter because a brighter warm brown
+			// lands on top of Timber, and "the fence tone" and "the tree tone"
+			// being the same colour is exactly the distinction this surface was
+			// added to make.
+			/* Bark       */ { FLinearColor(0.145f, 0.108f, 0.078f),    0.88f },
 			/* Vegetation */ { FLinearColor(0.020f, 0.042f, 0.016f),    0.95f },
 			// Opaque, and that is a shipped limitation rather than a choice: a
 			// translucent material cannot exist here without authoring an asset
@@ -71,8 +84,8 @@ namespace
 	/** JSON names, in enum order. Lower snake case, like every other key. */
 	const TCHAR* const SurfaceNames[static_cast<int32>(ESarkoSurface::Count)] = {
 		TEXT("ground"), TEXT("dirt"), TEXT("asphalt"), TEXT("concrete"), TEXT("structure"),
-		TEXT("rust"), TEXT("timber"), TEXT("vegetation"), TEXT("water"), TEXT("shallow"),
-		TEXT("ravine"), TEXT("extraction")
+		TEXT("rust"), TEXT("timber"), TEXT("bark"), TEXT("vegetation"), TEXT("water"),
+		TEXT("shallow"), TEXT("ravine"), TEXT("extraction")
 	};
 }
 

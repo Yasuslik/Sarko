@@ -13,6 +13,7 @@
 #include "Loot/SarkoLootContainer.h"
 #include "Map/SarkoMapDefinition.h"
 #include "Map/SarkoMapKinds.h"
+#include "Map/SarkoPropField.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "UObject/ConstructorHelpers.h"
@@ -147,7 +148,7 @@ namespace
 	 *
 	 * Game thread only, like everything else in this file.
 	 */
-	UMaterialInstanceDynamic* SharedFlatMaterial(ESarkoSurface Surface)
+	UMaterialInstanceDynamic* SharedFlatMaterialInternal(ESarkoSurface Surface)
 	{
 		static const TCHAR* BasicShapeMaterialPath = TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial");
 		static TMap<uint8, UMaterialInstanceDynamic*> Cache;
@@ -192,7 +193,7 @@ namespace
 	/** Assigns that shared instance to every slot the component has. */
 	void PaintFlat(UStaticMeshComponent& Component, ESarkoSurface Surface)
 	{
-		UMaterialInstanceDynamic* Material = SharedFlatMaterial(Surface);
+		UMaterialInterface* Material = SarkoMap::SharedSurfaceMaterial(Surface);
 		if (!Material)
 		{
 			return;
@@ -248,6 +249,11 @@ namespace
 	}
 }
 
+UMaterialInterface* SarkoMap::SharedSurfaceMaterial(ESarkoSurface Surface)
+{
+	return SharedFlatMaterialInternal(Surface);
+}
+
 void SarkoMap::SpawnLayout(UWorld& World, const FSarkoMapLayout& Layout)
 {
 	// Light first, or the whole raid renders black. /Engine/Maps/Entry is an
@@ -285,6 +291,29 @@ void SarkoMap::SpawnLayout(UWorld& World, const FSarkoMapLayout& Layout)
 
 void SarkoMap::SpawnProps(UWorld& World, const FSarkoMapDefinition& Definition)
 {
+	// ONE actor for every prop in the sector, instead of one per part.
+	//
+	// Until the forest this was an actor per part: 401 of them against ТЗ §16's
+	// ceiling of 420, which is why "add trees" and "instance the props" were
+	// always the same task — a stand of any size at all blows that budget on its
+	// own. The trigger written into Sarko.Map.BridgeStaysInsideTheActorBudget
+	// named this the response, in this order, and this is it being taken.
+	//
+	// It only became possible when the per-actor UMaterialInstanceDynamic went
+	// away: UE batches primitives that share a mesh AND a material, so 400 unique
+	// materials describing eleven appearances defeated instancing outright. With
+	// one shared instance per surface the whole props section collapses into a
+	// handful of components — see ASarkoPropField.
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ASarkoPropField* Field = World.SpawnActor<ASarkoPropField>(
+		ASarkoPropField::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, Params);
+	if (!Field)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SarkoMap: failed to spawn the prop field; the sector will have no props"));
+		return;
+	}
+
 	int32 Skipped = 0;
 
 	for (const FSarkoMapProp& Prop : Definition.Props)
@@ -298,9 +327,6 @@ void SarkoMap::SpawnProps(UWorld& World, const FSarkoMapDefinition& Definition)
 			continue;
 		}
 
-		// One actor per part. A single-box kind — which is all eleven kinds the
-		// shipped map uses — has one part with a zero offset, so this is the same
-		// single spawn it always was, at the same transform.
 		const FRotator Rotation(0.f, Prop.Yaw, 0.f);
 		for (const FSarkoPropPart& Part : Kind.Parts)
 		{
@@ -315,21 +341,28 @@ void SarkoMap::SpawnProps(UWorld& World, const FSarkoMapDefinition& Definition)
 			// rotates with the prop: a road sign's plate stays over its post at
 			// any yaw. The arithmetic lives in PartWorldLocation so it can be
 			// asserted under -nullrhi, where there is no world to spawn into.
+			// Unchanged by instancing — an instance transform is the transform
+			// the actor used to have.
 			const FVector PartLocation = PartWorldLocation(Prop.Location, Prop.Yaw, Part);
-			// Colour comes from the part's surface rather than a per-prop choice:
-			// the read the player needs from above is "ground versus thing
-			// standing on it", and every legacy kind is Structure, which is the
-			// exact grey props were painted before surfaces existed.
-			SpawnMeshBox(World, Mesh, PartLocation, Rotation, Part.Extent, Part.bBlocksMovement,
-				Part.Surface);
+			// Colour still comes from the part's surface, and it is now also what
+			// decides which component the part lands in: same surface, same mesh,
+			// same draw call.
+			Field->AddPart(Mesh, Part, PartLocation, Rotation);
 		}
 	}
 
+	// Not optional, and not a tidy-up: a HISM draws nothing until its cluster
+	// tree is built, and AddInstance only schedules that asynchronously. Without
+	// this call every prop in the sector is missing for the first frames of the
+	// raid. See ASarkoPropField::FinishBuild.
+	Field->FinishBuild();
+
 	// Skipped counts *parts* that did not appear (plus one per unknown kind,
 	// which is a deliberate approximation of "at least one thing is missing").
-	// Both totals are named so the line cannot mislead once composites exist.
-	UE_LOG(LogTemp, Display, TEXT("SarkoMap: spawned %d prop actors from %d authored props, skipped %d parts"),
-		CountPropActors(Definition) - Skipped, Definition.Props.Num(), Skipped);
+	UE_LOG(LogTemp, Display,
+		TEXT("SarkoMap: %d prop instances from %d authored props in %d instanced components (%d canopies), skipped %d parts"),
+		Field->GetInstanceCount(), Definition.Props.Num(), Field->GetInstancedComponentCount(),
+		Field->GetCanopyCount(), Skipped);
 }
 
 void SarkoMap::SpawnLootContainers(UWorld& World, const FSarkoMapDefinition& Definition)

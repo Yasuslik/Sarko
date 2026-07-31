@@ -15,6 +15,7 @@
 // SarkoMapBuilder.h's fix — keeps one convention rather than two.
 struct FSarkoMapDefinition;
 class ASarkoLootContainer;
+class ASarkoPropField;
 
 /** How a raid ended. Replicated to everyone: the HUD's final screen reads it. */
 UENUM()
@@ -277,6 +278,20 @@ public:
 	void RegisterContainer(ASarkoLootContainer* Container);
 
 	/**
+	 * The sector's instanced props register here at BeginPlay, exactly as the
+	 * containers do and for exactly the same reason: Tick has to drive the canopy
+	 * fade every frame and must not run a TActorIterator to find who to drive.
+	 *
+	 * There is one field per machine. A second registration replaces the first
+	 * rather than accumulating, because the only way to get one is to spawn a
+	 * second map, and then the first field is the stale one.
+	 */
+	void RegisterPropField(ASarkoPropField* Field);
+
+	/** Whatever registered last, or null before the layout has spawned. */
+	ASarkoPropField* GetPropField() const;
+
+	/**
 	 * Every container that has spawned on this machine, in no particular order —
 	 * registration appends, but OnRep_LootedContainers drops stale entries with
 	 * RemoveAtSwap, so any removal reshuffles the tail. Nothing indexes into this
@@ -299,10 +314,30 @@ public:
 	const TArray<TWeakObjectPtr<ASarkoLootContainer>>& GetContainers() const { return RegisteredContainers; }
 
 private:
+	/**
+	 * Hides the canopies over the LOCAL player's head, every frame, and does
+	 * nothing anywhere else.
+	 *
+	 * The gate is IsLocalController(), not HasAuthority(), and the difference
+	 * matters in both directions. A dedicated server has no local player
+	 * controller at all, so this returns immediately and the server never spends
+	 * a cycle on a thing nobody is looking at — and, more importantly, never
+	 * changes anything a client could then disagree with. A listen server DOES
+	 * have a local player, and its canopies must open over its own pawn exactly
+	 * as a client's do: the effect belongs to a camera, not to an authority.
+	 *
+	 * Nothing here is replicated, and nothing here may ever become replicated.
+	 * The fade is a fact about one machine's render data.
+	 */
+	void UpdateCanopyFade();
+
 	bool bClockStarted = false;
 	bool bLayoutBuilt = false;
 	FSarkoMapLayout Layout;
 
 	/** Weak: containers are destroyed with the world and this must not keep them alive. */
 	TArray<TWeakObjectPtr<ASarkoLootContainer>> RegisteredContainers;
+
+	/** Weak for the same reason the containers are: the world owns it, not this. */
+	TWeakObjectPtr<ASarkoPropField> PropField;
 };

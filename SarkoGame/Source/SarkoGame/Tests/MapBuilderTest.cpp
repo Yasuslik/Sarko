@@ -27,6 +27,13 @@ bool FSarkoSettingsHaveSaneDefaults::RunTest(const FString& Parameters)
 	TestTrue(TEXT("aim assist is a nudge, not an aimbot"), Settings->AimConeHalfAngleDegrees > 0.f && Settings->AimConeHalfAngleDegrees <= 10.f);
 	TestTrue(TEXT("magazine holds at least one round"), Settings->MagazineSize > 0);
 	TestTrue(TEXT("reload time is positive and tactical"), Settings->ReloadSeconds > 0.f && Settings->ReloadSeconds < 10.f);
+	// The forest is only walk-in-able because of this number. Zero disables the
+	// fade (which is a legitimate way to see the problem it solves, and not a
+	// legitimate thing to ship), and anything approaching the weapon's range
+	// would cut a clearing bigger than a firefight and stop the stand reading as
+	// a stand at all.
+	TestTrue(TEXT("canopies fade around the player, and not across the whole map"),
+		Settings->CanopyFadeRadiusUU > 0.f && Settings->CanopyFadeRadiusUU < Settings->WeaponRangeUU);
 	TestTrue(TEXT("enemy hearing radius is positive"), Settings->EnemyHearingRadiusUU > 0.f);
 	TestTrue(TEXT("enemy fire interval is positive"), Settings->EnemyFireIntervalSeconds > 0.f);
 	return true;
@@ -290,6 +297,8 @@ bool FSarkoEngineMeshPathsResolve::RunTest(const FString& Parameters)
 		TEXT("/Engine/BasicShapes/Cube.Cube"),
 		TEXT("/Engine/BasicShapes/Cylinder.Cylinder"),
 		TEXT("/Engine/BasicShapes/Sphere.Sphere"),
+		// The conifer canopy, and the only thing that uses it.
+		TEXT("/Engine/BasicShapes/Cone.Cone"),
 		TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"),
 		TEXT("/Engine/MapTemplates/Sky/DaylightAmbientCubemap.DaylightAmbientCubemap"),
 	};
