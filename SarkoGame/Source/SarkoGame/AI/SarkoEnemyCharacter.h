@@ -5,6 +5,7 @@
 
 #include "SarkoEnemyCharacter.generated.h"
 
+class USarkoCharacterAnimComponent;
 class USarkoHealthComponent;
 class USarkoWeaponComponent;
 
@@ -27,4 +28,8 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, Category = "Combat")
 	TObjectPtr<USarkoWeaponComponent> WeaponComponent;
+
+	/** Drives the mesh's pose. Purely cosmetic; the same component the player uses. */
+	UPROPERTY(VisibleAnywhere, Category = "Visuals")
+	TObjectPtr<USarkoCharacterAnimComponent> AnimComponent;
 };

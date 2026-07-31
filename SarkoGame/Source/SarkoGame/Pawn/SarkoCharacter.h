@@ -11,6 +11,7 @@ class UCameraComponent;
 class USpringArmComponent;
 class USarkoWeaponComponent;
 class USarkoBackpackComponent;
+class USarkoCharacterAnimComponent;
 
 namespace SarkoAim
 {
@@ -71,6 +72,10 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Health")
 	TObjectPtr<USarkoHealthComponent> HealthComponent;
+
+	/** Drives the mesh's pose from health, the weapon and this pawn's own velocity. Purely cosmetic. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Visuals")
+	TObjectPtr<USarkoCharacterAnimComponent> AnimComponent;
 
 	/** Client intent: begin opening the container at this index. Validated server-side. */
 	void RequestBeginLoot(int32 ContainerIndex);

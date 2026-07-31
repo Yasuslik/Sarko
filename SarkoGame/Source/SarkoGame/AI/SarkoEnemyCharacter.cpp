@@ -1,6 +1,7 @@
 #include "AI/SarkoEnemyCharacter.h"
 
 #include "Pawn/SarkoBody.h"
+#include "Pawn/SarkoCharacterAnim.h"
 
 #include "AI/SarkoAIController.h"
 #include "Combat/SarkoWeapon.h"
@@ -17,6 +18,9 @@ ASarkoEnemyCharacter::ASarkoEnemyCharacter()
 	HealthComponent = CreateDefaultSubobject<USarkoHealthComponent>(TEXT("Health"));
 	HealthComponent->SetTeam(ESarkoTeam::Enemy);
 	WeaponComponent = CreateDefaultSubobject<USarkoWeaponComponent>(TEXT("Weapon"));
+	// Same cosmetic driver the player uses, created after health and the weapon
+	// so both exist by the time it looks for them (see its BeginPlay).
+	AnimComponent = CreateDefaultSubobject<USarkoCharacterAnimComponent>(TEXT("CharacterAnim"));
 
 	GetCharacterMovement()->bOrientRotationToMovement = true;
 	// No balance literals: the enemy's move speed is its own tunable, distinct
@@ -29,8 +33,10 @@ void ASarkoEnemyCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// Red, so it reads as hostile at a glance from directly above.
-	SarkoBody::AttachPlaceholderBody(*this, FLinearColor(0.85f, 0.18f, 0.15f));
+	// Quinn and a red tint, so it reads as hostile at a glance from directly
+	// above — a different body from the player's Manny, not the same one
+	// recoloured, so friend/foe survives even if the tint does nothing.
+	SarkoBody::AttachCharacterMesh(*this, SarkoBody::ESide::Enemy);
 
 	if (HasAuthority() && HealthComponent)
 	{
