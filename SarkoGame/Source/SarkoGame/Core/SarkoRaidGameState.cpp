@@ -25,6 +25,11 @@ bool SarkoRaid::CanActivateRaid(bool bSessionReady, ESarkoRaidOutcome Outcome)
 	return !bSessionReady && Outcome == ESarkoRaidOutcome::InProgress;
 }
 
+bool SarkoRaid::ShouldSpawnClientLayout(bool bLayoutBuilt, bool bSessionReady)
+{
+	return !bLayoutBuilt && bSessionReady;
+}
+
 ASarkoRaidGameState::ASarkoRaidGameState()
 {
 	PrimaryActorTick.bCanEverTick = true;
@@ -45,6 +50,13 @@ void ASarkoRaidGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 
 void ASarkoRaidGameState::OnRep_Seed()
 {
+	BuildAndSpawnLayout();
+}
+
+void ASarkoRaidGameState::OnRep_SessionReady()
+{
+	// The real "the raid has begun" edge. BuildAndSpawnLayout is idempotent, so
+	// this and OnRep_Seed together still build exactly one map.
 	BuildAndSpawnLayout();
 }
 
@@ -74,6 +86,13 @@ void ASarkoRaidGameState::BuildAndSpawnLayout()
 
 void ASarkoRaidGameState::SpawnPrebuiltLayout(const FSarkoMapLayout& InLayout, const FSarkoMapDefinition& InDefinition)
 {
+	// The server calls this from StartPlay, before ActivateRaid sets bSessionReady
+	// — it already has the layout and does not wait for a signal it sends itself.
+	// A client only ever arrives here through an OnRep, where the gate applies.
+	if (!HasAuthority() && !SarkoRaid::ShouldSpawnClientLayout(bLayoutBuilt, bSessionReady))
+	{
+		return;
+	}
 	if (bLayoutBuilt)
 	{
 		return;

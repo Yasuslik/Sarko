@@ -36,6 +36,48 @@ namespace SarkoExtract
 	float AdvanceDwell(float CurrentSeconds, bool bInsideZone, float DeltaSeconds);
 
 	/**
+	 * One pawn's extraction progress, and **which zone it belongs to**.
+	 *
+	 * The zone index is the fix for a real bug: AdvanceDwell takes only a boolean,
+	 * so a pawn crossing straight from one zone into another kept its accumulated
+	 * seconds and could extract from a zone it had stood in for a single frame.
+	 * Carrying the identity makes "five seconds in *this* zone" a rule instead of
+	 * an accident of the geometry not overlapping.
+	 *
+	 * A plain struct, not a USTRUCT: it lives in a TMap on the game mode (server
+	 * only, never replicated — a client must not learn that somebody is extracting)
+	 * and in these pure functions, and nothing reflects over it.
+	 */
+	struct FSarkoDwell
+	{
+		int32 ZoneIndex = INDEX_NONE;
+		float Seconds = 0.f;
+	};
+
+	/**
+	 * Advances the dwell for a pawn now standing in ZoneIndex (INDEX_NONE when
+	 * outside every zone). Pure.
+	 *
+	 * Three rules, all tested:
+	 *  - outside → forget everything. Leaving RESETS, it does not pause (spec
+	 *    §4.5); pausing would let a player stitch five seconds together out of
+	 *    safe fragments, and the dwell exists to make the last five seconds of a
+	 *    raid dangerous;
+	 *  - a different zone than last frame → this is an entry frame: the count
+	 *    restarts, keyed to the new zone. Applies at any delta, including zero;
+	 *  - the same zone → accumulate, with the same per-frame clamp AdvanceDwell
+	 *    applies, so a hitch cannot complete an extraction nobody stood through.
+	 *
+	 * ASarkoRaidGameMode::ActivateRaid clears its whole dwell map, which makes the
+	 * frame the raid goes live an entry frame for every pawn — so a pawn parked on
+	 * a pad since spawn owes the FULL dwell from activation. That is deliberate:
+	 * no dwell may accrue before there is a session to submit the result to, and
+	 * the alternative reading would hand an instant extraction to anyone who
+	 * spawned on a pad.
+	 */
+	FSarkoDwell AdvanceDwellInZone(const FSarkoDwell& Current, int32 ZoneIndex, float DeltaSeconds);
+
+	/**
 	 * Index of the zone the pawn is standing in, or INDEX_NONE.
 	 *
 	 * Planar: a zone is a circle painted on the ground and the pawn's origin is

@@ -407,6 +407,14 @@ void ASarkoRaidGameMode::ActivateRaid(int32 AuthoritativeSeed, float ClockSecond
 	Seed = AuthoritativeSeed;
 	RaidState->Seed = AuthoritativeSeed;
 	RaidState->StartRaidClock(ClockSeconds);
+
+	// Activation is the dwell's epoch. Cleared here rather than relied upon to be
+	// empty: the Tick's IsLootable() guard means nothing has accrued yet *today*,
+	// but that is a property of a guard somewhere else, and the rule "five seconds
+	// from entering this zone, and the raid going live counts as entering" should
+	// hold because this line exists. Pinned by Sarko.Extract.ActivationIsTheDwellEpoch.
+	Dwells.Reset();
+
 	// Last of the three: it is what unlocks looting and the dwell, so it must not
 	// be observable before the seed and the clock it belongs with.
 	RaidState->bSessionReady = true;
@@ -478,7 +486,7 @@ void ASarkoRaidGameMode::Tick(float DeltaSeconds)
 
 	// Prune pawns that are gone instead of letting the map grow for the whole
 	// raid. Cheap: it is one entry per living player, not per actor.
-	for (auto Entry = DwellSeconds.CreateIterator(); Entry; ++Entry)
+	for (auto Entry = Dwells.CreateIterator(); Entry; ++Entry)
 	{
 		if (!Entry.Key().IsValid())
 		{
@@ -497,17 +505,21 @@ void ASarkoRaidGameMode::Tick(float DeltaSeconds)
 		// The server's own copy of the pawn, never a client-supplied position —
 		// the same rule the loot channel follows.
 		const int32 ZoneIndex = SarkoExtract::FindZoneContaining(Pawn->GetActorLocation(), Zones);
-		float& Dwell = DwellSeconds.FindOrAdd(Pawn);
-		Dwell = SarkoExtract::AdvanceDwell(Dwell, ZoneIndex != INDEX_NONE, DeltaSeconds);
+		SarkoExtract::FSarkoDwell& Dwell = Dwells.FindOrAdd(Pawn);
+		Dwell = SarkoExtract::AdvanceDwellInZone(Dwell, ZoneIndex, DeltaSeconds);
 
 		// Replicated to the owner only, so that pawn's HUD can draw a countdown
 		// without anyone else learning that somebody is extracting.
-		Pawn->SetExtractProgress(ZoneIndex, Dwell);
+		Pawn->SetExtractProgress(Dwell.ZoneIndex, Dwell.Seconds);
 
-		if (Dwell >= RequiredDwell && Zones.IsValidIndex(ZoneIndex))
+		// Dwell.ZoneIndex rather than the local ZoneIndex: they agree, and reading
+		// the state that was actually counted is what stops the two drifting if
+		// AdvanceDwellInZone ever grows a rule that refuses a zone.
+		if (Dwell.Seconds >= RequiredDwell && Zones.IsValidIndex(Dwell.ZoneIndex))
 		{
-			UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: extracted at zone %d ('%s') with %d backpack slots used"),
-				ZoneIndex, *Zones[ZoneIndex].Name,
+			UE_LOG(LogTemp, Display,
+				TEXT("SarkoRaidGameMode: extracted at zone %d ('%s') after %.2fs of dwell, with %d backpack slots used"),
+				Dwell.ZoneIndex, *Zones[Dwell.ZoneIndex].Name, Dwell.Seconds,
 				Pawn->BackpackComponent ? Pawn->BackpackComponent->GetUsedSlots() : 0);
 			FinishRaid(ESarkoRaidOutcome::Extracted);
 			return;

@@ -3,6 +3,9 @@
 #include "CoreMinimal.h"
 #include "Core/SarkoRaidGameState.h"
 #include "GameFramework/GameModeBase.h"
+// Included, not forward-declared: SarkoExtract::FSarkoDwell is the value type of
+// the Dwells map below, so the complete type has to be visible here.
+#include "Loot/SarkoExtractionZone.h"
 #include "Map/SarkoMapDefinition.h"
 // Included, not forward-declared: FSarkoRaidSession is a USTRUCT held by value
 // below, so the full type has to be here.
@@ -186,9 +189,13 @@ private:
 	int32 NextPlayerStartIndex = 0;
 
 	/**
-	 * Server-side per-pawn dwell, in seconds. Keyed weakly so a destroyed pawn's
+	 * Server-side per-pawn extraction progress, keyed weakly so a destroyed pawn's
 	 * entry cannot keep it alive; stale entries are pruned when their key goes
 	 * stale rather than left to accumulate.
+	 *
+	 * The value carries the zone it belongs to, so progress cannot leak across a
+	 * zone boundary. Cleared wholesale in ActivateRaid, which makes the frame the
+	 * raid goes live an entry frame for every pawn.
 	 */
-	TMap<TWeakObjectPtr<class ASarkoCharacter>, float> DwellSeconds;
+	TMap<TWeakObjectPtr<class ASarkoCharacter>, SarkoExtract::FSarkoDwell> Dwells;
 };

@@ -75,6 +75,18 @@ namespace SarkoRaid
 	 * never submitted with.
 	 */
 	bool CanActivateRaid(bool bSessionReady, ESarkoRaidOutcome Outcome);
+
+	/**
+	 * Whether this machine should build and spawn its copy of the map now. Pure.
+	 *
+	 * Keyed on bSessionReady rather than on the seed. The seed used to be the
+	 * trigger, and that was a bug: replication sends no change when a property
+	 * equals its default, so an authoritative seed of exactly 0 never fired
+	 * OnRep_Seed and left a joining client in an empty world with nothing logging
+	 * it. bSessionReady is false until the raid is live and its flip always
+	 * replicates, and "the raid has begun" is what the trigger actually means.
+	 */
+	bool ShouldSpawnClientLayout(bool bLayoutBuilt, bool bSessionReady);
 }
 
 /**
@@ -89,10 +101,10 @@ namespace SarkoRaid
  * not need.
  *
  * Seed replicates for a different reason: it is the shared basis for
- * server-authoritative rolls (loot contents, in a later plan). Its arrival on
- * a client also happens to be the signal that the raid has begun, which is
- * what makes OnRep_Seed the moment a client spawns its geometry — but the seed
- * contributes nothing to what that geometry looks like.
+ * server-authoritative rolls (loot contents). It contributes nothing to what
+ * the geometry looks like, and it is not what tells a client to spawn it either
+ * — `bSessionReady` is (OnRep_SessionReady), because a seed of exactly 0 equals
+ * its own default and therefore replicates no change at all.
  */
 UCLASS()
 class ASarkoRaidGameState : public AGameStateBase
@@ -109,23 +121,22 @@ public:
 	float RemainingSeconds = 0.f;
 
 	/**
-	 * Shared basis for server-authoritative rolls (loot, in a later plan). Set
-	 * by the game mode on the server, which takes it from sarko-api's
-	 * raid/start response. It does not shape the map — geometry comes from the
-	 * map file — so changing it changes what is in the crates, not where they
-	 * are.
+	 * Shared basis for server-authoritative rolls. Set by the game mode on the
+	 * server, which takes it from sarko-api's raid/start response. It does not
+	 * shape the map — geometry comes from the map file — so changing it changes
+	 * what is in the crates, not where they are.
 	 *
-	 * Known gap, pre-existing and out of this slice (which is single-player
-	 * listen-server, so nothing joins): an authoritative seed that happens to be
-	 * 0 equals this default, so replication sends no change and OnRep_Seed never
-	 * fires — a joining client would never spawn its geometry. `bSessionReady` is
-	 * the safer future trigger: it is false until the raid is live and is what
-	 * actually means "the raid has begun".
+	 * It is no longer the layout trigger. It used to be, and a seed of exactly 0
+	 * equals this default, so replication sent no change and OnRep_Seed never
+	 * fired: a joining client would have spawned no geometry at all.
+	 * OnRep_SessionReady is the trigger now (SarkoRaid::ShouldSpawnClientLayout);
+	 * OnRep_Seed still calls the same idempotent builder, because the seed
+	 * arriving is also a perfectly good moment to have the map.
 	 */
 	UPROPERTY(ReplicatedUsing = OnRep_Seed, BlueprintReadOnly, Category = "Raid")
 	int32 Seed = 0;
 
-	/** Fires on clients the moment Seed replicates — the earliest point a client knows the raid has begun, and so where it spawns its copy of the map. */
+	/** Fires on clients when Seed replicates. No longer the layout trigger (see Seed), but still a fine moment to have the map: the builder is idempotent. */
 	UFUNCTION()
 	void OnRep_Seed();
 
@@ -133,9 +144,10 @@ public:
 	 * Loads this machine's map definition from disk and spawns its geometry
 	 * into this machine's world. Idempotent — a second call is a no-op — because the server must
 	 * call this explicitly right after setting Seed (a server never receives
-	 * its own OnRep notify), while clients reach it only through OnRep_Seed;
-	 * without the guard a repeat OnRep (e.g. after a seamless travel edge
-	 * case) would spawn a duplicate floor and cover set.
+	 * its own OnRep notify), while clients reach it through OnRep_SessionReady
+	 * *and* OnRep_Seed, either of which may land first; without the guard a
+	 * repeat OnRep (or simply both of them) would spawn a duplicate floor and
+	 * cover set.
 	 */
 	void BuildAndSpawnLayout();
 
@@ -147,6 +159,11 @@ public:
 	 * the result here once a world and this game state both exist). Guarded
 	 * by the same bLayoutBuilt flag as BuildAndSpawnLayout, which calls this
 	 * internally, so the two paths can never double-spawn between them.
+	 *
+	 * Off the authority it is additionally gated by
+	 * SarkoRaid::ShouldSpawnClientLayout, so a client builds only once the raid is
+	 * live. The server bypasses that gate: it reaches here from StartPlay, before
+	 * it has set the very flag the gate reads.
 	 */
 	void SpawnPrebuiltLayout(const FSarkoMapLayout& InLayout, const FSarkoMapDefinition& InDefinition);
 
@@ -179,8 +196,18 @@ public:
 	 * (ASarkoRaidGameMode::ActivateRaid starts it), so the round trip cannot cost
 	 * the player raid time and cannot expire a raid into MIA before it began.
 	 */
-	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Raid")
+	UPROPERTY(ReplicatedUsing = OnRep_SessionReady, BlueprintReadOnly, Category = "Raid")
 	bool bSessionReady = false;
+
+	/**
+	 * Fires on clients the moment the raid goes live — the honest "the raid has
+	 * begun" signal, and therefore where a client spawns its copy of the map.
+	 * Replaces OnRep_Seed as the trigger; OnRep_Seed still calls the same
+	 * idempotent builder, so whichever of the two properties a bunch delivers
+	 * first, the layout is built exactly once.
+	 */
+	UFUNCTION()
+	void OnRep_SessionReady();
 
 	/**
 	 * Whether the raid is live: the seed has landed and no outcome has been
