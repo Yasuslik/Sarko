@@ -2,7 +2,9 @@
 
 #include "Core/SarkoRaidSettings.h"
 #include "Map/SarkoMapBuilder.h"
+#include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
+#include "Misc/Paths.h"
 #include "UObject/SoftObjectPath.h"
 
 #if WITH_AUTOMATION_TESTS
@@ -282,6 +284,76 @@ bool FSarkoEngineMeshPathsResolve::RunTest(const FString& Parameters)
 		const FString Package = FSoftObjectPath(Path).GetLongPackageName();
 		TestTrue(FString::Printf(TEXT("'%s' exists"), *Path), FPackageName::DoesPackageExist(Package));
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoPackagingSettingsLiveInTheGameIni,
+	"Sarko.Config.PackagingSettingsLiveInTheGameIni",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * The three packaging lines are in DefaultGame.ini and NOT in DefaultEngine.ini.
+ *
+ * This is a test about which FILE a section is in, which is why it reads the files
+ * off disk instead of asking GConfig or the settings object: in the wrong file
+ * every line is silently inert, and a test that queries the merged config sees the
+ * same "nothing configured" whether the section is misplaced or simply absent.
+ *
+ * UProjectPackagingSettings is UCLASS(config=Game), so the cooker and UAT read it
+ * from the Game ini hierarchy and never look in the Engine one. The block lived in
+ * DefaultEngine.ini until 2026-08-03 and did nothing there — no error, no warning,
+ * and an editor that behaves perfectly, because the editor loads Data/ off the
+ * filesystem and hard-loads nothing from the cook lines. The cost was a device
+ * build with no bridge.json staged (an empty raid), an uncooked mannequin (an
+ * invisible character) and no ambient cubemap. All three appear only on hardware,
+ * and none of them says why.
+ *
+ * The negative half matters as much as the positive: putting the section back in
+ * DefaultEngine.ini "as well, to be safe" would look like belt and braces and be
+ * two copies of one setting, one of which is dead and would drift.
+ */
+bool FSarkoPackagingSettingsLiveInTheGameIni::RunTest(const FString& Parameters)
+{
+	const FString ConfigDir = FPaths::ProjectConfigDir();
+
+	FString GameIni;
+	const bool bReadGame = FFileHelper::LoadFileToString(GameIni, *(ConfigDir / TEXT("DefaultGame.ini")));
+	TestTrue(TEXT("DefaultGame.ini is readable"), bReadGame);
+
+	FString EngineIni;
+	const bool bReadEngine = FFileHelper::LoadFileToString(EngineIni, *(ConfigDir / TEXT("DefaultEngine.ini")));
+	TestTrue(TEXT("DefaultEngine.ini is readable"), bReadEngine);
+	if (!bReadGame || !bReadEngine)
+	{
+		return false;
+	}
+
+	// The section header, because a key in the right file under no section (or
+	// under the previous one) is just as dead as a key in the wrong file.
+	TestTrue(TEXT("DefaultGame.ini declares the packaging section"),
+		GameIni.Contains(TEXT("[/Script/UnrealEd.ProjectPackagingSettings]")));
+
+	// Data/ staged as non-UFS: bridge.json is read with FFileHelper at runtime, not
+	// cooked as a UAsset, so without this line the map file is simply absent from a
+	// packaged build and the raid comes up empty.
+	TestTrue(TEXT("Data is staged as non-UFS"),
+		GameIni.Contains(TEXT("DirectoriesToAlwaysStageAsNonUFS=(Path=\"Data\")")));
+	// Both LoadObject-by-literal-path assets: nothing hard-references them, so the
+	// cooker has no reason to include them and the editor cannot tell the
+	// difference.
+	TestTrue(TEXT("the mannequin directory is force-cooked"),
+		GameIni.Contains(TEXT("DirectoriesToAlwaysCook=(Path=\"/Game/Mannequins\")")));
+	TestTrue(TEXT("the ambient cubemap directory is force-cooked"),
+		GameIni.Contains(TEXT("DirectoriesToAlwaysCook=(Path=\"/Engine/MapTemplates/Sky\")")));
+
+	// And nothing packaging-related in the Engine ini, where it would be inert.
+	TestFalse(TEXT("DefaultEngine.ini does not claim the packaging section"),
+		EngineIni.Contains(TEXT("ProjectPackagingSettings")));
+	TestFalse(TEXT("DefaultEngine.ini does not stage directories"),
+		EngineIni.Contains(TEXT("DirectoriesToAlwaysStageAsNonUFS")));
+	TestFalse(TEXT("DefaultEngine.ini does not force-cook directories"),
+		EngineIni.Contains(TEXT("DirectoriesToAlwaysCook")));
 	return true;
 }
 

@@ -101,9 +101,10 @@ namespace
 	}
 
 	/**
-	 * Paints one primitive a flat colour.
+	 * The one material instance for a surface, made once and handed to every
+	 * component that wants it.
 	 *
-	 * This exists because of a rendering bug, not for art's sake.
+	 * This material exists because of a rendering bug, not for art's sake.
 	 * /Engine/BasicShapes/Cube ships with /Engine/EngineMaterials/WorldGridMaterial
 	 * in its material slot — the engine's grey checkerboard placeholder — and
 	 * nothing here was overriding it. That material is a texture, and the floor
@@ -124,10 +125,42 @@ namespace
 	 * The parameter is called "Color" in current engine versions and "BaseColor"
 	 * in older copies, so both are set — the same belt-and-braces the loot
 	 * container and the extraction pad already use against this material.
+	 *
+	 * The colour of a block is a pure function of its surface — eleven surfaces,
+	 * eleven looks — so a unique UMaterialInstanceDynamic per component per slot
+	 * was 344 distinct material proxies on the shipped map describing eleven
+	 * distinct appearances, and would be around 550 once Stage C's ledger is
+	 * authored. That is not a memory argument: a unique material is a unique
+	 * shader binding, which is exactly what stops the renderer batching identical
+	 * static meshes, and it is the thing an instanced-static-mesh migration would
+	 * have to undo first. Sharing costs nothing — nothing here ever animates a
+	 * parameter, and if anything ever needs to, it needs its OWN instance and
+	 * should say so rather than quietly relying on every block having one.
+	 *
+	 * Rooted rather than owned by a component. A MID created by
+	 * CreateAndSetMaterialInstanceDynamicFromMaterial is outered to the component
+	 * that made it, which is fine while that component is the only user and a
+	 * dangling pointer in this cache the moment the level is torn down and the
+	 * next raid asks for the same surface — and this game travels between the
+	 * shelter and a raid repeatedly. Eleven permanently-rooted objects is the
+	 * whole cost of never having to reason about that.
+	 *
+	 * Game thread only, like everything else in this file.
 	 */
-	void PaintFlat(UStaticMeshComponent& Component, const FLinearColor& Tint, float Roughness)
+	UMaterialInstanceDynamic* SharedFlatMaterial(ESarkoSurface Surface)
 	{
 		static const TCHAR* BasicShapeMaterialPath = TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial");
+		static TMap<uint8, UMaterialInstanceDynamic*> Cache;
+
+		const uint8 Key = static_cast<uint8>(Surface);
+		if (UMaterialInstanceDynamic** Existing = Cache.Find(Key))
+		{
+			if (IsValid(*Existing))
+			{
+				return *Existing;
+			}
+			Cache.Remove(Key);
+		}
 
 		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, BasicShapeMaterialPath);
 		if (!Base)
@@ -135,20 +168,39 @@ namespace
 			// Not fatal: the geometry is still there and still blocks bullets, it
 			// just keeps the engine's speckled placeholder material.
 			UE_LOG(LogTemp, Error, TEXT("SarkoMap: '%s' failed to load; geometry keeps the engine grid material"), BasicShapeMaterialPath);
-			return;
+			return nullptr;
 		}
 
+		UMaterialInstanceDynamic* Material = UMaterialInstanceDynamic::Create(Base, nullptr);
+		if (!Material)
+		{
+			UE_LOG(LogTemp, Error, TEXT("SarkoMap: could not create a material instance for surface '%s'"),
+				*SarkoMap::SurfaceName(Surface));
+			return nullptr;
+		}
+
+		const FLinearColor Tint = SarkoMap::Palette::ColourFor(Surface);
+		Material->SetVectorParameterValue(TEXT("Color"), Tint);
+		Material->SetVectorParameterValue(TEXT("BaseColor"), Tint);
+		Material->SetScalarParameterValue(TEXT("Roughness"), SarkoMap::Palette::RoughnessFor(Surface));
+		Material->AddToRoot();
+
+		Cache.Add(Key, Material);
+		return Material;
+	}
+
+	/** Assigns that shared instance to every slot the component has. */
+	void PaintFlat(UStaticMeshComponent& Component, ESarkoSurface Surface)
+	{
+		UMaterialInstanceDynamic* Material = SharedFlatMaterial(Surface);
+		if (!Material)
+		{
+			return;
+		}
 		const int32 SlotCount = FMath::Max(Component.GetNumMaterials(), 1);
 		for (int32 Slot = 0; Slot < SlotCount; ++Slot)
 		{
-			UMaterialInstanceDynamic* Material = Component.CreateAndSetMaterialInstanceDynamicFromMaterial(Slot, Base);
-			if (!Material)
-			{
-				continue;
-			}
-			Material->SetVectorParameterValue(TEXT("Color"), Tint);
-			Material->SetVectorParameterValue(TEXT("BaseColor"), Tint);
-			Material->SetScalarParameterValue(TEXT("Roughness"), Roughness);
+			Component.SetMaterial(Slot, Material);
 		}
 	}
 
@@ -167,7 +219,7 @@ namespace
 	 * to assign the mesh, scale and collision, then lock it back to Static.
 	 */
 	void SpawnMeshBox(UWorld& World, UStaticMesh* Mesh, const FVector& Location, const FRotator& Rotation, const FVector& Extent, bool bCollides,
-		const FLinearColor& Tint, float Roughness)
+		ESarkoSurface Surface)
 	{
 		FActorSpawnParameters Params;
 		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
@@ -190,7 +242,7 @@ namespace
 			// is: a Static component that has already begun play is the awkward
 			// case, and there is no reason to find out the hard way which of its
 			// setters tolerate it.
-			PaintFlat(*Component, Tint, Roughness);
+			PaintFlat(*Component, Surface);
 			Component->SetMobility(EComponentMobility::Static);
 		}
 	}
@@ -216,8 +268,7 @@ void SarkoMap::SpawnLayout(UWorld& World, const FSarkoMapLayout& Layout)
 
 	// Floor: one flattened cube covering the play area.
 	SpawnMeshBox(World, CubeMesh, FVector(0.f, 0.f, -25.f), FRotator::ZeroRotator,
-		FVector(Layout.Extent, Layout.Extent, 25.f), true,
-		Palette::ColourFor(ESarkoSurface::Ground), Palette::RoughnessFor(ESarkoSurface::Ground));
+		FVector(Layout.Extent, Layout.Extent, 25.f), true, ESarkoSurface::Ground);
 
 	// One loop, one spawn path, for cover *and* for the flat surfaces (roads,
 	// water, the ravine bed) that ТЗ §14 wants — the only difference between
@@ -228,7 +279,7 @@ void SarkoMap::SpawnLayout(UWorld& World, const FSarkoMapLayout& Layout)
 	for (const FSarkoCoverBlock& Block : Layout.Cover)
 	{
 		SpawnMeshBox(World, CubeMesh, Block.Location, Block.Rotation, Block.Extent, Block.bBlocksMovement,
-			Palette::ColourFor(Block.Surface), Palette::RoughnessFor(Block.Surface));
+			Block.Surface);
 	}
 }
 
@@ -270,7 +321,7 @@ void SarkoMap::SpawnProps(UWorld& World, const FSarkoMapDefinition& Definition)
 			// standing on it", and every legacy kind is Structure, which is the
 			// exact grey props were painted before surfaces existed.
 			SpawnMeshBox(World, Mesh, PartLocation, Rotation, Part.Extent, Part.bBlocksMovement,
-				Palette::ColourFor(Part.Surface), Palette::RoughnessFor(Part.Surface));
+				Part.Surface);
 		}
 	}
 

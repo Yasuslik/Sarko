@@ -61,7 +61,17 @@ struct FSarkoBuildingInteriorWall
 	UPROPERTY()
 	FVector2D To = FVector2D::ZeroVector;
 
-	/** False makes this a solid divider — a store room with no way in. */
+	/**
+	 * False makes this a solid divider.
+	 *
+	 * Legal, but not a licence to seal a room: the expander flood-fills the
+	 * interior from the perimeter doorways and rejects any enclosed pocket
+	 * bigger than SarkoMap::MinSealedRoomUU square. A solid divider is therefore
+	 * fine when it only partly crosses the room, or when each side of it has its
+	 * own perimeter doorway — and rejected when it walls off a closet nothing can
+	 * walk into. There is no store-room case: a room Stage C can author a
+	 * container into is a room the player must be able to reach.
+	 */
 	UPROPERTY()
 	bool bHasDoor = false;
 
@@ -140,6 +150,30 @@ namespace SarkoMap
 	/** ТЗ §13's floor for the clear space between two parallel interior walls. */
 	constexpr float MinInteriorPassageUU = 250.f;
 
+	/**
+	 * The shortest piece of wall the expander will emit: the stub left at the end
+	 * of a wall, and the pier left between two doorways on one wall.
+	 *
+	 * Not the wall thickness, which is what it used to be, and which let a 30 uu
+	 * fleck through — a 30x30x350 splinter beside a 176 uu pawn does not read as
+	 * masonry, it reads as a rendering artefact, and two doorways one thickness
+	 * apart produce a free-standing 30x30 post with a gap either side (which
+	 * Sarko.Map.ClosedBuildingIsSealed already declares is not a wall). 120 uu is
+	 * two thirds of the pawn's own width and reads as a deliberate pier; the max
+	 * with Thickness keeps the rule meaningful for a wall thicker than that.
+	 */
+	constexpr float MinWallStubUU = 120.f;
+
+	/**
+	 * The largest enclosed pocket of interior the reachability check tolerates.
+	 *
+	 * A pocket smaller than this square is a sliver between two walls — geometry,
+	 * not a room. Anything bigger is somewhere Stage C could author a container
+	 * into and nobody could ever walk to, which is loot that does not exist and
+	 * nothing failing.
+	 */
+	constexpr float MinSealedRoomUU = 150.f;
+
 	/** Absolute floor for a wall: it must break the line of sight of a ~176 uu pawn. */
 	constexpr float MinWallHeightUU = 200.f;
 
@@ -166,6 +200,22 @@ namespace SarkoMap
 	 * and the question being asked is always "can the pawn be here".
 	 */
 	bool IsPointInsideBlocksXY(const FVector2D& Point, const TArray<FSarkoCoverBlock>& Blocks);
+
+	/**
+	 * Whether two blocks' footprints intersect, honouring both yaws.
+	 *
+	 * Lives here rather than in a test file because "no wall overlaps another
+	 * wall" is an invariant of the expander, and an invariant checked by a
+	 * predicate the expander does not share is an invariant that can drift — the
+	 * axis-aligned version this replaces could not see a rotated building at all,
+	 * so the 45-degree case was unassertable.
+	 *
+	 * A separating-axis test over the four face normals, exact for two rectangles.
+	 * Slack is how deep an intersection has to be to count: two walls that butt
+	 * face to face are separated at any positive slack, which is the whole point
+	 * of the shortening the expander does.
+	 */
+	bool BlocksOverlapXY(const FSarkoCoverBlock& A, const FSarkoCoverBlock& B, float Slack = 0.01f);
 
 	/** "N"/"north", "E"/"east", "S"/"south", "W"/"west", case-insensitive. */
 	bool ParseBuildingSide(const FString& Name, ESarkoBuildingSide& Out);

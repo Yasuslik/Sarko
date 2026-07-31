@@ -331,9 +331,12 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 		return false;
 	}
 
-	if (!Root->TryGetStringField(TEXT("id"), OutDefinition.Id) || OutDefinition.Id.IsEmpty())
+	// Not TryGetStringField: FJsonValueNumber and FJsonValueBoolean both override
+	// TryGetString and stringify, so `"id": 7` became the map id "7" — a map that
+	// loads, runs, and cannot be found by grepping the file for its own name.
+	if (!ReadOptionalString(Root, TEXT("id"), OutDefinition.Id, OutError) || OutDefinition.Id.IsEmpty())
 	{
-		OutError = TEXT("'id' is missing or empty");
+		OutError = TEXT("'id' is missing, empty or not a string");
 		return false;
 	}
 
@@ -582,11 +585,15 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 				return false;
 			}
 			// An empty/missing kind means no mesh is chosen downstream, which is
-			// the same silent no-op that already cost a session once.
+			// the same silent no-op that already cost a session once — and this is
+			// the worst of the three stringifying reads, not merely the untidiest:
+			// `"kind": 7` used to become FName("7"), FindPropKind found no such
+			// kind, and SpawnProps skipped the prop. A prop that never appears, from
+			// a file that parses, with nothing pointing at the typo.
 			FString Kind;
-			if (!(*Object)->TryGetStringField(TEXT("kind"), Kind) || Kind.IsEmpty())
+			if (!ReadOptionalString(*Object, TEXT("kind"), Kind, OutError) || Kind.IsEmpty())
 			{
-				OutError = FString::Printf(TEXT("props[%d]: 'kind' is missing or empty"), Index);
+				OutError = FString::Printf(TEXT("props[%d]: 'kind' is missing, empty or not a string"), Index);
 				return false;
 			}
 			Prop.Kind = FName(*Kind);
@@ -677,10 +684,15 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 							Index, ItemIndex);
 						return false;
 					}
+					// Type-checked here rather than left to the catalog lookup below:
+					// `"item": 7` used to reach it as the id "7", which is not in
+					// items.json, so the file was rejected with "'7' is not in
+					// Data/Items/items.json" — a true statement that sends the
+					// reader looking for a missing item instead of a stray quote.
 					FString ItemId;
-					if (!(*ItemObject)->TryGetStringField(TEXT("item"), ItemId) || ItemId.IsEmpty())
+					if (!ReadOptionalString(*ItemObject, TEXT("item"), ItemId, OutError) || ItemId.IsEmpty())
 					{
-						OutError = FString::Printf(TEXT("containers[%d].fixedItems[%d]: 'item' is missing or empty"),
+						OutError = FString::Printf(TEXT("containers[%d].fixedItems[%d]: 'item' is missing, empty or not a string"),
 							Index, ItemIndex);
 						return false;
 					}

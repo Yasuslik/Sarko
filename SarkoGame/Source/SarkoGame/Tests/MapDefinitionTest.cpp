@@ -162,6 +162,26 @@ bool FSarkoMapDefinitionRejectsBadInput::RunTest(const FString& Parameters)
 			TEXT(R"({"id":"x","extentUU":"20000","raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}]})") },
 		{ TEXT("raidDurationSeconds is a quoted numeral"),
 			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":"900","playerSpawns":[{"pos":[0,0,0],"yaw":0}]})") },
+		// The last three reads that still went through TryGetStringField, i.e. that
+		// still stringified a number. Ranked by consequence rather than by tidiness:
+		//
+		// A prop's 'kind' is the dangerous one. FName("7") is not a kind FindPropKind
+		// knows, so SpawnProps logs and skips — the prop silently never spawns, from
+		// a file that parses and a map that loads. Stage C authors hundreds of props;
+		// one of them missing is not something anyone would notice.
+		{ TEXT("prop kind is a number"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"props":[{"pos":[100,100,0],"kind":7}]})") },
+		// The root 'id' becomes the map id "7": everything works and the map cannot
+		// be found by searching the file for its own name.
+		{ TEXT("root id is a number"),
+			TEXT(R"({"id":7,"extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}]})") },
+		// A fixed item's 'item' was caught downstream by the catalog lookup, but
+		// reported as "'7' is not in Data/Items/items.json" — true, and it sends the
+		// reader hunting for a missing item instead of a stray pair of quotes.
+		{ TEXT("fixedItems item is a number"),
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,"playerSpawns":[{"pos":[0,0,0],"yaw":0}],
+				"containers":[{"pos":[250,0,0],"fixedItems":[{"item":7,"qty":1}]}]})") },
 	};
 
 	for (const TPair<FString, FString>& Case : BadCases)

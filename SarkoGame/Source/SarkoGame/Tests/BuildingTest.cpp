@@ -62,6 +62,33 @@ namespace
 		const FVector Rotated = FRotator(0.f, Building.Yaw, 0.f).RotateVector(FVector(Local.X, Local.Y, 0.f));
 		return FVector2D(Building.Location.X + Rotated.X, Building.Location.Y + Rotated.Y);
 	}
+
+	/**
+	 * No wall overlaps another wall, over every pair.
+	 *
+	 * A free function rather than three copies of a nested loop, because that is
+	 * exactly how this invariant came to be asserted for the doorless unrotated
+	 * shed and for nothing else — while the shipped map's АЗС quietly intersected
+	 * its own divider over 15x30 uu. Overlapping walls are not a rendering
+	 * nuisance: they make "how much wall did we emit" and "how much wall is there"
+	 * different numbers, which is where a missing segment hides.
+	 *
+	 * Uses SarkoMap::BlocksOverlapXY — the expander's own predicate, which honours
+	 * yaw — so the same check runs at 0 and at 45 degrees. The axis-aligned
+	 * comparison this replaces could not see a rotated building at all.
+	 */
+	void TestNoWallOverlaps(FAutomationTestBase& Test, const TArray<FSarkoCoverBlock>& Blocks, const TCHAR* What)
+	{
+		for (int32 A = 0; A < Blocks.Num(); ++A)
+		{
+			for (int32 B = A + 1; B < Blocks.Num(); ++B)
+			{
+				Test.TestFalse(
+					FString::Printf(TEXT("%s: '%s' and '%s' do not overlap"), What, *Blocks[A].Id, *Blocks[B].Id),
+					SarkoMap::BlocksOverlapXY(Blocks[A], Blocks[B]));
+			}
+		}
+	}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -74,6 +101,37 @@ bool FSarkoClosedBuildingIsSealed::RunTest(const FString& Parameters)
 	// A building with no doors is the degenerate case the ТЗ's ledger needs four
 	// times (N01, S06, S17, S18 are закрыты) and it must be genuinely sealed:
 	// four walls, meeting at the corners, with nothing inside and no lid.
+	// First, the predicate the no-overlap assertions rest on, in the direction that
+	// cannot be verified by any of them: a pair that DOES overlap. Every other use
+	// of BlocksOverlapXY in this file and in BridgeMapTest asserts a false, so a
+	// predicate that always returned false would make all of them pass — including
+	// on the shipped map, whose АЗС was the reason the check was written.
+	{
+		FSarkoCoverBlock First;
+		First.Location = FVector(0.f, 0.f, 175.f);
+		First.Extent = FVector(200.f, 15.f, 175.f);
+		FSarkoCoverBlock Second = First;
+		// End to end, 5 uu into each other: the exact shape of the АЗС's defect,
+		// which was a 15 uu intrusion.
+		Second.Location = FVector(395.f, 0.f, 175.f);
+		TestTrue(TEXT("two walls overlapping by 5 uu are reported as overlapping"),
+			SarkoMap::BlocksOverlapXY(First, Second));
+		Second.Location = FVector(415.f, 0.f, 175.f);
+		TestFalse(TEXT("two walls 15 uu apart are not"), SarkoMap::BlocksOverlapXY(First, Second));
+		Second.Location = FVector(400.f, 0.f, 175.f);
+		TestFalse(TEXT("two walls that butt face to face are not"), SarkoMap::BlocksOverlapXY(First, Second));
+		// And a thin box turned across another, which is what an axis-aligned
+		// comparison cannot answer: it crosses, and it shares no world-axis interval
+		// wider than the boxes' own extents.
+		Second.Rotation = FRotator(0.f, 90.f, 0.f);
+		Second.Location = FVector(100.f, 0.f, 175.f);
+		TestTrue(TEXT("a wall crossing another at 90 degrees is reported as overlapping"),
+			SarkoMap::BlocksOverlapXY(First, Second));
+		Second.Location = FVector(100.f, 300.f, 175.f);
+		TestFalse(TEXT("the same turned wall moved clear of it is not"),
+			SarkoMap::BlocksOverlapXY(First, Second));
+	}
+
 	const FSarkoBuilding Shed = MakeShed();
 	TArray<FSarkoCoverBlock> Blocks;
 	FString Error;
@@ -123,21 +181,7 @@ bool FSarkoClosedBuildingIsSealed::RunTest(const FString& Parameters)
 	TestEqual(TEXT("the west wall has no gaps"),
 		CountInside(Blocks, FVector2D(-WallX, -HalfY + T + 1.f), FVector2D(-WallX, HalfY - T - 1.f), 200), 201);
 
-	// No wall overlaps another. Overlapping geometry is not a rendering problem
-	// here, it is a review problem: it makes "how much wall did we emit" and
-	// "how much wall is there" different numbers, which is how a missing segment
-	// hides.
-	for (int32 A = 0; A < Blocks.Num(); ++A)
-	{
-		for (int32 B = A + 1; B < Blocks.Num(); ++B)
-		{
-			const bool bOverlapX = FMath::Abs(Blocks[A].Location.X - Blocks[B].Location.X)
-				< Blocks[A].Extent.X + Blocks[B].Extent.X - 0.01f;
-			const bool bOverlapY = FMath::Abs(Blocks[A].Location.Y - Blocks[B].Location.Y)
-				< Blocks[A].Extent.Y + Blocks[B].Extent.Y - 0.01f;
-			TestFalse(FString::Printf(TEXT("walls %d and %d do not overlap"), A, B), bOverlapX && bOverlapY);
-		}
-	}
+	TestNoWallOverlaps(*this, Blocks, TEXT("closed shed"));
 	return true;
 }
 
@@ -264,14 +308,56 @@ bool FSarkoInteriorWallsDivideAndPass::RunTest(const FString& Parameters)
 	TestTrue(TEXT("the interior doorway is at least the minimum passage"),
 		Station.InteriorWalls[0].Door.WidthUU >= SarkoMap::MinInteriorPassageUU);
 
-	// A wall with no door is one unbroken segment — the closet/store-room case.
+	// The invariant that used to be asserted for the doorless unrotated shed only,
+	// which is how the shipped АЗС's own two interior walls came to intersect.
+	TestNoWallOverlaps(*this, Blocks, TEXT("divided station"));
+
+	// A second interior wall butting into the first, which is the АЗС's real shape:
+	// зал | подсобка across the depth, then служебная off the подсобка. Its east end
+	// is authored ON the divider's centre line, because that is how a person draws
+	// "it meets that wall" — and the expander trims it to the divider's near face
+	// so the two butt instead of overlapping.
+	FSarkoBuilding Tee = Station;
+	// The divider's own doorway is moved south of where the служебная wall lands,
+	// exactly as bridge.json's АЗС does it: a wall that ends inside another wall's
+	// doorway ends in mid-air, and no rule here is about that.
+	Tee.InteriorWalls[0].Door.OffsetUU = -400.f;
+	FSarkoBuildingInteriorWall Service;
+	Service.From = FVector2D(-300.f, 200.f);
+	Service.To = FVector2D(-1070.f, 200.f);
+	Service.bHasDoor = true;
+	Service.Door = MakeDoor(ESarkoBuildingSide::North /* ignored */, 0.f, 300.f);
+	Tee.InteriorWalls.Add(Service);
+
+	TArray<FSarkoCoverBlock> TeeBlocks;
+	TestTrue(FString::Printf(TEXT("a tee of two interior walls expands: %s"), *Error),
+		SarkoMap::ExpandBuilding(Tee, TeeBlocks, Error));
+	TestNoWallOverlaps(*this, TeeBlocks, TEXT("teed station"));
+	// The trim is half a thickness and no more: the wall stops at x = -315, the
+	// divider occupies -315..-285, so there is no overlap AND no hairline gap
+	// between them. A test for "they do not overlap" alone would pass a wall that
+	// had been trimmed a metre short.
+	TestTrue(TEXT("the trimmed wall still meets the divider it butts into"),
+		SarkoMap::IsPointInsideBlocksXY(FVector2D(-320.f, 200.f), TeeBlocks));
+	TestTrue(TEXT("and its own far end still meets the perimeter"),
+		SarkoMap::IsPointInsideBlocksXY(FVector2D(-1065.f, 200.f), TeeBlocks));
+
+	// A wall with no door: legal only when both sides of it can still be reached,
+	// so the west room gets its own perimeter doorway. Without one this is the
+	// sealed-room case Sarko.Map.BuildingRejectsUnreachableRooms rejects — which is
+	// the whole point: "solid divider" is a shape, not a licence to wall off a
+	// store room nobody can enter.
 	FSarkoBuilding Solid = Station;
 	Solid.InteriorWalls[0].bHasDoor = false;
+	Solid.Doors.Add(MakeDoor(ESarkoBuildingSide::West, 0.f, 300.f));
 	TArray<FSarkoCoverBlock> SolidBlocks;
-	TestTrue(TEXT("a doorless divider expands"), SarkoMap::ExpandBuilding(Solid, SolidBlocks, Error));
-	TestEqual(TEXT("a doorless divider is one segment"), SolidBlocks.Num(), 7);
+	TestTrue(FString::Printf(TEXT("a doorless divider with a door into each room expands: %s"), *Error),
+		SarkoMap::ExpandBuilding(Solid, SolidBlocks, Error));
+	// 4 perimeter walls, split by three doorways, plus one unbroken divider.
+	TestEqual(TEXT("a doorless divider is one segment"), SolidBlocks.Num(), 8);
 	TestTrue(TEXT("a doorless divider is solid where the door used to be"),
 		SarkoMap::IsPointInsideBlocksXY(FVector2D(-300.f, 200.f), SolidBlocks));
+	TestNoWallOverlaps(*this, SolidBlocks, TEXT("station with a solid divider"));
 	return true;
 }
 
@@ -340,6 +426,74 @@ bool FSarkoBuildingExpansionRejectsBadGeometry::RunTest(const FString& Parameter
 		B.Doors.Add(MakeDoor(ESarkoBuildingSide::North, -200.f, 300.f));
 		B.Doors.Add(MakeDoor(ESarkoBuildingSide::North, 120.f, 300.f));
 		BadCases.Add({ TEXT("two doorways leave only a sliver of wall between them"), B });
+	}
+	{
+		FSarkoBuilding B = MakeShed();
+		// The case the old rule accepted, and the reason the rule is no longer "one
+		// wall thickness": offsets -200 and +130 leave a pier of EXACTLY 30 uu, so
+		// the expander emitted a 30x30x350 pillar with a doorway on either side of
+		// it — free-standing geometry that ClosedBuildingIsSealed already declares
+		// is not a wall, from data that passed every check.
+		B.Doors.Add(MakeDoor(ESarkoBuildingSide::North, -200.f, 300.f));
+		B.Doors.Add(MakeDoor(ESarkoBuildingSide::North, 130.f, 300.f));
+		BadCases.Add({ TEXT("two doorways leave a pier of exactly one wall thickness"), B });
+	}
+	{
+		FSarkoBuilding B = MakeShed();
+		// And the same defect at the END of a wall: a door running to -970 on a wall
+		// that ends at -1000 left a 30x30 corner post. Exactly one thickness, so the
+		// old rule said yes.
+		B.Doors.Add(MakeDoor(ESarkoBuildingSide::North, -800.f, 340.f));
+		B.Doors.Add(MakeDoor(ESarkoBuildingSide::South, 0.f, 300.f));
+		BadCases.Add({ TEXT("a doorway leaves a corner post of exactly one wall thickness"), B });
+	}
+	{
+		FSarkoBuilding B = MakeShed();
+		B.Doors.Add(MakeDoor(ESarkoBuildingSide::East, 0.f, 300.f));
+		B.Doors.Add(MakeDoor(ESarkoBuildingSide::West, 0.f, 300.f));
+		// Two solid walls meeting near a corner. Each one passes every rule there
+		// is — inside the footprint, long enough, 555 uu clear of the perimeter and
+		// of each other — and together they seal a ~285x385 closet that no doorway
+		// reaches. This is the case that argues for a flood fill instead of a third
+		// narrow rule: nothing local is wrong here, only the shape.
+		FSarkoBuildingInteriorWall AlongY;
+		AlongY.From = FVector2D(670.f, 320.f);
+		AlongY.To = FVector2D(670.f, 720.f);
+		FSarkoBuildingInteriorWall AlongX;
+		AlongX.From = FVector2D(670.f, 320.f);
+		AlongX.To = FVector2D(970.f, 320.f);
+		B.InteriorWalls.Add(AlongY);
+		B.InteriorWalls.Add(AlongX);
+		BadCases.Add({ TEXT("two corner walls seal an unreachable closet"), B });
+	}
+	{
+		FSarkoBuilding B = MakeShed();
+		B.Doors.Add(MakeDoor(ESarkoBuildingSide::East, 0.f, 300.f));
+		B.Doors.Add(MakeDoor(ESarkoBuildingSide::South, 0.f, 300.f));
+		// A doorless divider across the whole depth, with both perimeter doorways on
+		// the same side of it: the west half of the building is a sealed box. The
+		// expander used to emit this happily, and Stage C authoring a container into
+		// that half would produce loot nobody can ever reach.
+		FSarkoBuildingInteriorWall Sealed;
+		Sealed.From = FVector2D(-300.f, -720.f);
+		Sealed.To = FVector2D(-300.f, 720.f);
+		B.InteriorWalls.Add(Sealed);
+		BadCases.Add({ TEXT("a doorless divider seals half the building"), B });
+	}
+	{
+		FSarkoBuilding B = MakeShed();
+		B.Doors.Add(MakeDoor(ESarkoBuildingSide::North, 0.f, 300.f));
+		B.Doors.Add(MakeDoor(ESarkoBuildingSide::South, 0.f, 300.f));
+		// An interior wall that runs straight through a perimeter doorway. The
+		// doorway is a real gap, the wall is a legal wall, and walking in puts the
+		// player nose-first into it. No per-wall rule can see this either.
+		FSarkoBuildingInteriorWall AcrossTheDoor;
+		AcrossTheDoor.From = FVector2D(0.f, -720.f);
+		AcrossTheDoor.To = FVector2D(0.f, 720.f);
+		AcrossTheDoor.bHasDoor = true;
+		AcrossTheDoor.Door = MakeDoor(ESarkoBuildingSide::North, 0.f, 300.f);
+		B.InteriorWalls.Add(AcrossTheDoor);
+		BadCases.Add({ TEXT("an interior wall stands in a perimeter doorway"), B });
 	}
 	{
 		FSarkoBuilding B = MakeShed();
@@ -413,6 +567,36 @@ bool FSarkoBuildingExpansionRejectsBadGeometry::RunTest(const FString& Parameter
 		// A rejected building leaves nothing behind: a caller that ignores the
 		// return value must not find half a shed in its array.
 		TestEqual(FString::Printf(TEXT("nothing survives a rejection: %s"), *Case.Key), Blocks.Num(), 0);
+	}
+
+	// The two exactly-one-thickness rows above are the ones the old rule accepted,
+	// so it matters that the STUB rule is what refuses them and not some other
+	// check that happens to trip over the same offsets. Named explicitly, because a
+	// row in the table above passes on any rejection at all.
+	{
+		FSarkoBuilding Pier = MakeShed();
+		Pier.Doors.Add(MakeDoor(ESarkoBuildingSide::North, -200.f, 300.f));
+		Pier.Doors.Add(MakeDoor(ESarkoBuildingSide::North, 130.f, 300.f));
+		TArray<FSarkoCoverBlock> Blocks;
+		FString Error;
+		TestFalse(TEXT("a 30 uu pier is refused"), SarkoMap::ExpandBuilding(Pier, Blocks, Error));
+		TestTrue(FString::Printf(TEXT("and refused for being a floating post: %s"), *Error),
+			Error.Contains(TEXT("floating post")));
+
+		FSarkoBuilding Post = MakeShed();
+		Post.Doors.Add(MakeDoor(ESarkoBuildingSide::North, -800.f, 340.f));
+		Post.Doors.Add(MakeDoor(ESarkoBuildingSide::South, 0.f, 300.f));
+		TestFalse(TEXT("a 30 uu corner post is refused"), SarkoMap::ExpandBuilding(Post, Blocks, Error));
+		TestTrue(FString::Printf(TEXT("and refused for being a splinter: %s"), *Error),
+			Error.Contains(TEXT("splinter")));
+
+		// 120 uu is the line, so a pier just over it is still legal — the rule is a
+		// minimum and not a ban on narrow piers.
+		FSarkoBuilding NarrowButLegal = MakeShed();
+		NarrowButLegal.Doors.Add(MakeDoor(ESarkoBuildingSide::North, -285.f, 300.f));
+		NarrowButLegal.Doors.Add(MakeDoor(ESarkoBuildingSide::North, 285.f, 300.f));
+		TestTrue(FString::Printf(TEXT("a 270 uu pier is legal: %s"), *Error),
+			SarkoMap::ExpandBuilding(NarrowButLegal, Blocks, Error));
 	}
 
 	// And the shapes that must be accepted, so the rules above cannot be
@@ -520,6 +704,131 @@ bool FSarkoBuildingYawRotatesTheWholeShell::RunTest(const FString& Parameters)
 		CountInside(DiagonalBlocks,
 			LocalToWorld(Diagonal, FVector2D(-DiagWallX, -DiagHalfY + DiagT + 1.f)),
 			LocalToWorld(Diagonal, FVector2D(-DiagWallX, DiagHalfY - DiagT - 1.f)), 200), 201);
+
+	// And no wall overlaps another at 45 degrees either. This is the assertion that
+	// could not previously exist: the axis-aligned comparison it replaces compares
+	// world-axis extents, and every wall of a 45-degree building overlaps every
+	// other one on both world axes, so the old check reported the whole shell as
+	// broken. SarkoMap::BlocksOverlapXY honours the yaw, so the invariant is now
+	// the same invariant at every angle.
+	TestNoWallOverlaps(*this, DiagonalBlocks, TEXT("45 degree shed"));
+	TestNoWallOverlaps(*this, TurnedBlocks, TEXT("90 degree shed with doors"));
+
+	// A yawed building with interior walls, because the trimming is done in the
+	// local frame and this is what proves the rotation does not undo it.
+	FSarkoBuilding TurnedRooms = MakeShed();
+	TurnedRooms.Id = TEXT("test_shed_turned_rooms");
+	TurnedRooms.SizeUU = FVector2D(2200.f, 1500.f);
+	TurnedRooms.Yaw = 30.f;
+	TurnedRooms.Doors.Add(MakeDoor(ESarkoBuildingSide::East, 0.f, 320.f));
+	TurnedRooms.Doors.Add(MakeDoor(ESarkoBuildingSide::South, 600.f, 300.f));
+	FSarkoBuildingInteriorWall TurnedDivider;
+	TurnedDivider.From = FVector2D(-300.f, -720.f);
+	TurnedDivider.To = FVector2D(-300.f, 720.f);
+	TurnedDivider.bHasDoor = true;
+	TurnedDivider.Door = MakeDoor(ESarkoBuildingSide::North, -400.f, 320.f);
+	FSarkoBuildingInteriorWall TurnedService;
+	TurnedService.From = FVector2D(-300.f, 200.f);
+	TurnedService.To = FVector2D(-1070.f, 200.f);
+	TurnedService.bHasDoor = true;
+	TurnedService.Door = MakeDoor(ESarkoBuildingSide::North, 0.f, 300.f);
+	TurnedRooms.InteriorWalls.Add(TurnedDivider);
+	TurnedRooms.InteriorWalls.Add(TurnedService);
+
+	TArray<FSarkoCoverBlock> TurnedRoomBlocks;
+	TestTrue(FString::Printf(TEXT("a yawed building with two interior walls expands: %s"), *Error),
+		SarkoMap::ExpandBuilding(TurnedRooms, TurnedRoomBlocks, Error));
+	TestNoWallOverlaps(*this, TurnedRoomBlocks, TEXT("30 degree three-room building"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBuildingRejectsUnreachableRooms,
+	"Sarko.Map.BuildingRejectsUnreachableRooms",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBuildingRejectsUnreachableRooms::RunTest(const FString& Parameters)
+{
+	// The sealed-closet case, authored exactly: two solid walls near the north-east
+	// corner, one along Y at x = InnerX-300 spanning y = InnerY-400..InnerY, one
+	// along X at y = InnerY-400 spanning x = InnerX-300..InnerX. Every existing
+	// rule says yes to both — they are inside the footprint, longer than they are
+	// thick, and 285 and 385 uu clear of the perimeter, well past the 250 uu
+	// passage minimum. Together they box off a ~285x385 uu room that neither
+	// doorway reaches, which is where Stage C would put a container and where the
+	// player would never find one.
+	//
+	// The rejection has its own test, rather than only a row in the bad-case table,
+	// because what matters is WHICH rule fires: a table row passes if the building
+	// is refused for any reason at all, and a fill that never runs would still let
+	// the table go green the day someone tightens an unrelated clearance.
+	const float T = 30.f;
+	FSarkoBuilding Building = MakeShed();
+	Building.Id = TEXT("test_sealed_closet");
+	Building.WallThicknessUU = T;
+	Building.Doors.Add(MakeDoor(ESarkoBuildingSide::East, 0.f, 300.f));
+	Building.Doors.Add(MakeDoor(ESarkoBuildingSide::West, 0.f, 300.f));
+
+	const float InnerX = Building.SizeUU.X * 0.5f - T;
+	const float InnerY = Building.SizeUU.Y * 0.5f - T;
+
+	FSarkoBuildingInteriorWall AlongY;
+	AlongY.From = FVector2D(InnerX - 300.f, InnerY - 400.f);
+	AlongY.To = FVector2D(InnerX - 300.f, InnerY);
+	FSarkoBuildingInteriorWall AlongX;
+	AlongX.From = FVector2D(InnerX - 300.f, InnerY - 400.f);
+	AlongX.To = FVector2D(InnerX, InnerY - 400.f);
+	Building.InteriorWalls.Add(AlongY);
+	Building.InteriorWalls.Add(AlongX);
+
+	TArray<FSarkoCoverBlock> Blocks;
+	FString Error;
+	TestFalse(TEXT("a building with a sealed closet is refused"),
+		SarkoMap::ExpandBuilding(Building, Blocks, Error));
+	TestEqual(TEXT("nothing survives the rejection"), Blocks.Num(), 0);
+	// The reachability check is the one that must fire, not a clearance rule that
+	// happens to trip over the same numbers.
+	TestTrue(FString::Printf(TEXT("the error names the sealed region: %s"), *Error),
+		Error.Contains(TEXT("seal")) && Error.Contains(TEXT("no doorway reaches")));
+
+	// The same corner, one doorway cut into it, must be LEGAL — otherwise the check
+	// above would be satisfied by a rule that refuses every building with two
+	// interior walls, and Stage C could not author a back room at all. The closet is
+	// 600 uu here rather than the 285x385 above for an ordinary reason: a wall needs
+	// room for a 250 uu opening plus a stub at each end, so a 285 uu wall cannot
+	// hold a door and the smaller shape can only ever be sealed.
+	FSarkoBuilding Opened = MakeShed();
+	Opened.Id = TEXT("test_back_room");
+	Opened.Doors.Add(MakeDoor(ESarkoBuildingSide::East, 0.f, 300.f));
+	Opened.Doors.Add(MakeDoor(ESarkoBuildingSide::West, 0.f, 300.f));
+	FSarkoBuildingInteriorWall OpenSide;
+	OpenSide.From = FVector2D(InnerX - 600.f, InnerY - 600.f);
+	OpenSide.To = FVector2D(InnerX - 600.f, InnerY);
+	OpenSide.bHasDoor = true;
+	OpenSide.Door = MakeDoor(ESarkoBuildingSide::North /* ignored */, 0.f, 300.f);
+	FSarkoBuildingInteriorWall ClosedSide;
+	ClosedSide.From = FVector2D(InnerX - 600.f, InnerY - 600.f);
+	ClosedSide.To = FVector2D(InnerX, InnerY - 600.f);
+	Opened.InteriorWalls.Add(OpenSide);
+	Opened.InteriorWalls.Add(ClosedSide);
+
+	TArray<FSarkoCoverBlock> OpenedBlocks;
+	TestTrue(FString::Printf(TEXT("the same corner with a doorway into it is legal: %s"), *Error),
+		SarkoMap::ExpandBuilding(Opened, OpenedBlocks, Error));
+	TestNoWallOverlaps(*this, OpenedBlocks, TEXT("back room with a doorway"));
+	// And the back room really is a room: solid where the walls are, open where the
+	// doorway is. A fill that accepted this because the walls vanished would pass
+	// the assertion above.
+	TestTrue(TEXT("the back room's dividing wall is solid away from its doorway"),
+		SarkoMap::IsPointInsideBlocksXY(FVector2D(InnerX - 600.f, InnerY - 50.f), OpenedBlocks));
+	TestFalse(TEXT("the back room's doorway is open"),
+		SarkoMap::IsPointInsideBlocksXY(FVector2D(InnerX - 600.f, InnerY - 300.f), OpenedBlocks));
+
+	// MinSealedRoomUU has no negative fixture on purpose, and the reason is worth
+	// writing down: with MinInteriorPassageUU forcing every interior wall 250 uu
+	// clear of any parallel face, the smallest pocket that can be enclosed at all
+	// is already wider than the threshold on both axes. It is a floor for the day
+	// that passage rule changes, not a case today's schema can reach.
 	return true;
 }
 

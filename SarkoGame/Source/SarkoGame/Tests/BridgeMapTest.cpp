@@ -282,6 +282,100 @@ bool FSarkoBridgeBuildingsAreEnterable::RunTest(const FString& Parameters)
 		TestFalse(FString::Printf(TEXT("container '%s' is not inside a wall"), *Spot.Id),
 			SarkoMap::IsPointInsideBlocksXY(FVector2D(Spot.Location.X, Spot.Location.Y), SolidCover));
 	}
+
+	// No two pieces of solid geometry intersect, over the whole shipped map.
+	//
+	// This is the invariant BuildingTest asserted for a doorless test fixture and
+	// nowhere else, and the map was violating it: bridge_gas_station's служебная
+	// wall ended on the зал divider's centre line and the two overlapped over
+	// 15x30 uu. A fixture cannot catch that, because the shape that produces it is
+	// one nobody would build a fixture out of — a person writes "this wall meets
+	// that wall" and means the face, and the file says the centre line.
+	//
+	// Solid only: since Task 8 the layout also carries flat road, water and
+	// ravine-bed blocks, and those overlap each other constantly and correctly —
+	// a dirt track crossing asphalt is two coats of paint on the same floor.
+	for (int32 A = 0; A < SolidCover.Num(); ++A)
+	{
+		for (int32 B = A + 1; B < SolidCover.Num(); ++B)
+		{
+			TestFalse(
+				FString::Printf(TEXT("solid blocks %d ('%s') and %d ('%s') do not intersect"),
+					A, *SolidCover[A].Id, B, *SolidCover[B].Id),
+				SarkoMap::BlocksOverlapXY(SolidCover[A], SolidCover[B]));
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBridgePropsClearTheWalls,
+	"Sarko.Map.BridgePropsClearTheWalls",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoBridgePropsClearTheWalls::RunTest(const FString& Parameters)
+{
+	FSarkoMapDefinition Map;
+	FString Error;
+	if (!LoadBridge(Map, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json failed to load: %s"), *Error));
+		return false;
+	}
+
+	// No prop stands inside a building wall.
+	//
+	// Props and buildings are authored in different sections of the file, in
+	// different coordinate habits — a prop is a world position, a wall is derived
+	// from a building's centre, size and yaw — so nothing about the file makes this
+	// visible to the person editing it. Two props were found sitting in walls by
+	// hand during Stage B, which is precisely the wrong way to find the third.
+	//
+	// A prop half-buried in a wall is not cosmetic on a top-down map: it is the
+	// silhouette the player reads cover from, and a crate whose visible half is
+	// inside masonry reads as cover that can be stood behind and cannot be.
+	TArray<FSarkoCoverBlock> Walls;
+	FString ExpandError;
+	if (!SarkoMap::ExpandBuildings(Map.Buildings, Walls, ExpandError))
+	{
+		AddError(FString::Printf(TEXT("the shipped buildings failed to expand: %s"), *ExpandError));
+		return false;
+	}
+	const TArray<FSarkoCoverBlock> SolidWalls = SolidOnly(Walls);
+	TestTrue(TEXT("there are walls to be clear of"), SolidWalls.Num() > 0);
+
+	int32 PartsChecked = 0;
+	for (const FSarkoMapProp& Prop : Map.Props)
+	{
+		FSarkoPropKind Kind;
+		if (!SarkoMap::FindPropKind(Prop.Kind, Kind))
+		{
+			continue; // Sarko.Map.BridgeMapIsValid is the test that fails for this
+		}
+		for (const FSarkoPropPart& Part : Kind.Parts)
+		{
+			// The part as it will actually be spawned: SpawnProps gives every part
+			// the prop's yaw and PartWorldLocation's rotated offset, so a composite
+			// is compared where it stands rather than where its origin is.
+			FSarkoCoverBlock Box;
+			Box.Id = Prop.Id.IsEmpty() ? Prop.Kind.ToString() : Prop.Id;
+			Box.Location = SarkoMap::PartWorldLocation(Prop.Location, Prop.Yaw, Part);
+			Box.Rotation = FRotator(0.f, Prop.Yaw, 0.f);
+			Box.Extent = Part.Extent;
+			++PartsChecked;
+
+			for (const FSarkoCoverBlock& Wall : SolidWalls)
+			{
+				TestFalse(
+					FString::Printf(TEXT("prop '%s' does not overlap wall '%s'"), *Box.Id, *Wall.Id),
+					SarkoMap::BlocksOverlapXY(Box, Wall));
+			}
+		}
+	}
+	// A guard against the guard: if the kind lookup or the props section ever comes
+	// back empty this test would pass by checking nothing at all.
+	TestEqual(TEXT("every prop part was checked"), PartsChecked, SarkoMap::CountPropActors(Map));
+	TestTrue(TEXT("there are props to check"), PartsChecked >= 40);
 	return true;
 }
 
