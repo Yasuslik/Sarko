@@ -27,12 +27,19 @@ public:
 	SLATE_BEGIN_ARGS(SSarkoShelterWidget) {}
 		/** Fired when "В РЕЙД" is pressed. The controller owns the travel. */
 		SLATE_EVENT(FSimpleDelegate, OnEnterRaid)
+		/** Fired when the craft button is pressed. The controller owns the call. */
+		SLATE_EVENT(FSimpleDelegate, OnCraft)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
 
 	/** Rebuilds the changing text. Called once per profile fetch, never per frame. */
 	void SetView(const FSarkoShelterView& View);
+
+	/** Latches the craft button off while a craft is in flight. Re-enabled by the
+	 *  SetView that follows the refetched profile, which is also the moment the
+	 *  answer is actually known. */
+	void SetCraftInFlight(bool bInFlight);
 
 	/**
 	 * What FInputModeUIOnly should focus: the raid button, not this widget.
@@ -75,6 +82,11 @@ public:
 	 * removed: it would fail to link.
 	 */
 	bool SimulateEnterRaidClickIfEnabled();
+
+	/** Same shape and same reasoning for the craft button: it goes through the
+	 *  button's own enabled state and its delegate, so nothing can craft what the
+	 *  player could not have crafted by pressing it. */
+	bool SimulateCraftClickIfEnabled();
 #endif
 
 private:
@@ -82,8 +94,10 @@ private:
 	float UiScale() const;
 
 	FReply HandleEnterRaid();
+	FReply HandleCraft();
 
 	FSimpleDelegate OnEnterRaid;
+	FSimpleDelegate OnCraft;
 
 	/** True while the first profile fetch is in flight; the raid button reads it
 	 *  through an attribute, so no per-frame work is needed to keep it in sync. */
@@ -94,7 +108,16 @@ private:
 	TSharedPtr<STextBlock> TitleText;
 	TSharedPtr<STextBlock> OutcomeText;
 	TSharedPtr<STextBlock> GarageText;
+	TSharedPtr<SVerticalBox> GarageParts;
+	TSharedPtr<class SButton> CraftButton;
+	TSharedPtr<STextBlock> CraftLabel;
+	TSharedPtr<STextBlock> CraftLineText;
 	TSharedPtr<STextBlock> StatusText;
+
+	/** Read through an attribute by the craft button, so nothing has to tick to
+	 *  keep it honest. False while a craft is in flight as well as when the parts
+	 *  are short — a second press would be a second debit. */
+	bool bCraftEnabled = false;
 
 	/** Rebuilt wholesale on SetView. A few dozen rows, a few times per session. */
 	TSharedPtr<SVerticalBox> HaulBox;

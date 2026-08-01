@@ -55,6 +55,11 @@ private:
 
 	void EnterRaid();
 
+	/** POST /v1/garage/craft, then refetch the profile. The server decides which
+	 *  tier is next and debits the parts in one transaction, so there is nothing
+	 *  for this side to compute and nothing to patch into the cached profile. */
+	void Craft();
+
 #if !UE_BUILD_SHIPPING
 	/**
 	 * `-SarkoAutoRaid=<seconds>`: presses "В РЕЙД" for a run that has no fingers.
@@ -79,4 +84,10 @@ private:
 
 	/** The last failure, shown verbatim. Empty when everything is current. */
 	FString LastError;
+
+	/** "ЗІБРАНО. ВІДКРИТО: SWAMP", kept for the rest of this shelter visit. */
+	FString LastCraftLine;
+
+	/** True between the press and the answer. A second debit is not undoable. */
+	bool bCraftInFlight = false;
 };

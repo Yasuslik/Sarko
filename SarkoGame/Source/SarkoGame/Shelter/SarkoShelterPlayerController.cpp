@@ -61,7 +61,8 @@ void ASarkoShelterPlayerController::BeginPlay()
 	}
 
 	Widget = SNew(SSarkoShelterWidget)
-		.OnEnterRaid(FSimpleDelegate::CreateUObject(this, &ASarkoShelterPlayerController::EnterRaid));
+		.OnEnterRaid(FSimpleDelegate::CreateUObject(this, &ASarkoShelterPlayerController::EnterRaid))
+		.OnCraft(FSimpleDelegate::CreateUObject(this, &ASarkoShelterPlayerController::Craft));
 
 	Viewport->AddViewportWidgetContent(Widget.ToSharedRef());
 
@@ -148,7 +149,69 @@ void ASarkoShelterPlayerController::RefreshWidget()
 	}
 	Widget->SetView(SarkoShelter::BuildView(
 		GameInstance->LastRaid, GameInstance->CachedProfile, GameInstance->bProfileLoaded,
-		LastError, SarkoLoot::GetItemCatalog()));
+		LastError, LastCraftLine, SarkoLoot::GetItemCatalog()));
+}
+
+void ASarkoShelterPlayerController::Craft()
+{
+	if (bCraftInFlight)
+	{
+		return;
+	}
+	USarkoGameInstance* GameInstance = GetGameInstance<USarkoGameInstance>();
+	const TSharedPtr<FSarkoBackendClient> Backend = GameInstance ? GameInstance->EnsureBackend() : nullptr;
+	if (!Backend.IsValid())
+	{
+		LastError = TEXT("no backend client");
+		RefreshWidget();
+		return;
+	}
+
+	// Snapshotted BEFORE the call, because the answer is a set difference and the
+	// profile is about to be replaced by the refetch below.
+	const TArray<FString> Before = GameInstance->CachedProfile.UnlockedMaps;
+
+	bCraftInFlight = true;
+	if (Widget.IsValid())
+	{
+		Widget->SetCraftInFlight(true);
+	}
+
+	// Weak: this completion routinely lands after the player has pressed В РЕЙД
+	// and this controller has been destroyed by the travel.
+	TWeakObjectPtr<ASarkoShelterPlayerController> WeakThis(this);
+	Backend->CraftVehicle([WeakThis, Before](bool bSuccess, const FString& Tier,
+		const TArray<FString>& Maps, const FString& Error)
+	{
+		ASarkoShelterPlayerController* Self = WeakThis.Get();
+		if (!Self)
+		{
+			return;
+		}
+		Self->bCraftInFlight = false;
+		if (!bSuccess)
+		{
+			// insufficient_items and max_tier arrive here. Shown verbatim: a
+			// refused craft with no reason is worse than no button.
+			Self->LastError = Error;
+			Self->RefreshWidget();
+			return;
+		}
+		Self->LastError.Reset();
+
+		const TArray<FString> Opened = SarkoShelter::NewlyUnlockedMaps(Before, Maps);
+		Self->LastCraftLine = Opened.Num() > 0
+			? FString::Printf(TEXT("ЗІБРАНО. ВІДКРИТО: %s"), *FString::Join(Opened, TEXT(", ")).ToUpper())
+			: FString(TEXT("ЗІБРАНО."));
+
+		// The parts have left the stash and the tier has moved, both server-side
+		// in one transaction. Refetch rather than patch the cached profile: the
+		// server's copy is the only one that knows what the debit actually took.
+		Self->FetchProfile();
+		Self->RefreshWidget();
+	});
+
+	RefreshWidget();
 }
 
 void ASarkoShelterPlayerController::FetchProfile()

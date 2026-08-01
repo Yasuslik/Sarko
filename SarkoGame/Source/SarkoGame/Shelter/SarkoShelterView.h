@@ -16,6 +16,35 @@
  * this Slate menu is eventually rebuilt in UMG — a UMG widget consumes exactly
  * these strings.
  */
+/**
+ * The garage block: the recipe with have/need per part, and one button whose
+ * label is either what it will build or what is stopping it.
+ *
+ * Its own struct rather than four more loose fields on FSarkoShelterView,
+ * because the widget builds it as one unit and because "can this be crafted"
+ * and "why not" have to be decided together — the failure mode this replaces is
+ * a disabled button with no explanation (spec §3).
+ */
+struct FSarkoGarageView
+{
+	/** "ГАРАЖ: ВЕЛОСИПЕД 2/3", or "…—/3" while the profile is unknown. */
+	FString Title;
+
+	/** One "<UA name>  n/m" line per recipe entry, in the recipe's order. */
+	TArray<FString> PartLines;
+
+	/** True only when every part's full quantity is in the stash AND the profile
+	 *  was actually fetched. A craft offered against an unknown stash is a 409
+	 *  waiting to happen. */
+	bool bCanCraft = false;
+
+	/** "ЗІБРАТИ ВЕЛОСИПЕД", or "НЕ ВИСТАЧАЄ: Мале колесо", or "ВЕЛОСИПЕД ГОТОВИЙ". */
+	FString CraftLabel;
+
+	/** The tier is past none, so there is nothing left to press. */
+	bool bBuilt = false;
+};
+
 struct FSarkoShelterView
 {
 	/** "УКРИТТЯ". */
@@ -27,10 +56,12 @@ struct FSarkoShelterView
 	/** The haul, one line per stack. Task 5. */
 	TArray<FString> HaulLines;
 
-	/** "ГАРАЖ: ВЕЛОСИПЕД 1/3", or "ГАРАЖ: ВЕЛОСИПЕД —/3" while the profile is
-	 *  unknown — the count comes out of the stash, so it is exactly as unknown as
-	 *  the stash is. */
-	FString GarageLine;
+	/** The garage block. Replaces the old one-line GarageLine. */
+	FSarkoGarageView Garage;
+
+	/** "ВІДКРИТО: SWAMP" for the rest of this shelter visit, or empty. The payoff
+	 *  sentence for every raid before it (spec §3). */
+	FString CraftLine;
 
 	/** One line per stash row, or a single "СХОВОК ПОРОЖНІЙ". **Empty** — not the
 	 *  porozhniy line — while the profile has not been fetched. */
@@ -97,36 +128,33 @@ namespace SarkoShelter
 	TArray<FString> BuildStashLines(const FSarkoProfile& Profile, const FSarkoItemCatalog& Catalog);
 
 	/**
-	 * "ГАРАЖ: ВЕЛОСИПЕД n/3", counting recipe *entries* whose full required
-	 * quantity is in the stash — one wheel of two does not count, because the
-	 * craft call would refuse and a shelter that disagrees with the backend is
-	 * worse than one that says less.
+	 * The garage block. Pure: a profile in, strings and one bool out.
+	 *
+	 * Counts recipe *entries* whose full required quantity is in the stash — one
+	 * wheel of two does not count, because the craft call would refuse and a
+	 * shelter that disagrees with the backend is worse than one that says less.
 	 *
 	 * Past TierNone it reports **the bicycle** as built, whatever the tier is:
 	 * the ladder is cumulative (domain.UnlockedMaps walks tierOrder, and this
 	 * stage's ladder is `none → bicycle → …`), so any tier above none owns one,
 	 * and the bicycle is the only recipe this file mirrors.
 	 *
-	 * Only ever called with a profile that was actually fetched — see
-	 * UnknownGarageLine and the gate in BuildView.
+	 * bProfileLoaded false is NOT the same as an empty stash: an unfetched
+	 * profile would otherwise read as a truthful "0/3" told to the player as fact
+	 * under a "З'ЄДНАННЯ..." status — and worse after a raid, where
+	 * RecordRaidOutcome clears bProfileLoaded but keeps CachedProfile, so the
+	 * player who just extracted the third part would be shown yesterday's 2/3.
+	 * The row keeps its shape (that is what says the garage exists at all); only
+	 * the number is withheld, and the button is refused with it.
 	 */
-	FString BuildGarageLine(const FSarkoProfile& Profile);
+	FSarkoGarageView BuildGarageView(const FSarkoProfile& Profile, bool bProfileLoaded);
 
-	/**
-	 * The garage row while the profile is unknown: "ГАРАЖ: ВЕЛОСИПЕД —/3".
-	 *
-	 * An unfetched profile carries an empty stash and an empty tier, which
-	 * BuildGarageLine would happily read as a truthful "0/3" — told to the player
-	 * as fact underneath a "З'ЄДНАННЯ..." status, and worse after a raid, where
-	 * RecordRaidOutcome clears bProfileLoaded but keeps CachedProfile: the player
-	 * who just extracted the third part would be shown yesterday's 2/3, and a
-	 * failed re-fetch would leave it wrong for the whole visit. The row is kept
-	 * (rather than dropped like the stash lines) because its shape is what tells
-	 * the player the garage exists at all; only the number is withheld.
-	 */
-	FString UnknownGarageLine();
+	/** Maps in After that were not in Before, in After's order. What the shelter
+	 *  says the craft just opened. */
+	TArray<FString> NewlyUnlockedMaps(const TArray<FString>& Before, const TArray<FString>& After);
 
 	/** Assembles the whole screen. Pure. */
 	FSarkoShelterView BuildView(const FSarkoLastRaid& LastRaid, const FSarkoProfile& Profile,
-		bool bProfileLoaded, const FString& Error, const FSarkoItemCatalog& Catalog);
+		bool bProfileLoaded, const FString& Error, const FString& CraftLine,
+		const FSarkoItemCatalog& Catalog);
 }
