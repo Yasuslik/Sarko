@@ -94,6 +94,23 @@ public:
 	float ReloadSeconds = 2.2f;
 
 	/**
+	 * How many rounds a weapon spawns a raid with. Negative means a full
+	 * magazine, which is the answer for every raid that is not teaching.
+	 *
+	 * Three, and three is a lesson. Auto-reload is gone (spec §3), so a player
+	 * who has never pressed the reload button dry-clicks at the first bot and
+	 * dies — and today's route offers them nothing to shoot at between the spawn
+	 * and the gas-station forecourt, so there is no safe first trigger pull
+	 * anywhere. Starting three rounds into an eight-round magazine puts the
+	 * button's empty-state pulse at the spawn camp instead, thirty-odd seconds
+	 * before the map holds anything that can hurt them. Clamped by
+	 * SarkoCombat::StartingRounds, so a value above MagazineSize is a full
+	 * magazine rather than a deeper one.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Combat")
+	int32 StartingMagazineRounds = -1;
+
+	/**
 	 * Minimum server-enforced time between shots from the same weapon,
 	 * regardless of how fast fire requests arrive. The enemy already has its
 	 * own EnemyFireIntervalSeconds cooldown; this is the equivalent backstop

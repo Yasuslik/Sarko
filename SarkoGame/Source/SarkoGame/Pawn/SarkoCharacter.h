@@ -87,8 +87,9 @@ public:
 	 *
 	 * Spec §4.3 — reloading is a decision with a cost and the player must be able
 	 * to make it BEFORE the magazine runs out; auto-reload-when-empty is the thing
-	 * that gets you killed. The auto-reload safety net is untouched; this simply
-	 * wins if it is pressed first, because StartReload no-ops on the second caller.
+	 * that gets you killed. Since spec §3 this is the ONLY way a magazine is ever
+	 * refilled: both auto-reload sites in USarkoWeaponComponent are gone, and a
+	 * trigger pull on an empty magazine is a dry click.
 	 *
 	 * Validated server-side like every other request on this pawn.
 	 */

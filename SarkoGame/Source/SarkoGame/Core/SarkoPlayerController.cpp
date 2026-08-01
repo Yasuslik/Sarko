@@ -246,8 +246,9 @@ void ASarkoPlayerController::CheatEmptyMagazine()
 		Pawn->WeaponComponent->GetAmmoInMagazine(), Pawn->WeaponComponent->IsReloading());
 
 	// Deliberately more than a full magazine: the tail calls land after ammo
-	// hits zero and must be absorbed by the CanFire() gate (auto-starting a
-	// reload, never auto-firing) instead of crashing or silently firing.
+	// hits zero and must be absorbed by the CanFire() gate — which since spec §3
+	// dry-clicks and does NOTHING else, rather than starting a reload — instead
+	// of crashing or silently firing.
 	for (int32 Shot = 0; Shot < 35; ++Shot)
 	{
 		Pawn->RequestFire();

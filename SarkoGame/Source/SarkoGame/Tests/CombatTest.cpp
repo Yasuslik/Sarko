@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 
+#include "Combat/SarkoWeapon.h"
 #include "Core/SarkoPlayerController.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Pawn/SarkoHealthComponent.h"
@@ -212,6 +213,36 @@ bool FSarkoMagazineGatesFiring::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoTheRaidStartsOnAPartialMagazine,
+	"Sarko.Combat.TheRaidStartsOnAPartialMagazine",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoTheRaidStartsOnAPartialMagazine::RunTest(const FString& Parameters)
+{
+	// Spec §3. Auto-reload is gone, so the reload button has to be pressed once
+	// somewhere safe before it has to be pressed under fire — and the only thing
+	// on the route that can teach it for free is the magazine the raid begins
+	// with. This is that arithmetic, and the shipped configuration honouring it.
+	TestEqual(TEXT("the configured three of eight is three"), SarkoCombat::StartingRounds(3, 8), 3);
+	TestEqual(TEXT("negative means a full magazine"), SarkoCombat::StartingRounds(-1, 8), 8);
+	TestEqual(TEXT("more than the magazine holds is a full magazine, not a deeper one"),
+		SarkoCombat::StartingRounds(50, 8), 8);
+	TestEqual(TEXT("zero is a legal (empty) start"), SarkoCombat::StartingRounds(0, 8), 0);
+	TestEqual(TEXT("a broken magazine size yields nothing, never a negative count"),
+		SarkoCombat::StartingRounds(3, 0), 0);
+
+	const USarkoRaidSettings* Settings = GetDefault<USarkoRaidSettings>();
+	TestNotNull(TEXT("settings resolve"), Settings);
+	if (Settings)
+	{
+		const int32 Start = SarkoCombat::StartingRounds(Settings->StartingMagazineRounds, Settings->MagazineSize);
+		TestTrue(TEXT("the shipped raid starts on a PARTIAL magazine, or the lesson never happens"),
+			Start > 0 && Start < Settings->MagazineSize);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FSarkoReloadingGatesFiring,
 	"Sarko.Combat.ReloadingGatesFiring",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -223,7 +254,7 @@ bool FSarkoReloadingGatesFiring::RunTest(const FString& Parameters)
 	// ammo count, since ammo alone (FSarkoMagazineGatesFiring above) cannot
 	// exercise this branch.
 	USarkoWeaponComponent* Weapon = NewObject<USarkoWeaponComponent>();
-	Weapon->ResetForTest(30);
+	Weapon->ResetForTest(8);
 	TestTrue(TEXT("a full, non-reloading weapon can fire"), Weapon->CanFire());
 
 	Weapon->SetReloadingForTest(true);
@@ -345,17 +376,25 @@ bool FSarkoReloadButtonSaysWhatTheMagazineIs::RunTest(const FString& Parameters)
 	// Spec §4.3: "Shows state: the magazine count lives on it, it goes amber
 	// below a third, and it pulses when empty. The player should never have to
 	// look at two places to know they need to reload."
+	// The magazine is EIGHT since the realism retune (spec §5), so this is stated
+	// in the rounds the player actually has: eight full, three is still ready,
+	// two is amber. Three matters — it is what the raid starts on.
 	using ESarkoReloadState = SarkoUI::ESarkoReloadState;
-	TestTrue(TEXT("a full magazine is ready"),
-		SarkoUI::ReloadStateFor(30, 30, false) == ESarkoReloadState::Ready);
+	TestTrue(TEXT("a full eight-round magazine is ready"),
+		SarkoUI::ReloadStateFor(8, 8, false) == ESarkoReloadState::Ready);
+	TestTrue(TEXT("three of eight — the raid's starting magazine — is still ready"),
+		SarkoUI::ReloadStateFor(3, 8, false) == ESarkoReloadState::Ready);
+	TestTrue(TEXT("below a third is low"),
+		SarkoUI::ReloadStateFor(2, 8, false) == ESarkoReloadState::Low);
+	TestTrue(TEXT("empty is empty"),
+		SarkoUI::ReloadStateFor(0, 8, false) == ESarkoReloadState::Empty);
+	TestTrue(TEXT("reloading outranks everything, including empty"),
+		SarkoUI::ReloadStateFor(0, 8, true) == ESarkoReloadState::Reloading);
+	// The boundary rule itself, at a size where a third is a whole number.
 	TestTrue(TEXT("exactly a third is still ready — the boundary belongs to ready"),
 		SarkoUI::ReloadStateFor(10, 30, false) == ESarkoReloadState::Ready);
-	TestTrue(TEXT("below a third is low"),
+	TestTrue(TEXT("...and one below it is not"),
 		SarkoUI::ReloadStateFor(9, 30, false) == ESarkoReloadState::Low);
-	TestTrue(TEXT("empty is empty"),
-		SarkoUI::ReloadStateFor(0, 30, false) == ESarkoReloadState::Empty);
-	TestTrue(TEXT("reloading outranks everything, including empty"),
-		SarkoUI::ReloadStateFor(0, 30, true) == ESarkoReloadState::Reloading);
 
 	// A zero magazine size is a broken config, not a divide by zero.
 	TestTrue(TEXT("a zero-size magazine does not divide by zero"),

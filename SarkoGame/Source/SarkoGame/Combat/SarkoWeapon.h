@@ -26,6 +26,23 @@ namespace SarkoCombat
 	 * treat a zero result as "bail, do not fire".
 	 */
 	FVector NormalizeFireDirection(FVector Direction);
+
+	/**
+	 * How many rounds a weapon spawns with. Pure, because it is the arithmetic
+	 * behind the tutorial's only lesson about reloading.
+	 *
+	 * Configured is USarkoRaidSettings::StartingMagazineRounds: negative means
+	 * "a full magazine" (the answer for every non-teaching raid), and anything
+	 * else is clamped into [0, MagazineSize] so a careless config cannot hand out
+	 * a magazine deeper than the weapon has. A broken MagazineSize (zero or
+	 * negative) yields zero rather than a negative count.
+	 *
+	 * Three of eight is what ships (spec §3): with auto-reload gone, a player who
+	 * has never pressed the reload button dry-clicks at the first bot and dies —
+	 * so the raid begins three trigger pulls away from an empty magazine, at the
+	 * spawn camp, thirty-odd safe seconds before anything can hurt them.
+	 */
+	int32 StartingRounds(int32 Configured, int32 MagazineSize);
 }
 
 /** Hitscan weapon. Only the server decides whether a shot connected. */
@@ -94,4 +111,14 @@ private:
 	 * rate-limited.
 	 */
 	float LastFireTimeSeconds = -1000.f;
+
+	/**
+	 * Whether this empty magazine has already said so in the log.
+	 *
+	 * Server-side and cosmetic: a held aim stick sends a fire request every
+	 * MinFireIntervalSeconds, so an unguarded dry-click line is about seven
+	 * identical lines a second. Cleared by FinishReload and by ResetForTest, so
+	 * every *new* empty magazine gets exactly one line.
+	 */
+	bool bDryClickReported = false;
 };
