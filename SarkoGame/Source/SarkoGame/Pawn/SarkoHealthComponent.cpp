@@ -23,6 +23,17 @@ void USarkoHealthComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(USarkoHealthComponent, bDead);
 }
 
+void USarkoHealthComponent::InitialiseMaxHealth(float NewMaxHealth)
+{
+	const AActor* Owner = GetOwner();
+	if ((Owner && !Owner->HasAuthority()) || NewMaxHealth <= 0.f)
+	{
+		return;
+	}
+	MaxHealth = NewMaxHealth;
+	Health = NewMaxHealth;
+}
+
 void USarkoHealthComponent::ResetForTest(float NewMaxHealth)
 {
 	MaxHealth = NewMaxHealth;

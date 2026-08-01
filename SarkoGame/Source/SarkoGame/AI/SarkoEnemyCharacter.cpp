@@ -4,6 +4,7 @@
 #include "Pawn/SarkoCharacterAnim.h"
 
 #include "AI/SarkoAIController.h"
+#include "AI/SarkoBotArchetypes.h"
 #include "Combat/SarkoWeapon.h"
 #include "Components/CapsuleComponent.h"
 #include "Core/SarkoRaidSettings.h"
@@ -41,6 +42,45 @@ void ASarkoEnemyCharacter::BeginPlay()
 	if (HasAuthority() && HealthComponent)
 	{
 		HealthComponent->OnDied.AddUObject(this, &ASarkoEnemyCharacter::HandleDeath);
+	}
+}
+
+void ASarkoEnemyCharacter::ApplyArchetypeAndPost(FName ArchetypeId, const FVector& PostPos, float LeashUU)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	// The post first, and unconditionally: a bot with no leash is a bot that
+	// random-walks the sector, and that must not depend on the archetype name
+	// resolving.
+	if (ASarkoAIController* AIController = Cast<ASarkoAIController>(GetController()))
+	{
+		AIController->SetPost(PostPos, LeashUU);
+	}
+
+	FSarkoBotArchetype Archetype;
+	if (!SarkoAI::FindBotArchetype(ArchetypeId, Archetype))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("SarkoEnemy: archetype '%s' is not in the archetype table — the map parser should have refused this file"),
+			*ArchetypeId.ToString());
+		return;
+	}
+
+	GetCharacterMovement()->MaxWalkSpeed = Archetype.WalkSpeed;
+	if (HealthComponent)
+	{
+		HealthComponent->InitialiseMaxHealth(Archetype.MaxHealth);
+	}
+	if (WeaponComponent)
+	{
+		WeaponComponent->SetDamageOverride(Archetype.Damage);
+	}
+	if (ASarkoAIController* AIController = Cast<ASarkoAIController>(GetController()))
+	{
+		AIController->SetPerception(Archetype.HearingRadiusUU, Archetype.FiringRangeUU, Archetype.FireIntervalSeconds);
 	}
 }
 

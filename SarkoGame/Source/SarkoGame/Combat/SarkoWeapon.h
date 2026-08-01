@@ -53,6 +53,17 @@ public:
 
 	void StartReload();
 
+	/**
+	 * Per-instance damage from the bot archetype table. Non-positive (the
+	 * default) means "use USarkoRaidSettings::WeaponDamage", which is what the
+	 * player's own weapon and every unarchetyped pawn get.
+	 *
+	 * Not replicated and not a UPROPERTY: damage is applied on the server inside
+	 * ServerFire, so a client has no use for the number and no way to disagree
+	 * about it.
+	 */
+	void SetDamageOverride(float NewDamage) { DamageOverride = NewDamage; }
+
 	/** Test seams — no world required. */
 	void ResetForTest(int32 Rounds);
 	void ConsumeRoundForTest() { AmmoInMagazine = FMath::Max(0, AmmoInMagazine - 1); }
@@ -67,6 +78,9 @@ protected:
 
 private:
 	void FinishReload();
+
+	/** See SetDamageOverride. Non-positive means "use the project setting". */
+	float DamageOverride = -1.f;
 
 	FTimerHandle ReloadTimer;
 

@@ -1,6 +1,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
+// Included, not forward-declared: SarkoEncounter::FEncounterRuntime is held by
+// value in the array below, so the complete type has to be visible here.
+#include "Core/SarkoEncounters.h"
 #include "Core/SarkoRaidGameState.h"
 #include "GameFramework/GameModeBase.h"
 // Included, not forward-declared: SarkoExtract::FSarkoDwell is the value type of
@@ -140,6 +143,24 @@ public:
 	 */
 	TArray<FSarkoItemStack>* OpenContainerAt(int32 ContainerIndex);
 
+	/**
+	 * What is left of this raid's enemy allowance.
+	 *
+	 * A plain member and **never a UPROPERTY**, for exactly the reasons LootSalt
+	 * is one: a game mode instance exists only on the server, so there is no
+	 * replication path to forget to exclude, and a non-UPROPERTY also stays out
+	 * of anything that walks reflected properties. It matters here because "how
+	 * many enemies are left in this map" is the single most valuable thing a
+	 * client could know in a game whose whole tension is not knowing.
+	 *
+	 * Public so a test and the log can read it; nothing outside this class
+	 * writes it.
+	 */
+	int32 EncounterBudgetRemaining = 0;
+
+	/** How many encounters have spent budget this raid. Zero means the next one is the first fight. */
+	int32 EncountersFired = 0;
+
 	/** The layout this raid was loaded from; pawns spawn against it. */
 	FSarkoMapLayout CachedLayout;
 
@@ -202,6 +223,61 @@ private:
 	 * zero-second clock is a raid that expires into MIA on the spawn frame).
 	 */
 	float MapClockSeconds() const;
+
+	/**
+	 * Starts the encounter system for this raid: picks the tutorial or normal
+	 * budget, sizes the runtime array and starts the 0.25 s evaluation timer.
+	 *
+	 * Called from ActivateRaid rather than StartPlay because the budget depends
+	 * on bTutorialLoot, which is not known until the profile has been read — and
+	 * because a raid that is not live yet must not be spawning enemies at a
+	 * player who cannot act.
+	 */
+	void InitialiseEncounters();
+
+	/**
+	 * The whole encounter system, run on a timer under HasAuthority(). Arms
+	 * triggers, spends budget and places enemies; every rule it applies is a
+	 * pure function in SarkoEncounter, and everything it needs from the world
+	 * (distance, line of sight, spawning) it does here.
+	 */
+	void EvaluateEncounters();
+
+	/**
+	 * True when nothing solid stands between the two points, i.e. when a bot
+	 * created at From would be looking straight at To. The spawn-placement test:
+	 * a point that has line of sight to the player is a point that must not be
+	 * used, however far away it is.
+	 */
+	bool HasLineOfSightBetween(const FVector& From, const FVector& To, const AActor* IgnoreActor) const;
+
+	/** The nearest living player pawn, or null. The encounter system measures against this. */
+	class APawn* FindNearestLivingPlayerPawn() const;
+
+	/** Per-encounter server state, index-aligned with CachedDefinition.Encounters. */
+	TArray<SarkoEncounter::FEncounterRuntime> EncounterRuntimes;
+
+	/**
+	 * Indices into CachedDefinition.Encounters, sorted by the authored `order`.
+	 * Built once: two triggers arming in the same evaluation must resolve the
+	 * same way every raid, or "the first fight is the gas station" is luck.
+	 */
+	TArray<int32> EncounterOrder;
+
+	FTimerHandle EncounterTimerHandle;
+
+	/**
+	 * ?EncounterBudget=N on the travel URL, or -1 for "use the map's".
+	 *
+	 * A verification knob in the same spirit as ?Seed=, and server-side only —
+	 * it is read in InitGame, lives on the game mode and is never replicated, so
+	 * a joining client can neither set nor read it. It exists because the
+	 * budget's most important behaviour is the one the shipped tutorial data can
+	 * never exhibit: the tutorial's four encounters cost exactly the tutorial's
+	 * four points, so a REFUSAL — the law actually being applied — is
+	 * unobservable in a live raid unless the ceiling can be lowered.
+	 */
+	int32 EncounterBudgetOverride = -1;
 
 	/** Shared, because the client is used across several async callbacks. */
 	TSharedPtr<class FSarkoBackendClient> Backend;

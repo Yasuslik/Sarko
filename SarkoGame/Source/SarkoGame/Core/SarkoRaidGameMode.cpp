@@ -1,6 +1,7 @@
 #include "Core/SarkoRaidGameMode.h"
 
 #include "AI/SarkoEnemyCharacter.h"
+#include "CollisionQueryParams.h"
 #include "Core/SarkoGameInstance.h"
 #include "Core/SarkoPlayerController.h"
 #include "Core/SarkoRaidGameState.h"
@@ -10,6 +11,8 @@
 #include "Loot/SarkoBackpack.h"
 #include "Loot/SarkoExtractionZone.h"
 #include "Loot/SarkoLootTable.h"
+#include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
 #include "Map/SarkoMapBuilder.h"
 #include "Pawn/SarkoCharacter.h"
 #include "Pawn/SarkoHealthComponent.h"
@@ -48,6 +51,16 @@ void ASarkoRaidGameMode::InitGame(const FString& MapName, const FString& Options
 		// reproduction tool in the project lie. SeedToInt32 wraps the same bits the
 		// online path wraps, so `?Seed=3402905197` reproduces that raid exactly.
 		Seed = SarkoBackend::SeedToInt32(FCString::Atoi64(*SeedOption));
+	}
+
+	// ?EncounterBudget=N — the verification knob described on the member. Read on
+	// the authority, kept on the authority: unlike Seed it is never replicated
+	// and never echoed, so a joining client learns nothing from it. -1 (the
+	// default) means the map's own budget stands.
+	const FString BudgetOption = UGameplayStatics::ParseOption(Options, TEXT("EncounterBudget"));
+	if (!BudgetOption.IsEmpty())
+	{
+		EncounterBudgetOverride = FMath::Max(0, FCString::Atoi(*BudgetOption));
 	}
 
 	// The salt, generated here on the authority and never replicated. Unlike Seed
@@ -135,6 +148,12 @@ void ASarkoRaidGameMode::StartPlay()
 
 		// Enemies are real replicated actors (unlike the map's static geometry),
 		// so only the server spawns them; replication hands them to clients.
+		//
+		// These are the map's STATICALLY POSTED bots — the pre-encounter shape,
+		// still supported because non-tutorial content uses it. The shipped
+		// tutorial map authors none of them: since the realism stage every enemy
+		// on `bridge` arrives from an encounter, which means the first ninety
+		// seconds of a raid replicate zero enemies instead of six.
 		if (UWorld* World = GetWorld())
 		{
 			for (const FVector& Spawn : CachedLayout.EnemySpawns)
@@ -494,6 +513,281 @@ void ASarkoRaidGameMode::ActivateRaid(int32 AuthoritativeSeed, float ClockSecond
 
 	UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: raid live — seed %d, clock %.0fs, session '%s'"),
 		AuthoritativeSeed, ClockSeconds, Session.SessionId.IsEmpty() ? TEXT("(offline)") : *Session.SessionId);
+
+	// Last of all: enemies may not arrive before the raid the player is in has
+	// begun, and the budget cannot be chosen before bTutorialLoot is known.
+	InitialiseEncounters();
+}
+
+void ASarkoRaidGameMode::InitialiseEncounters()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	EncounterRuntimes.Reset();
+	EncounterOrder.Reset();
+	EncountersFired = 0;
+
+	const FSarkoEncounterBudget& Budget = CachedDefinition.EncounterBudget;
+	if (CachedDefinition.Encounters.Num() == 0 || !Budget.bAuthored)
+	{
+		// A map with no encounters is not an error — the pre-encounter
+		// `botSpawns` shape still works and non-tutorial content uses it.
+		EncounterBudgetRemaining = 0;
+		return;
+	}
+
+	EncounterBudgetRemaining = bTutorialLoot ? Budget.Tutorial : Budget.Normal;
+	if (EncounterBudgetOverride >= 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoEncounter: budget overridden from the URL — %d instead of the map's %d"),
+			EncounterBudgetOverride, EncounterBudgetRemaining);
+		EncounterBudgetRemaining = EncounterBudgetOverride;
+	}
+
+	EncounterRuntimes.SetNum(CachedDefinition.Encounters.Num());
+	EncounterOrder.Reserve(CachedDefinition.Encounters.Num());
+	for (int32 Index = 0; Index < CachedDefinition.Encounters.Num(); ++Index)
+	{
+		EncounterOrder.Add(Index);
+	}
+	// Sorted once, by the authored order, so two triggers arming in the same
+	// evaluation always resolve the same way. Ties fall back to file order,
+	// which is stable across machines because the file is.
+	const TArray<FSarkoEncounter>& Encounters = CachedDefinition.Encounters;
+	EncounterOrder.Sort([&Encounters](int32 A, int32 B)
+	{
+		return Encounters[A].Order != Encounters[B].Order ? Encounters[A].Order < Encounters[B].Order : A < B;
+	});
+
+	UE_LOG(LogTemp, Display,
+		TEXT("SarkoEncounter: %d encounter(s) armed for a %s raid — budget %d, first fight at most %d alive"),
+		CachedDefinition.Encounters.Num(), bTutorialLoot ? TEXT("TUTORIAL") : TEXT("normal"),
+		EncounterBudgetRemaining, Budget.FirstFightMaxAlive);
+
+	const float Interval = FMath::Max(0.05f, GetDefault<USarkoRaidSettings>()->EncounterEvaluationIntervalSeconds);
+	GetWorldTimerManager().SetTimer(EncounterTimerHandle, this, &ASarkoRaidGameMode::EvaluateEncounters, Interval, true);
+}
+
+APawn* ASarkoRaidGameMode::FindNearestLivingPlayerPawn() const
+{
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return nullptr;
+	}
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		APawn* Candidate = It->IsValid() ? It->Get()->GetPawn() : nullptr;
+		if (!Candidate)
+		{
+			continue;
+		}
+		const USarkoHealthComponent* Health = Candidate->FindComponentByClass<USarkoHealthComponent>();
+		if (Health && Health->IsDead())
+		{
+			continue;
+		}
+		return Candidate;
+	}
+	return nullptr;
+}
+
+bool ASarkoRaidGameMode::HasLineOfSightBetween(const FVector& From, const FVector& To, const AActor* IgnoreActor) const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		// No world is not "the point is safe": with nothing to trace against,
+		// the honest answer is that the spawn point cannot be cleared.
+		return true;
+	}
+
+	// Eye height on both ends, not floor to floor: a floor-level trace is
+	// blocked by the ground's own slope and would clear points that stand in
+	// plain view. 80 uu is roughly chest height on a ~176 uu pawn.
+	const FVector Eye(0.f, 0.f, 80.f);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(SarkoEncounterSpawnLOS), /*bTraceComplex*/ false);
+	Params.AddIgnoredActor(IgnoreActor);
+
+	FHitResult Hit;
+	const bool bBlocked = World->LineTraceSingleByChannel(Hit, From + Eye, To + Eye, ECC_Visibility, Params);
+	return !bBlocked;
+}
+
+void ASarkoRaidGameMode::EvaluateEncounters()
+{
+	// Authority only, and that is structural rather than defensive: a game mode
+	// instance exists nowhere else. The check stays because the cost is nothing
+	// and the rule is worth stating where it is relied on.
+	if (!HasAuthority())
+	{
+		return;
+	}
+	const ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>();
+	if (!RaidState || !RaidState->bSessionReady || RaidState->IsRaidFinished())
+	{
+		return;
+	}
+	UWorld* World = GetWorld();
+	APawn* Player = FindNearestLivingPlayerPawn();
+	if (!World || !Player)
+	{
+		return;
+	}
+
+	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+	const float Interval = FMath::Max(0.05f, Settings.EncounterEvaluationIntervalSeconds);
+	const FVector PlayerLocation = Player->GetActorLocation();
+
+	for (const int32 Index : EncounterOrder)
+	{
+		if (!CachedDefinition.Encounters.IsValidIndex(Index) || !EncounterRuntimes.IsValidIndex(Index))
+		{
+			continue;
+		}
+		const FSarkoEncounter& Encounter = CachedDefinition.Encounters[Index];
+		SarkoEncounter::FEncounterRuntime& Runtime = EncounterRuntimes[Index];
+
+		// Weak pointers, so a corpse that has expired (SetLifeSpan) stops
+		// counting against maxAlive without anyone having to tell us.
+		Runtime.Spawned.RemoveAll([](const TWeakObjectPtr<AActor>& Actor)
+		{
+			if (!Actor.IsValid())
+			{
+				return true;
+			}
+			const USarkoHealthComponent* Health = Actor->FindComponentByClass<USarkoHealthComponent>();
+			return Health != nullptr && Health->IsDead();
+		});
+		const int32 AliveNow = Runtime.Spawned.Num();
+
+		const FVector TriggerCentre(Encounter.Trigger.Location.X, Encounter.Trigger.Location.Y, PlayerLocation.Z);
+		const float Distance = FVector::Dist2D(TriggerCentre, PlayerLocation);
+		Runtime.bBeyondRearm = SarkoEncounter::UpdateBeyondRearm(
+			Runtime.bBeyondRearm, Distance, Encounter.Trigger.ArmAfterUU);
+
+		if (!Runtime.bArmed)
+		{
+			if (!SarkoEncounter::ShouldArm(Runtime.bFired, Encounter.bOneShot, Runtime.bBeyondRearm,
+					Distance, Encounter.Trigger.RadiusUU))
+			{
+				continue;
+			}
+			Runtime.bArmed = true;
+			Runtime.DeferredSeconds = 0.f;
+			UE_LOG(LogTemp, Display,
+				TEXT("SarkoEncounter: '%s' ARMED — player %.0f uu from the trigger (radius %.0f, order %d, cost %d)"),
+				*Encounter.Id, Distance, Encounter.Trigger.RadiusUU, Encounter.Order, Encounter.BudgetCost);
+		}
+
+		const bool bFirstFight = (EncountersFired == 0);
+		const int32 Allowed = SarkoEncounter::AllowedSpawnCount(
+			EncounterBudgetRemaining, Encounter.BudgetCost, Encounter.MaxAlive, AliveNow,
+			Encounter.Spawns.Num(), bFirstFight, CachedDefinition.EncounterBudget.FirstFightMaxAlive);
+
+		if (Allowed <= 0)
+		{
+			// Refused. Disarmed and the hysteresis latch closed, so this does not
+			// re-evaluate (and re-log) four times a second for the rest of the
+			// raid: the player has to leave and come back for another attempt.
+			UE_LOG(LogTemp, Display,
+				TEXT("SarkoEncounter: '%s' REFUSED — costs %d, %d left in the raid budget (%d alive of maxAlive %d)"),
+				*Encounter.Id, Encounter.BudgetCost, EncounterBudgetRemaining, AliveNow, Encounter.MaxAlive);
+			Runtime.bArmed = false;
+			Runtime.bBeyondRearm = false;
+			Runtime.DeferredSeconds = 0.f;
+			continue;
+		}
+
+		// Authored points, in author order, that are far enough away AND cannot
+		// see the player. Author order is the preference order: the notes on
+		// each `spawns[]` row record which cover it was chosen behind, so the
+		// first usable one is the one the designer would have picked.
+		TArray<int32> Usable;
+		Usable.Reserve(Encounter.Spawns.Num());
+		for (int32 SpawnIndex = 0; SpawnIndex < Encounter.Spawns.Num(); ++SpawnIndex)
+		{
+			const FVector& Point = Encounter.Spawns[SpawnIndex].Location;
+			const float SpawnDistance = FVector::Dist(Point, PlayerLocation);
+			const bool bSees = HasLineOfSightBetween(Point, PlayerLocation, Player);
+			if (SarkoEncounter::SpawnPointQualifies(SpawnDistance, bSees, Settings.EncounterMinSpawnDistanceUU))
+			{
+				Usable.Add(SpawnIndex);
+			}
+		}
+
+		if (Usable.Num() < Allowed)
+		{
+			// Defer. Never relocate toward the player, never spawn in view — the
+			// only honest move is to wait for the player to move.
+			Runtime.DeferredSeconds += Interval;
+			if (SarkoEncounter::ShouldAbandonDeferral(Runtime.DeferredSeconds, Settings.EncounterSpawnDeferSeconds))
+			{
+				UE_LOG(LogTemp, Display,
+					TEXT("SarkoEncounter: '%s' gave up after %.2fs — only %d of %d authored point(s) were >= %.0f uu away and out of sight; it will re-arm on the next approach"),
+					*Encounter.Id, Runtime.DeferredSeconds, Usable.Num(), Encounter.Spawns.Num(),
+					Settings.EncounterMinSpawnDistanceUU);
+				Runtime.bArmed = false;
+				Runtime.bBeyondRearm = false;
+				Runtime.DeferredSeconds = 0.f;
+			}
+			continue;
+		}
+
+		int32 SpawnedNow = 0;
+		for (int32 Slot = 0; Slot < Allowed; ++Slot)
+		{
+			const FSarkoEncounterSpawn& Spawn = Encounter.Spawns[Usable[Slot]];
+
+			FActorSpawnParameters Params;
+			Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+			// Facing the player, so the first thing the player ever sees of this
+			// enemy is its front and not its back.
+			const FRotator Facing = (PlayerLocation - Spawn.Location).Rotation();
+			ASarkoEnemyCharacter* Enemy = World->SpawnActor<ASarkoEnemyCharacter>(
+				ASarkoEnemyCharacter::StaticClass(), Spawn.Location, FRotator(0.f, Facing.Yaw, 0.f), Params);
+			if (!Enemy)
+			{
+				continue;
+			}
+			Enemy->ApplyArchetypeAndPost(
+				Spawn.Archetype, FVector(Spawn.PostPos.X, Spawn.PostPos.Y, Spawn.Location.Z), Spawn.LeashUU);
+			Runtime.Spawned.Add(Enemy);
+			++SpawnedNow;
+
+			UE_LOG(LogTemp, Display,
+				TEXT("SarkoEncounter: '%s' spawned '%s' (%s) at %s — %.0f uu from the player, no line of sight, holding post (%.0f, %.0f) on a %.0f uu leash"),
+				*Encounter.Id, *Spawn.Id, *Spawn.Archetype.ToString(), *Spawn.Location.ToString(),
+				FVector::Dist(Spawn.Location, PlayerLocation), Spawn.PostPos.X, Spawn.PostPos.Y, Spawn.LeashUU);
+		}
+
+		if (SpawnedNow == 0)
+		{
+			// Every SpawnActor failed. Not a budget event: nothing is spent for
+			// enemies that do not exist.
+			Runtime.bArmed = false;
+			Runtime.DeferredSeconds = 0.f;
+			continue;
+		}
+
+		// Charged in full and never refunded, even when the first-fight cap made
+		// the wave smaller than its cost. Deducting at least what was spawned is
+		// what makes "at most N enemies in a tutorial raid" true by arithmetic
+		// rather than by authoring.
+		EncounterBudgetRemaining -= Encounter.BudgetCost;
+		++EncountersFired;
+		Runtime.bFired = true;
+		Runtime.bArmed = false;
+		Runtime.bBeyondRearm = false;
+		Runtime.DeferredSeconds = 0.f;
+
+		UE_LOG(LogTemp, Display,
+			TEXT("SarkoEncounter: '%s' spent %d of the raid budget for %d enemy(ies) — %d left"),
+			*Encounter.Id, Encounter.BudgetCost, SpawnedNow, EncounterBudgetRemaining);
+	}
 }
 
 float ASarkoRaidGameMode::MapClockSeconds() const

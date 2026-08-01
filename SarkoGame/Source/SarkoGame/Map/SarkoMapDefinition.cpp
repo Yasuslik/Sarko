@@ -1,5 +1,10 @@
 #include "Map/SarkoMapDefinition.h"
 
+// Included for the same reason the item catalog is: an archetype name that the
+// table does not know is checked HERE, at load, where the message reaches a
+// person — not at spawn time, four minutes into a raid, as a bot that silently
+// does not appear.
+#include "AI/SarkoBotArchetypes.h"
 #include "Dom/JsonObject.h"
 #include "Loot/SarkoItemCatalog.h"
 #include "Misc/FileHelper.h"
@@ -266,6 +271,71 @@ namespace
 		if (Out.IsEmpty())
 		{
 			OutError = TEXT("'id' is present but empty");
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Reads a REQUIRED whole number into an int32. Same JSON-type strictness as
+	 * ReadRequiredNumber, plus the rule that makes an int an int: JSON has one
+	 * number type, so `"budgetCost": 1.5` would otherwise be truncated to 1 and
+	 * the author's mistake would become the raid's budget with nothing logged —
+	 * exactly the failure `qty` already has a named error for.
+	 */
+	bool ReadRequiredWholeNumber(const TSharedPtr<FJsonObject>& Object, const FString& Field,
+		const FString& Context, int32& Out, FString& OutError)
+	{
+		double Value = 0.0;
+		if (!ReadRequiredNumber(Object, Field, Context, Value, OutError))
+		{
+			return false;
+		}
+		if (Value != FMath::TruncToDouble(Value))
+		{
+			OutError = FString::Printf(TEXT("%s'%s' must be a whole number, not %g — a fraction would be silently truncated"),
+				*Context, *Field, Value);
+			return false;
+		}
+		Out = static_cast<int32>(Value);
+		return true;
+	}
+
+	/**
+	 * Reads a REQUIRED bool. Absence is an error here, unlike ReadOptionalBool:
+	 * `oneShot` decides whether a POI can hand out enemies twice, and a field
+	 * that quietly defaults is a field nobody reads before it matters.
+	 */
+	bool ReadRequiredBool(const TSharedPtr<FJsonObject>& Object, const FString& Field,
+		const FString& Context, bool& Out, FString& OutError)
+	{
+		const TSharedPtr<FJsonValue> Value = Object->TryGetField(Field);
+		if (!Value.IsValid())
+		{
+			OutError = FString::Printf(TEXT("%s'%s' is missing"), *Context, *Field);
+			return false;
+		}
+		if (Value->Type != EJson::Boolean)
+		{
+			OutError = FString::Printf(TEXT("%s'%s' is present but not a boolean"), *Context, *Field);
+			return false;
+		}
+		Out = Value->AsBool();
+		return true;
+	}
+
+	/** Reads a REQUIRED, non-empty string, with the same type strictness as the optional form. */
+	bool ReadRequiredString(const TSharedPtr<FJsonObject>& Object, const FString& Field,
+		const FString& Context, FString& Out, FString& OutError)
+	{
+		if (!ReadOptionalString(Object, Field, Out, OutError))
+		{
+			OutError = FString::Printf(TEXT("%s%s"), *Context, *OutError);
+			return false;
+		}
+		if (Out.IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("%s'%s' is missing, empty or not a string"), *Context, *Field);
 			return false;
 		}
 		return true;
@@ -881,6 +951,228 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 		}
 	}
 
+	// encounterBudget — optional as a section, all-or-nothing inside it. A map
+	// with encounters and no budget would be a map whose enemy count is bounded
+	// by nothing, which is the exact thing the encounter system exists to stop,
+	// so that combination is refused below once both sections are read.
+	if (Root->HasField(TEXT("encounterBudget")))
+	{
+		const TSharedPtr<FJsonObject>* BudgetObject = nullptr;
+		if (!Root->TryGetObjectField(TEXT("encounterBudget"), BudgetObject) || !BudgetObject)
+		{
+			OutError = TEXT("'encounterBudget' is present but not an object");
+			return false;
+		}
+		const FString Context = TEXT("encounterBudget: ");
+		if (!ReadRequiredWholeNumber(*BudgetObject, TEXT("tutorial"), Context, OutDefinition.EncounterBudget.Tutorial, OutError) ||
+			!ReadRequiredWholeNumber(*BudgetObject, TEXT("normal"), Context, OutDefinition.EncounterBudget.Normal, OutError) ||
+			!ReadRequiredWholeNumber(*BudgetObject, TEXT("firstFightMaxAlive"), Context, OutDefinition.EncounterBudget.FirstFightMaxAlive, OutError))
+		{
+			return false;
+		}
+		if (OutDefinition.EncounterBudget.Tutorial < 1 || OutDefinition.EncounterBudget.Normal < 1 ||
+			OutDefinition.EncounterBudget.FirstFightMaxAlive < 1)
+		{
+			OutError = FString::Printf(
+				TEXT("encounterBudget: 'tutorial' (%d), 'normal' (%d) and 'firstFightMaxAlive' (%d) must each be at least 1 — a zero budget is a map with encounters that can never fire, which is indistinguishable from a map with none"),
+				OutDefinition.EncounterBudget.Tutorial, OutDefinition.EncounterBudget.Normal,
+				OutDefinition.EncounterBudget.FirstFightMaxAlive);
+			return false;
+		}
+		OutDefinition.EncounterBudget.bAuthored = true;
+	}
+
+	// encounters
+	const TArray<TSharedPtr<FJsonValue>>* Encounters = nullptr;
+	if (!TryGetOptionalArrayField(Root, TEXT("encounters"), Encounters, OutError))
+	{
+		return false;
+	}
+	if (Encounters)
+	{
+		for (int32 Index = 0; Index < Encounters->Num(); ++Index)
+		{
+			const TSharedPtr<FJsonObject>* Object = nullptr;
+			if (!(*Encounters)[Index]->TryGetObject(Object) || !Object)
+			{
+				OutError = FString::Printf(TEXT("encounters[%d]: not an object"), Index);
+				return false;
+			}
+			FSarkoEncounter Encounter;
+
+			// Required, like a building's id and unlike every optional-id
+			// section: an encounter's id is what the arm/spawn/budget log lines
+			// print, and an anonymous event cannot be traced through a raid log.
+			FString IdContext = FString::Printf(TEXT("encounters[%d]: "), Index);
+			if (!ReadRequiredString(*Object, TEXT("id"), IdContext, Encounter.Id, OutError))
+			{
+				return false;
+			}
+			const FString Context = FString::Printf(TEXT("encounters[%d] ('%s'): "), Index, *Encounter.Id);
+
+			if (!ReadRequiredWholeNumber(*Object, TEXT("order"), Context, Encounter.Order, OutError) ||
+				!ReadRequiredWholeNumber(*Object, TEXT("budgetCost"), Context, Encounter.BudgetCost, OutError) ||
+				!ReadRequiredWholeNumber(*Object, TEXT("maxAlive"), Context, Encounter.MaxAlive, OutError) ||
+				!ReadRequiredBool(*Object, TEXT("oneShot"), Context, Encounter.bOneShot, OutError))
+			{
+				return false;
+			}
+			if (Encounter.BudgetCost < 1)
+			{
+				OutError = FString::Printf(TEXT("%s'budgetCost' must be at least 1, found %d"), *Context, Encounter.BudgetCost);
+				return false;
+			}
+			if (Encounter.MaxAlive < 1)
+			{
+				OutError = FString::Printf(TEXT("%s'maxAlive' must be at least 1, found %d"), *Context, Encounter.MaxAlive);
+				return false;
+			}
+
+			// trigger
+			const TSharedPtr<FJsonObject>* TriggerObject = nullptr;
+			if (!(*Object)->TryGetObjectField(TEXT("trigger"), TriggerObject) || !TriggerObject)
+			{
+				OutError = FString::Printf(TEXT("%s'trigger' is missing or not an object"), *Context);
+				return false;
+			}
+			{
+				const FString TriggerContext = FString::Printf(TEXT("%strigger: "), *Context);
+				FString KindName;
+				if (!ReadRequiredString(*TriggerObject, TEXT("kind"), TriggerContext, KindName, OutError))
+				{
+					return false;
+				}
+				// An unlisted kind is an error rather than a fallback to radius,
+				// for exactly the reason an unlisted surface is: a typo would
+				// become a trigger of the wrong shape in the right place, which
+				// reads as a gameplay bug and not as a data bug.
+				if (KindName != TEXT("radius"))
+				{
+					OutError = FString::Printf(TEXT("%s'kind' must be \"radius\" (the only trigger shape today), found '%s'"),
+						*TriggerContext, *KindName);
+					return false;
+				}
+				Encounter.Trigger.Kind = ESarkoTriggerKind::Radius;
+
+				if (!ReadVector2(*TriggerObject, TEXT("pos"), Encounter.Trigger.Location, OutError))
+				{
+					OutError = FString::Printf(TEXT("%s%s"), *TriggerContext, *OutError);
+					return false;
+				}
+				double RadiusUU = 0.0;
+				double ArmAfterUU = 0.0;
+				if (!ReadRequiredNumber(*TriggerObject, TEXT("radiusUU"), TriggerContext, RadiusUU, OutError) ||
+					!ReadRequiredNumber(*TriggerObject, TEXT("armAfterUU"), TriggerContext, ArmAfterUU, OutError))
+				{
+					return false;
+				}
+				if (RadiusUU <= 0.0)
+				{
+					OutError = FString::Printf(TEXT("%s'radiusUU' is not positive"), *TriggerContext);
+					return false;
+				}
+				// The hysteresis band has to BE a band. Equal values are a band of
+				// zero width, which is the pumping bug this field exists to stop.
+				if (ArmAfterUU <= RadiusUU)
+				{
+					OutError = FString::Printf(
+						TEXT("%s'armAfterUU' (%.1f) must be greater than 'radiusUU' (%.1f) — it is the hysteresis band, and a band of zero width lets a player standing on the boundary arm the trigger several times a second"),
+						*TriggerContext, ArmAfterUU, RadiusUU);
+					return false;
+				}
+				Encounter.Trigger.RadiusUU = static_cast<float>(RadiusUU);
+				Encounter.Trigger.ArmAfterUU = static_cast<float>(ArmAfterUU);
+			}
+
+			// spawns (named SpawnRows, not Spawns: the playerSpawns array above is
+			// still in scope and -Wshadow is an error in this build)
+			const TArray<TSharedPtr<FJsonValue>>* SpawnRows = nullptr;
+			if (!(*Object)->TryGetArrayField(TEXT("spawns"), SpawnRows) || !SpawnRows)
+			{
+				OutError = FString::Printf(TEXT("%s'spawns' is missing or not an array"), *Context);
+				return false;
+			}
+			if (SpawnRows->Num() == 0)
+			{
+				OutError = FString::Printf(TEXT("%s'spawns' is empty — an encounter with no authored spawn point can never fire"), *Context);
+				return false;
+			}
+			for (int32 SpawnIndex = 0; SpawnIndex < SpawnRows->Num(); ++SpawnIndex)
+			{
+				const TSharedPtr<FJsonObject>* SpawnObject = nullptr;
+				if (!(*SpawnRows)[SpawnIndex]->TryGetObject(SpawnObject) || !SpawnObject)
+				{
+					OutError = FString::Printf(TEXT("%sspawns[%d] is not an object"), *Context, SpawnIndex);
+					return false;
+				}
+				FSarkoEncounterSpawn Spawn;
+				const FString SpawnContext = FString::Printf(TEXT("%sspawns[%d]: "), *Context, SpawnIndex);
+				if (!ReadRequiredString(*SpawnObject, TEXT("id"), SpawnContext, Spawn.Id, OutError))
+				{
+					return false;
+				}
+				if (!ReadVector(*SpawnObject, TEXT("pos"), Spawn.Location, OutError) ||
+					!ReadVector2(*SpawnObject, TEXT("postPos"), Spawn.PostPos, OutError))
+				{
+					OutError = FString::Printf(TEXT("%s%s"), *SpawnContext, *OutError);
+					return false;
+				}
+				FString ArchetypeName;
+				if (!ReadRequiredString(*SpawnObject, TEXT("archetype"), SpawnContext, ArchetypeName, OutError))
+				{
+					return false;
+				}
+				// Checked against the table here, at load, for the same reason a
+				// fixedItems id is checked against the catalog here: the
+				// alternative is a bot that silently never appears, in a raid,
+				// from a file that parses.
+				FSarkoBotArchetype Archetype;
+				if (!SarkoAI::FindBotArchetype(FName(*ArchetypeName), Archetype))
+				{
+					OutError = FString::Printf(TEXT("%s'%s' is not a known bot archetype"), *SpawnContext, *ArchetypeName);
+					return false;
+				}
+				Spawn.Archetype = FName(*ArchetypeName);
+
+				double LeashUU = 0.0;
+				if (!ReadRequiredNumber(*SpawnObject, TEXT("leashUU"), SpawnContext, LeashUU, OutError))
+				{
+					return false;
+				}
+				if (LeashUU <= 0.0)
+				{
+					OutError = FString::Printf(TEXT("%s'leashUU' is not positive — a bot with no leash is the bug the leash exists to fix"), *SpawnContext);
+					return false;
+				}
+				Spawn.LeashUU = static_cast<float>(LeashUU);
+				Encounter.Spawns.Add(Spawn);
+			}
+
+			// A ceiling higher than the number of doors is a ceiling that can
+			// never be reached, and it reads as an authoring intent that the map
+			// silently does not honour.
+			if (Encounter.MaxAlive > Encounter.Spawns.Num())
+			{
+				OutError = FString::Printf(
+					TEXT("%s'maxAlive' is %d but only %d spawn point(s) are authored — the encounter could never reach its own ceiling"),
+					*Context, Encounter.MaxAlive, Encounter.Spawns.Num());
+				return false;
+			}
+
+			OutDefinition.Encounters.Add(Encounter);
+		}
+	}
+
+	// The one cross-section rule: encounters without a budget is a map whose
+	// enemy count is bounded by nothing.
+	if (OutDefinition.Encounters.Num() > 0 && !OutDefinition.EncounterBudget.bAuthored)
+	{
+		OutError = FString::Printf(
+			TEXT("the file authors %d encounter(s) but no 'encounterBudget' — the budget is the ceiling for the raid, and without it the enemy count is bounded by nothing"),
+			OutDefinition.Encounters.Num());
+		return false;
+	}
+
 	// Uniqueness is a parse-time rule rather than a caller's responsibility:
 	// every consumer of a definition assumes an id names one object, and there
 	// is no safe behaviour for the case where it names two.
@@ -1021,6 +1313,24 @@ bool SarkoMap::CollectIds(const FSarkoMapDefinition& Definition, TArray<FString>
 	for (int32 I = 0; I < Definition.PlayerSpawnIds.Num(); ++I) { if (!Take(Definition.PlayerSpawnIds[I], TEXT("playerSpawns"), I)) { return false; } }
 	for (int32 I = 0; I < Definition.BotSpawns.Num(); ++I)      { if (!Take(Definition.BotSpawns[I].Id, TEXT("botSpawns"), I))      { return false; } }
 	for (int32 I = 0; I < Definition.Extractions.Num(); ++I)    { if (!Take(Definition.Extractions[I].Id, TEXT("extractions"), I))  { return false; } }
+	// Encounters and the spawn points inside them share the one namespace with
+	// everything above, for the reason the namespace is one: a report, a test or
+	// a person reading "the thing called X" does not know which section X was
+	// declared in, and there is no safe behaviour when the name means two things.
+	for (int32 I = 0; I < Definition.Encounters.Num(); ++I)
+	{
+		if (!Take(Definition.Encounters[I].Id, TEXT("encounters"), I))
+		{
+			return false;
+		}
+		for (int32 S = 0; S < Definition.Encounters[I].Spawns.Num(); ++S)
+		{
+			if (!Take(Definition.Encounters[I].Spawns[S].Id, TEXT("encounters[].spawns"), S))
+			{
+				return false;
+			}
+		}
+	}
 	return true;
 }
 
