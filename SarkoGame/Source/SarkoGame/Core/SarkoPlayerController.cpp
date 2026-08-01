@@ -83,6 +83,12 @@ FBox2D SarkoInput::InteractButtonRect(FVector2D ViewportSize)
 	return InteractButtonRect(FBox2D(FVector2D::ZeroVector, ViewportSize));
 }
 
+bool SarkoInput::IsMoveStickSuppressed(bool bContainerPanelOpen)
+{
+	// See the header: the ONE place, so spec §5's fallback is a one-line change.
+	return bContainerPanelOpen;
+}
+
 ASarkoPlayerController::ASarkoPlayerController()
 {
 	bShowMouseCursor = false;
@@ -238,6 +244,22 @@ void ASarkoPlayerController::UpdateSticks()
 	const FBox2D InteractRect = SarkoInput::InteractButtonRect(SarkoInput::SafeFrame(Viewport));
 	bool bInteractTouchStillDown = false;
 
+	// Read once per frame, from the pawn's own mirror of what is open. The panel
+	// is a client-side view; this is a client-side input rule; neither needs the
+	// server's opinion.
+	const ASarkoCharacter* PanelPawn = Cast<ASarkoCharacter>(GetPawn());
+	const bool bMoveSuppressed = SarkoInput::IsMoveStickSuppressed(
+		PanelPawn && PanelPawn->GetOpenContainerIndex() != INDEX_NONE);
+
+	// Dropped on the frame suppression begins, not merely ignored: a stick left
+	// active would keep its last deflection and the pawn would walk on through
+	// the whole loot, which is the exact opposite of the intent.
+	if (bMoveSuppressed && MoveTouchIndex != INDEX_NONE)
+	{
+		MoveStick = FSarkoTouchStick();
+		MoveTouchIndex = INDEX_NONE;
+	}
+
 	// Three fingers now, not two: movement, aim and the interact button are
 	// three separate holds, and a player opening a crate while backing away
 	// from a bot is holding all three at once. Each slot is a stable identity
@@ -305,7 +327,18 @@ void ASarkoPlayerController::UpdateSticks()
 
 		if (SarkoInput::IsLeftHalf(Position, Viewport))
 		{
-			if (MoveTouchIndex == INDEX_NONE)
+			// Suppressed: the touch is consumed by nothing. It is NOT reclassified
+			// to the aim stick — a finger landing on the left while looting must
+			// not start aiming, and with hold-to-fire that would also start
+			// shooting.
+			//
+			// Reversible with no state to repair: when the panel closes this goes
+			// false on the next tick and the next left-half touch-DOWN re-anchors
+			// the stick normally. A finger already down when the panel closed
+			// drives nothing until it is lifted and pressed again, which is
+			// correct — a stick springing to life under a resting finger would
+			// start the pawn walking in whatever direction it happened to be.
+			if (!bMoveSuppressed && MoveTouchIndex == INDEX_NONE)
 			{
 				MoveTouchIndex = Index;
 				MoveStick.bActive = true;

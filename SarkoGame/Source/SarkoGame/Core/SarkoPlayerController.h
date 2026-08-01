@@ -47,6 +47,24 @@ namespace SarkoInput
 
 	/** As above, on a screen with no cutouts: the frame is the whole viewport. */
 	FBox2D InteractButtonRect(FVector2D ViewportSize);
+
+	/**
+	 * Whether the left thumb's stick must not be driven this frame.
+	 *
+	 * Today this is exactly "a container panel is open" — spec §4.5. The panel
+	 * moved to the left half so that a thumb reaching for the AIM stick can never
+	 * land on a cell, and the price of that is the move stick, which is the input
+	 * looting can afford to lose: you are standing still to loot anyway. Shooting
+	 * is not, and a player interrupted mid-loot must be able to fight back with
+	 * the thumb that was already there. The aim stick, fire and the reload button
+	 * all keep working untouched.
+	 *
+	 * **This is the ONE place.** Spec §5 names the fallback if the suppression
+	 * reads as a bug in play — shrink the panel, do NOT restore movement under it
+	 * — and that fallback is a one-line change here precisely because nothing
+	 * else in the project decides this.
+	 */
+	bool IsMoveStickSuppressed(bool bContainerPanelOpen);
 }
 
 enum class ESarkoTakeRefusal : uint8;

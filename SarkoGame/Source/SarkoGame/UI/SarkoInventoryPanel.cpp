@@ -144,9 +144,11 @@ TOptional<FSlateRenderTransform> SSarkoInventoryPanel::PlateTransform() const
 	{
 		return TOptional<FSlateRenderTransform>();
 	}
-	// In from the right edge, in POINTS — the transform is applied to the plate,
-	// which lives inside the DPI scaler, so no factor is involved.
-	const float Offset = SarkoUI::EntrySlidePt * (1.f - EntryCurve.GetLerp());
+	// In from the LEFT edge now that the panel lives there, in POINTS — the
+	// transform is applied to the plate, which lives inside the DPI scaler, so no
+	// factor is involved. A plate that slides in from the side it is not on reads
+	// as a plate that came from somewhere else.
+	const float Offset = -SarkoUI::EntrySlidePt * (1.f - EntryCurve.GetLerp());
 	return TOptional<FSlateRenderTransform>(FSlateRenderTransform(FVector2D(Offset, 0.f)));
 }
 

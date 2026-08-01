@@ -302,6 +302,24 @@ bool FSarkoRefusalAnchorOverhangsWhatBlockedIt::RunTest(const FString& Parameter
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoMoveStickIsSuppressedOnlyWhileAPanelIsOpen,
+	"Sarko.Input.MoveStickIsSuppressedOnlyWhileAPanelIsOpen",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoMoveStickIsSuppressedOnlyWhileAPanelIsOpen::RunTest(const FString& Parameters)
+{
+	// ONE function, so spec §5's fallback — "if it reads as a bug in play, shrink
+	// the panel rather than restore movement under it" — is a one-line change
+	// here and nowhere else. If this ever grows a second condition, it grows it
+	// in this function.
+	TestTrue(TEXT("a panel is open, so the left thumb does nothing"),
+		SarkoInput::IsMoveStickSuppressed(true));
+	TestFalse(TEXT("no panel, so movement is movement"),
+		SarkoInput::IsMoveStickSuppressed(false));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FSarkoRefusalShakeStartsAndEndsAtRest,
 	"Sarko.UI.RefusalShakeStartsAndEndsAtRest",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
