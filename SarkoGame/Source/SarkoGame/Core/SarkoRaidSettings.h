@@ -238,8 +238,82 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "AI")
 	float EnemyHearingRadiusUU = 2500.f;
 
+	/**
+	 * How far an enemy may open fire, in unreal units. Its own setting since the
+	 * realism stage; it used to be `WeaponRangeUU * 0.5` in the controller, i.e.
+	 * 2000 uu against a screen that is about 1090 uu across at the pawn's depth,
+	 * so the very first shot of a raid arrived from a bot the player could not
+	 * see. ТЗ §11 forbids exactly that. 1100 sits inside the ~1380 uu of forward
+	 * view the portrait camera gives, so a fight starts on screen or not at all.
+	 *
+	 * A separate number from the player's WeaponRangeUU on purpose: how far a
+	 * bullet travels and how far a bot is willing to shoot from are two
+	 * questions, and tying them together is what made this one invisible.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float EnemyFiringRangeUU = 1100.f;
+
+	/**
+	 * How far from its post a bot may wander when it has nothing to react to,
+	 * for a bot whose map data authored no leash of its own.
+	 *
+	 * Before this existed, PatrolTarget initialised to FVector::ZeroVector (the
+	 * world origin, which on this map is the closed bridge) and RerollPatrolTarget
+	 * picked uniformly inside +/-MapExtent*0.8 — a 320x320 m square. With the
+	 * stuck detector firing every 2 s, every authored bot post was fiction within
+	 * about 90 seconds and the map's whole placement design with it.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float AIPatrolLeashUU = 1400.f;
+
+	/**
+	 * How close to the remembered noise an investigating bot has to get before it
+	 * counts as "looked, found nothing" and walks back to its post.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float AIInvestigateArriveRadiusUU = 250.f;
+
+	/**
+	 * How long a bot keeps walking toward a noise it never found. Without a
+	 * bound, a player who breaks line of sight and keeps moving would be followed
+	 * across the sector by a bot that renews its memory every tick — which is
+	 * chase-through-walls again, wearing the Investigate name.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float AIInvestigateTimeoutSeconds = 12.f;
+
 	UPROPERTY(EditAnywhere, config, Category = "AI")
 	float EnemyFireIntervalSeconds = 0.9f;
+
+	/**
+	 * How often the server evaluates encounter triggers. Not per tick: six
+	 * triggers at 4 Hz is a handful of distance comparisons a second, and the
+	 * player cannot move far enough in 0.25 s for the difference to be felt.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Encounters")
+	float EncounterEvaluationIntervalSeconds = 0.25f;
+
+	/**
+	 * The hard floor between an encounter's spawn point and the player at the
+	 * instant an enemy is created.
+	 *
+	 * Measured, not picked: the portrait camera (a 1400 uu boom at -70 degrees)
+	 * shows about 1380 uu ahead of the pawn and 545 uu to either side, so 1800 uu
+	 * is beyond the forward reach with margin and 3.3x the lateral half-screen. A
+	 * bot that appears on screen is the one thing a game with four enemies per
+	 * raid can never be forgiven for.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Encounters")
+	float EncounterMinSpawnDistanceUU = 1800.f;
+
+	/**
+	 * How long an armed encounter keeps waiting for an authored spawn point to
+	 * become usable before it gives the attempt up and re-arms on the next
+	 * approach. It never relocates a spawn toward the player and never spawns in
+	 * view — deferring is the only move it has.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Encounters")
+	float EncounterSpawnDeferSeconds = 5.f;
 
 	/**
 	 * Hysteresis band for the Shoot/Chase boundary: once shooting, the enemy
