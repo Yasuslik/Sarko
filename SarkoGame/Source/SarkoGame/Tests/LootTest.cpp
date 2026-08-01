@@ -1193,4 +1193,137 @@ bool FSarkoCarryPagesFollowTheWornBag::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoTutorialGrantsABagBeforeItNeedsOne,
+	"Sarko.Loot.TutorialGrantsABagBeforeItNeedsOne",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoTutorialGrantsABagBeforeItNeedsOne::RunTest(const FString& Parameters)
+{
+	// Over the REAL map file. Pocket capacity is a 2x2 grid — four cells, two of
+	// them eaten by the first 2x1 the player finds — and the authored tutorial
+	// yields twelve cells' worth of loot. Without a bag in the FIRST crate the
+	// tutorial teaches "everything you find is refused", which is a lesson, but
+	// not the one spec §6.5 is sequencing.
+	FSarkoMapDefinition Definition;
+	FString Error;
+	if (!SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Definition, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json did not load: %s"), *Error));
+		return false;
+	}
+	if (Definition.Containers.Num() == 0)
+	{
+		AddError(TEXT("bridge.json has no containers"));
+		return false;
+	}
+
+	const auto HasBag = [](const FSarkoLootContainerSpot& Spot)
+	{
+		return Spot.FixedItems.ContainsByPredicate(
+			[](const FSarkoItemStack& Stack) { return Stack.Item == SarkoLoot::BackpackItemId; });
+	};
+
+	TestTrue(TEXT("the spawn crate carries a backpack"), HasBag(Definition.Containers[0]));
+	TestTrue(TEXT("and it is FIRST in the list, so ЗАБРАТИ ВСЕ equips it before it takes anything else"),
+		Definition.Containers[0].FixedItems.Num() > 0
+			&& Definition.Containers[0].FixedItems[0].Item == SarkoLoot::BackpackItemId);
+
+	int32 BagCrates = 0;
+	for (const FSarkoLootContainerSpot& Spot : Definition.Containers)
+	{
+		BagCrates += HasBag(Spot) ? 1 : 0;
+	}
+	TestEqual(TEXT("and only that one, or the lesson is 'bags are everywhere'"), BagCrates, 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoTutorialHaulStillFitsTheGrid,
+	"Sarko.Loot.TutorialHaulStillFitsTheGrid",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoTutorialHaulStillFitsTheGrid::RunTest(const FString& Parameters)
+{
+	// Every authored fixedItems entry, poured into one bag, must still fit
+	// 2x2 pockets plus a worn 4x2 backpack — INCLUDING the bag itself, which is
+	// worn and therefore costs no cell.
+	//
+	// Not an area sum. Area proves a bound, not a packing: the player chooses
+	// which crate to open, so the acquisition order varies, and first fit with
+	// mixed 1x1 and 2x1 shapes can in principle strand a wide item behind two
+	// non-adjacent holes. So the REAL placer is run over the REAL data in four
+	// different orders, and every one of them has to take everything.
+	FSarkoMapDefinition Definition;
+	FString Error;
+	if (!SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Definition, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json did not load: %s"), *Error));
+		return false;
+	}
+
+	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+	const TArray<FSarkoGridPage> Pages =
+		SarkoGrid::CarryPages(true, FIntPoint(2, 2), FIntPoint(4, 2));
+
+	// Flattened once, in the authored order, minus the worn bag.
+	TArray<FSarkoItemStack> Authored;
+	for (const FSarkoLootContainerSpot& Spot : Definition.Containers)
+	{
+		for (const FSarkoItemStack& Stack : Spot.FixedItems)
+		{
+			if (Stack.Item != SarkoLoot::BackpackItemId)
+			{
+				Authored.Add(Stack);
+			}
+		}
+	}
+
+	const auto PourIn = [&](const TArray<FSarkoItemStack>& Order, const TCHAR* What)
+	{
+		TArray<FSarkoItemStack> Bag;
+		int32 Refused = 0;
+		for (const FSarkoItemStack& Stack : Order)
+		{
+			Refused += SarkoGrid::AddToGrid(Bag, Catalog, Pages, Stack.Item, Stack.Quantity);
+		}
+		TestEqual(*FString::Printf(
+				TEXT("%s: nothing is refused. If this is red, an authored item was ADDED or grew — ")
+				TEXT("the layout fits 12 of 12 cells with NOTHING to spare, so something must come out"),
+				What),
+			Refused, 0);
+		TestTrue(*FString::Printf(TEXT("%s: %d of %d cells"), What,
+				SarkoGrid::UsedCells(Bag, Catalog), SarkoGrid::TotalCells(Pages)),
+			SarkoGrid::UsedCells(Bag, Catalog) <= SarkoGrid::TotalCells(Pages));
+	};
+
+	PourIn(Authored, TEXT("the authored route"));
+
+	TArray<FSarkoItemStack> Reversed = Authored;
+	Algo::Reverse(Reversed);
+	PourIn(Reversed, TEXT("the route walked backwards"));
+
+	// The two adversarial orders for first fit: every wide item first (it claims
+	// whole rows), and every wide item last (it has to squeeze into what the
+	// one-cell items left).
+	const auto ByWidth = [&Catalog](bool bWideFirst)
+	{
+		return [&Catalog, bWideFirst](const FSarkoItemStack& A, const FSarkoItemStack& B)
+		{
+			const int32 WA = SarkoGrid::SizeOf(Catalog, A.Item).X;
+			const int32 WB = SarkoGrid::SizeOf(Catalog, B.Item).X;
+			return bWideFirst ? WA > WB : WA < WB;
+		};
+	};
+
+	TArray<FSarkoItemStack> WideFirst = Authored;
+	WideFirst.StableSort(ByWidth(true));
+	PourIn(WideFirst, TEXT("the widest things first"));
+
+	TArray<FSarkoItemStack> WideLast = Authored;
+	WideLast.StableSort(ByWidth(false));
+	PourIn(WideLast, TEXT("the widest things last"));
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

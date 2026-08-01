@@ -43,6 +43,7 @@
         { "item": "toolbox",     "weight": 14, "qty": { "min": 1, "max": 1 } },
         { "item": "medkit",      "weight": 12, "qty": { "min": 1, "max": 1 } },
         { "item": "copper_wire", "weight": 8,  "qty": { "min": 2, "max": 5 } },
+        { "item": "backpack",    "weight": 4,  "qty": { "min": 1, "max": 1 } },
         { "item": "chain",       "weight": 2,  "qty": { "min": 1, "max": 1 } }
       ]
     },
@@ -56,6 +57,7 @@
         { "item": "painkillers", "weight": 14, "qty": { "min": 1, "max": 3 } },
         { "item": "toolbox",     "weight": 10, "qty": { "min": 1, "max": 1 } },
         { "item": "duct_tape",   "weight": 5,  "qty": { "min": 1, "max": 3 } },
+        { "item": "backpack",    "weight": 3,  "qty": { "min": 1, "max": 1 } },
         { "item": "bike_frame",  "weight": 2,  "qty": { "min": 1, "max": 1 } },
         { "item": "wheel_small", "weight": 1,  "qty": { "min": 1, "max": 1 } }
       ]
