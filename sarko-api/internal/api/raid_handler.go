@@ -171,6 +171,13 @@ func handleRaidResult(deps Deps) http.HandlerFunc {
 		switch {
 		case errors.Is(err, store.ErrBadSessionToken):
 			WriteError(w, http.StatusUnauthorized, "bad_session_token", "session token does not match")
+		case errors.Is(err, store.ErrSessionNotConfirmed):
+			// Its own code, not session_not_open: the session is fine, the
+			// caller skipped /v1/raid/confirm. A client that gets this has a
+			// bug it can act on; a forged one is being told nothing it did not
+			// already know from having made the call.
+			WriteError(w, http.StatusConflict, "session_not_confirmed",
+				"confirm the raid before submitting a result")
 		case errors.Is(err, store.ErrSessionNotOpen):
 			WriteError(w, http.StatusConflict, "session_not_open", "session cannot accept a result")
 		case errors.Is(err, store.ErrNotFound):
