@@ -12,16 +12,18 @@
 #     Slate — the PNG comes out black. Scripts/overview-shot.sh uses HighResShot
 #     because it is photographing the 3D map, which is the opposite case.
 #
-# Portrait by default: this is a phone game and the thing worth checking is that
-# nothing clips on a narrow screen.
+# Landscape by default, because the game is landscape-only. 1560x720 is 19.5:9,
+# the aspect of every notched iPhone turned on its side — and the aspect is the
+# thing worth checking, because it is what decides whether the two columns fit.
+# The old default was 720x1280, a portrait screen this game can no longer be in.
 set -euo pipefail
 
 UE="${UE_ROOT:-/Users/Shared/Epic Games/UE_5.8}"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT="$PROJECT_DIR/SarkoGame.uproject"
 SHOT_DIR="$PROJECT_DIR/Saved/Screenshots/MacEditor"
-RES_X="${SHELTER_RES_X:-720}"
-RES_Y="${SHELTER_RES_Y:-1280}"
+RES_X="${SHELTER_RES_X:-1560}"
+RES_Y="${SHELTER_RES_Y:-720}"
 TIMEOUT="${SHELTER_TIMEOUT:-120}"
 # Seconds before the shot. The default is long enough for auth + /v1/profile;
 # a small value (0.2) photographs the "З'ЄДНАННЯ..." state instead.
@@ -55,8 +57,8 @@ else
 fi
 
 # -windowed -ForceRes, or -ResX/-ResY are quietly ignored and the offscreen
-# window comes up at the desktop's size — a landscape PNG for a portrait game,
-# which is exactly the case that hides text clipping.
+# window comes up at the desktop's size — a 16:10 desktop PNG instead of a
+# phone's 19.5:9, which is exactly the case that hides a column not fitting.
 "$UE/Engine/Binaries/Mac/UnrealEditor-Cmd" "$PROJECT" "$MAP" \
 	-game -RenderOffscreen -unattended -nosplash \
 	-windowed -ForceRes -ResX="$RES_X" -ResY="$RES_Y" \

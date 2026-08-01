@@ -8,41 +8,74 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SDPIScaler.h"
 #include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Layout/SSpacer.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
 namespace
 {
 	/**
-	 * The canvas every size in this file is authored against: a portrait phone in
-	 * **logical points**, iPhone 14/15 sized. Points and not pixels on purpose —
-	 * the touch rule this screen has to satisfy is written in points ("≥ 44 pt"),
-	 * so authoring in the same unit makes the rule checkable by reading the code
-	 * instead of by guessing at a device's pixel density.
+	 * The canvas every size in this file is authored against: a **landscape** phone
+	 * in **logical points**, iPhone 14/15 sized. The game is landscape-only, so the
+	 * long edge is the width.
+	 *
+	 * Points and not pixels on purpose — the touch rule this screen has to satisfy
+	 * is written in points ("≥ 44 pt"), so authoring in the same unit makes the rule
+	 * checkable by reading the code instead of by guessing at a device's pixel
+	 * density.
+	 *
+	 * Turning 390x844 into 844x390 is not a rotation of the layout: 390 points of
+	 * height is less than half of what the portrait column had, and a single
+	 * stacked column does not fit in it at any legible font size. The screen is two
+	 * columns now — see Construct.
 	 */
-	constexpr float DesignWidth = 390.f;
-	constexpr float DesignHeight = 844.f;
+	constexpr float DesignWidth = 844.f;
+	constexpr float DesignHeight = 390.f;
 
 	/**
-	 * Keeps the raid button out of the bottom of the screen.
+	 * The horizontal margin, which on a landscape phone is a safe area and not a
+	 * taste decision: rotated, an iPhone puts its Dynamic Island against the
+	 * leading edge, and iOS reports that inset on **both** sides — 59 pt each on a
+	 * 14 Pro — so that turning the phone the other way up does not reflow anything.
+	 * 60 covers the largest inset current hardware reports, and the design canvas
+	 * is close enough to 1:1 with a phone's points (min(2556/844, 1179/390) ≈ 3.02
+	 * on a 14 Pro, and points are pixels/3) that a point constant is the right unit
+	 * to say it in.
 	 *
-	 * The plan's touch rule puts "В РЕЙД" in the lower-middle third and never
-	 * within 8% of an edge. 150 of the 844-point canvas is 17.8%, which lands the
-	 * button's centre around 75% down — low enough to be a thumb's natural target,
-	 * high enough that it is not where a thumb rests during a raid, and well clear
-	 * of the iOS home indicator.
+	 * On a desktop window it is simply a margin, which is what it looked like
+	 * before at 18.
 	 */
-	constexpr float ButtonBottomInset = 150.f;
+	constexpr float SideInset = 60.f;
 
 	/**
-	 * The content column, in points, once the outer padding is taken off.
+	 * The bottom margin. The home indicator is 21 pt of the short edge in
+	 * landscape; 26 clears it and leaves the buttons visibly above it rather than
+	 * touching it.
 	 *
-	 * Fixed rather than filling, so a landscape desktop window gets a centred
-	 * phone-shaped column instead of a full-bleed strip of text across 1600 pixels
-	 * with the stash lines a hand's width from the buttons. Portrait is unaffected:
-	 * 390 - 2*18 is exactly what the column already got there.
+	 * This replaces the portrait ButtonBottomInset of 150, which existed to push
+	 * "В РЕЙД" up into the lower-middle third of an 844-point column. There is no
+	 * lower-middle third of a 390-point one — 150 would be 38% of the screen, and
+	 * the buttons would sit above the middle with the stash squeezed under them.
+	 * In landscape both thumbs already rest at the bottom corners, which is where
+	 * the buttons now are, so the rule the 150 was serving is met by the layout
+	 * instead of by an inset.
 	 */
-	constexpr float ContentWidth = DesignWidth - 36.f;
+	constexpr float BottomInset = 26.f;
+
+	/**
+	 * How the two columns split the width. The left column carries the outcome,
+	 * the haul, the status line and the buttons; the right carries the stash.
+	 *
+	 * The stash gets the larger share because it is the list that can be any
+	 * length and the one thing on this screen the player actually reads — in
+	 * portrait it was a scroll box a few lines tall wedged between the garage line
+	 * and the buttons.
+	 */
+	constexpr float LeftColumnFill = 0.42f;
+	constexpr float RightColumnFill = 0.58f;
+
+	/** The gutter between the two columns. */
+	constexpr float ColumnGap = 28.f;
 
 	/** FCoreStyle is compiled into SlateCore, so no font asset is involved. */
 	FSlateFontInfo ShelterFont(float Size)
@@ -106,7 +139,8 @@ float SSarkoShelterWidget::UiScaleForViewport(FVector2D ViewportSize)
 	}
 	// min, not max: taking the larger ratio would overflow the canvas along the
 	// other axis, which for the status line means a backend error running off the
-	// side of the screen.
+	// side of the screen. Unchanged by the portrait-to-landscape move — only the
+	// two constants it divides by swapped.
 	return FMath::Clamp(
 		FMath::Min(static_cast<float>(ViewportSize.X) / DesignWidth,
 			static_cast<float>(ViewportSize.Y) / DesignHeight),
@@ -157,139 +191,181 @@ void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 		.DPIScale(TAttribute<float>::CreateSP(this, &SSarkoShelterWidget::UiScale))
 		[
 			// Opaque, full-screen: /Engine/Maps/Entry behind this is an empty void
-			// and a translucent menu over it reads as a rendering fault.
+			// and a translucent menu over it reads as a rendering fault. The
+			// background reaches under the cutouts on purpose; only the content is
+			// inset, because an unpainted strip beside a notch is the thing that
+			// actually looks broken.
 			SNew(SBorder)
 			.BorderImage(FillBrush())
 			.BorderBackgroundColor(InkColour)
-			.Padding(FMargin(18.f, 22.f, 18.f, ButtonBottomInset))
-			.HAlign(HAlign_Center)
+			.Padding(FMargin(SideInset, 16.f, SideInset, BottomInset))
 			[
-				SNew(SBox)
-				.WidthOverride(ContentWidth)
-				[
 				SNew(SVerticalBox)
 
-				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
-				[
-					SAssignNew(TitleText, STextBlock)
-					.Font(ShelterFont(30.f))
-					.ColorAndOpacity(BrightColour)
-					.Text(FText::FromString(TEXT("УКРИТТЯ")))
-				]
-
-				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 14.f)
-				[
-					HorizontalRule()
-				]
-
-				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 4.f)
-				[
-					SAssignNew(OutcomeText, STextBlock)
-					.Font(ShelterFont(17.f))
-					.ColorAndOpacity(BrightColour)
-				]
-
-				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 10.f)
-				[
-					SAssignNew(HaulBox, SVerticalBox)
-				]
-
-				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 16.f)
-				[
-					SAssignNew(GarageText, STextBlock)
-					.Font(ShelterFont(17.f))
-					.ColorAndOpacity(BrightColour)
-				]
-
-				// A static section label. Not part of FSarkoShelterView because it
-				// is a constant, not data — without it a bare list of item lines
-				// under the garage line has nothing saying what it is.
-				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
-				[
-					SNew(STextBlock)
-					.Font(ShelterFont(11.f))
-					.ColorAndOpacity(LabelColour)
-					.Text(FText::FromString(TEXT("СХОВОК")))
-				]
-
-				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 8.f)
-				[
-					HorizontalRule()
-				]
-
-				// The stash can be any length, which is the reason this screen is
-				// Slate and not DrawHUD primitives: SScrollBox is the whole feature.
-				+ SVerticalBox::Slot().FillHeight(1.f)
-				[
-					SNew(SScrollBox)
-					+ SScrollBox::Slot()
-					[
-						SAssignNew(StashBox, SVerticalBox)
-					]
-				]
-
-				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 10.f, 0.f, 12.f)
-				[
-					// Wrapped, not one line: the status line carries a verbatim
-					// backend error and on a 720-wide phone screen a single line of
-					// it runs straight off the edge.
-					SAssignNew(StatusText, STextBlock)
-					.Font(ShelterFont(12.f))
-					.ColorAndOpacity(WarnColour)
-					.AutoWrapText(true)
-				]
-
-				// Buttons last, so they sit in the lower-middle third — reachable
-				// by either thumb, and clear of the edges (ButtonBottomInset).
-				+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+				// Header. The title and the garage line share one row rather than
+				// stacking: 390 points of height is the scarce axis now, and the
+				// garage line is a short label ("ГАРАЖ: ВЕЛОСИПЕД 1/3") that was
+				// costing a whole row of it.
+				+ SVerticalBox::Slot().AutoHeight()
 				[
 					SNew(SHorizontalBox)
 
-					+ SHorizontalBox::Slot().AutoWidth().Padding(8.f)
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom)
 					[
-						SAssignNew(RaidButton, SButton)
-						// Measured, not assumed: on a 1179x2556 render (iPhone 14 Pro
-						// native, UI scale 3.02) this comes out 72pt tall and 165pt
-						// wide, comfortably past the 44pt minimum tap target. The
-						// horizontal padding is 22 and not more because at 30 the two
-						// buttons together overran the canvas and sat 9pt from the
-						// screen edge.
-						.ContentPadding(FMargin(22.f, 18.f))
-						.HAlign(HAlign_Center)
-						.VAlign(VAlign_Center)
-						// An attribute, not a one-shot value: SetView flips the flag
-						// and Slate re-reads it, so nothing has to tick to keep the
-						// button honest.
-						.IsEnabled_Lambda([this]() { return bRaidEnabled; })
-						.OnClicked(this, &SSarkoShelterWidget::HandleEnterRaid)
+						SAssignNew(TitleText, STextBlock)
+						.Font(ShelterFont(26.f))
+						.ColorAndOpacity(BrightColour)
+						.Text(FText::FromString(TEXT("УКРИТТЯ")))
+					]
+
+					// Right-aligned against the far edge, which is the horizontal
+					// room landscape gained and portrait never had.
+					+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Bottom)
+						.HAlign(HAlign_Right).Padding(16.f, 0.f, 0.f, 3.f)
+					[
+						SAssignNew(GarageText, STextBlock)
+						.Font(ShelterFont(15.f))
+						.ColorAndOpacity(BrightColour)
+						.Justification(ETextJustify::Right)
+					]
+				]
+
+				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 8.f, 0.f, 10.f)
+				[
+					HorizontalRule()
+				]
+
+				// The body: what the last raid did on the left, what the player
+				// owns on the right. Two columns and not one, because a single
+				// stacked column in 390 points of height fits the title, the
+				// outcome and the buttons and leaves the stash about three lines.
+				+ SVerticalBox::Slot().FillHeight(1.f)
+				[
+					SNew(SHorizontalBox)
+
+					+ SHorizontalBox::Slot().FillWidth(LeftColumnFill)
+						.Padding(0.f, 0.f, ColumnGap * 0.5f, 0.f)
+					[
+						SNew(SVerticalBox)
+
+						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 4.f)
 						[
-							SNew(STextBlock)
+							SAssignNew(OutcomeText, STextBlock)
 							.Font(ShelterFont(17.f))
-							.Text(FText::FromString(TEXT("В РЕЙД")))
+							.ColorAndOpacity(BrightColour)
+						]
+
+						+ SVerticalBox::Slot().AutoHeight()
+						[
+							SAssignNew(HaulBox, SVerticalBox)
+						]
+
+						// Pushes the status line and the buttons to the bottom of
+						// the column, so the buttons land under the left thumb
+						// where it already rests in landscape.
+						+ SVerticalBox::Slot().FillHeight(1.f)
+						[
+							SNew(SSpacer)
+						]
+
+						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 8.f, 0.f, 8.f)
+						[
+							// Wrapped, not one line: the status line carries a
+							// verbatim backend error, and this column is narrower
+							// than the whole screen was.
+							SAssignNew(StatusText, STextBlock)
+							.Font(ShelterFont(12.f))
+							.ColorAndOpacity(WarnColour)
+							.AutoWrapText(true)
+						]
+
+						+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Left)
+						[
+							SNew(SHorizontalBox)
+
+							+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 12.f, 0.f)
+							[
+								SAssignNew(RaidButton, SButton)
+								// Measured, not assumed: with ShelterFont(17) the
+								// label is ~20 pt tall, so 2*18 of vertical padding
+								// makes the button ~56 pt — past the 44 pt minimum
+								// tap target with room to spare. Unchanged from the
+								// portrait layout, because the rule is in points and
+								// points did not move: the DPI scale is still
+								// min(W/844, H/390) ≈ 3.02 on a 1179x2556 phone.
+								.ContentPadding(FMargin(22.f, 18.f))
+								.HAlign(HAlign_Center)
+								.VAlign(VAlign_Center)
+								// An attribute, not a one-shot value: SetView flips
+								// the flag and Slate re-reads it, so nothing has to
+								// tick to keep the button honest.
+								.IsEnabled_Lambda([this]() { return bRaidEnabled; })
+								.OnClicked(this, &SSarkoShelterWidget::HandleEnterRaid)
+								[
+									SNew(STextBlock)
+									.Font(ShelterFont(17.f))
+									.Text(FText::FromString(TEXT("В РЕЙД")))
+								]
+							]
+
+							+ SHorizontalBox::Slot().AutoWidth()
+							[
+								// Stub, and disabled rather than absent: spec §6.5
+								// wants the shop visible so the shape of the shelter
+								// is right, and it says "subscription later, no P2W"
+								// — a button that did anything now would be a design
+								// decision this stage has not made. Two lines of
+								// ShelterFont(10) plus 2*12 of padding is ~48 pt,
+								// which still clears the 44 pt rule.
+								SNew(SButton)
+								.ContentPadding(FMargin(12.f, 12.f))
+								.HAlign(HAlign_Center)
+								.VAlign(VAlign_Center)
+								.IsEnabled(false)
+								[
+									SNew(STextBlock)
+									.Font(ShelterFont(10.f))
+									.Justification(ETextJustify::Center)
+									.Text(FText::FromString(TEXT("МАГАЗИН\nНЕЗАБАРОМ")))
+								]
+							]
 						]
 					]
 
-					+ SHorizontalBox::Slot().AutoWidth().Padding(8.f)
+					+ SHorizontalBox::Slot().FillWidth(RightColumnFill)
+						.Padding(ColumnGap * 0.5f, 0.f, 0.f, 0.f)
 					[
-						// Stub, and disabled rather than absent: spec §6.5 wants the
-						// shop visible so the shape of the shelter is right, and it
-						// says "subscription later, no P2W" — a button that did
-						// anything now would be a design decision this stage has not
-						// made. Two lines because one runs into the raid button on a
-						// 720-wide screen.
-						SNew(SButton)
-						.ContentPadding(FMargin(12.f, 12.f))
-						.HAlign(HAlign_Center)
-						.VAlign(VAlign_Center)
-						.IsEnabled(false)
+						SNew(SVerticalBox)
+
+						// A static section label. Not part of FSarkoShelterView
+						// because it is a constant, not data — without it a bare
+						// list of item lines has nothing saying what it is.
+						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
 						[
 							SNew(STextBlock)
-							.Font(ShelterFont(10.f))
-							.Justification(ETextJustify::Center)
-							.Text(FText::FromString(TEXT("МАГАЗИН\nНЕЗАБАРОМ")))
+							.Font(ShelterFont(11.f))
+							.ColorAndOpacity(LabelColour)
+							.Text(FText::FromString(TEXT("СХОВОК")))
+						]
+
+						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 8.f)
+						[
+							HorizontalRule()
+						]
+
+						// The stash can be any length, which is the reason this
+						// screen is Slate and not DrawHUD primitives: SScrollBox is
+						// the whole feature. It gets the full height of the body in
+						// landscape instead of whatever was left over in portrait.
+						+ SVerticalBox::Slot().FillHeight(1.f)
+						[
+							SNew(SScrollBox)
+							+ SScrollBox::Slot()
+							[
+								SAssignNew(StashBox, SVerticalBox)
+							]
 						]
 					]
-				]
 				]
 			]
 		]

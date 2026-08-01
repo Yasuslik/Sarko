@@ -1,9 +1,11 @@
 #include "Core/SarkoPlayerController.h"
 
+#include "Application/SlateApplicationBase.h"
 #include "Combat/SarkoWeapon.h"
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Debug/SarkoOverviewShot.h"
+#include "HAL/IConsoleManager.h"
 #include "Loot/SarkoLootContainer.h"
 #include "Pawn/SarkoCharacter.h"
 #include "Pawn/SarkoHealthComponent.h"
@@ -13,14 +15,67 @@ bool SarkoInput::IsLeftHalf(FVector2D ScreenPosition, FVector2D ViewportSize)
 	return ScreenPosition.X < ViewportSize.X * 0.5f;
 }
 
-FBox2D SarkoInput::InteractButtonRect(FVector2D ViewportSize)
+namespace
+{
+	/**
+	 * Puts a landscape iPhone's cutouts onto a screen that has none, so the safe
+	 * area is visible in an offscreen shot taken on a Mac.
+	 *
+	 * The fractions are an iPhone 14/15 Pro in landscape reduced to ratios: 59 pt
+	 * of the 852-pt long edge on each side (0.069) and 21 pt of the 393-pt short
+	 * edge along the bottom (0.053). Ratios and not points because the offscreen
+	 * shots are taken at physical pixel sizes, where a point constant would mean
+	 * nothing.
+	 *
+	 * Off by default and never consulted on a device, where the real insets are
+	 * available and this would be a worse guess than the truth.
+	 */
+	TAutoConsoleVariable<bool> CVarSarkoSafeAreaDebugPhoneLandscape(
+		TEXT("sarko.SafeArea.DebugPhoneLandscape"), false,
+		TEXT("Pretend the viewport is a landscape iPhone with a Dynamic Island and a home indicator."),
+		ECVF_Cheat);
+}
+
+FBox2D SarkoInput::SafeFrame(FVector2D ViewportSize)
+{
+	FMargin Safe(0.f);
+	if (FSlateApplicationBase::IsInitialized())
+	{
+		Safe = FMargin(0.f);
+		FSlateApplicationBase::Get().GetSafeZoneSize(Safe, ViewportSize);
+	}
+
+	if (CVarSarkoSafeAreaDebugPhoneLandscape.GetValueOnAnyThread())
+	{
+		Safe = FMargin(ViewportSize.X * 0.069f, 0.f, ViewportSize.X * 0.069f, ViewportSize.Y * 0.053f);
+	}
+
+	const FBox2D Frame(
+		FVector2D(Safe.Left, Safe.Top),
+		FVector2D(ViewportSize.X - Safe.Right, ViewportSize.Y - Safe.Bottom));
+
+	// A degenerate frame would put every readout on top of itself in a corner,
+	// which is worse than ignoring the insets. Reached when the viewport is
+	// smaller than the insets, i.e. a window a few pixels wide during a resize.
+	return (Frame.Min.X < Frame.Max.X && Frame.Min.Y < Frame.Max.Y)
+		? Frame
+		: FBox2D(FVector2D::ZeroVector, ViewportSize);
+}
+
+FBox2D SarkoInput::InteractButtonRect(FBox2D Frame)
 {
 	// Scaled to the shorter axis so the button is the same physical size on a
 	// phone and in a window, with a floor so it never drops below a thumb.
-	const float Size = FMath::Max(96.f, FMath::Min(ViewportSize.X, ViewportSize.Y) * 0.14f);
-	const float Right = ViewportSize.X - Size - Size * 0.35f;
-	const float Top = ViewportSize.Y * 0.5f - Size * 0.5f;
+	const FVector2D FrameSize = Frame.GetSize();
+	const float Size = FMath::Max(96.f, FMath::Min(FrameSize.X, FrameSize.Y) * 0.14f);
+	const float Right = Frame.Max.X - Size - Size * 0.35f;
+	const float Top = Frame.GetCenter().Y - Size * 0.5f;
 	return FBox2D(FVector2D(Right, Top), FVector2D(Right + Size, Top + Size));
+}
+
+FBox2D SarkoInput::InteractButtonRect(FVector2D ViewportSize)
+{
+	return InteractButtonRect(FBox2D(FVector2D::ZeroVector, ViewportSize));
 }
 
 ASarkoPlayerController::ASarkoPlayerController()
@@ -155,7 +210,9 @@ void ASarkoPlayerController::UpdateSticks()
 	bool bMoveTouchStillDown = false;
 	bool bAimTouchStillDown = false;
 
-	const FBox2D InteractRect = SarkoInput::InteractButtonRect(Viewport);
+	// The same rect the HUD draws, safe area and all — a button hit-tested where
+	// it is not drawn is a button that misses.
+	const FBox2D InteractRect = SarkoInput::InteractButtonRect(SarkoInput::SafeFrame(Viewport));
 	bool bInteractTouchStillDown = false;
 
 	// Three fingers now, not two: movement, aim and the interact button are

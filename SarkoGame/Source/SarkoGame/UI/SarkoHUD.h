@@ -9,6 +9,12 @@
  * Drawn with primitives rather than UMG, because widget blueprints are binary
  * assets. Layout follows spec §9: all information along the top, because the
  * bottom corners are physically covered by the player's thumbs.
+ *
+ * The game is landscape-only, so everything anchored to a side edge is measured
+ * from Safe (below) rather than from the canvas: rotated, a phone puts its
+ * Dynamic Island against the leading edge and reports an inset on both sides,
+ * and the ammo count, the backpack count, the health bar and the interact button
+ * are all pinned to a side.
  */
 UCLASS()
 class ASarkoHUD : public AHUD
@@ -19,6 +25,17 @@ public:
 	virtual void DrawHUD() override;
 
 private:
+	/**
+	 * The drawable rectangle: the canvas minus whatever the device covers.
+	 *
+	 * Recomputed once per DrawHUD and read by every helper below, rather than each
+	 * of them asking, so that one frame cannot be drawn against two different
+	 * frames — and so the cost (a Slate call) is paid once on a tick path.
+	 * Equal to the whole canvas on any screen without cutouts, which is every
+	 * screen this project has been looked at on so far.
+	 */
+	FBox2D Safe = FBox2D(FVector2D::ZeroVector, FVector2D::ZeroVector);
+
 	void DrawStick(const struct FSarkoTouchStick& Stick, const FLinearColor& Colour);
 	void DrawAimCone();
 	void DrawTopBar();
