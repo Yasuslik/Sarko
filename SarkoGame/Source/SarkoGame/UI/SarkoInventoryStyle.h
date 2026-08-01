@@ -168,10 +168,27 @@ struct FSarkoInventoryStyles
 	/** The same trick for the transfer flash: a white rim over the receiving cell. */
 	FSlateBrush TransferFlash[GlowSteps];
 
+	/**
+	 * The refused rectangle's outline: amber, transparent-bodied, in the same
+	 * twelve baked opacities as the two ladders above and for exactly the same
+	 * reason — SBorder folds a brush's own tint into what it draws with
+	 * (SBorder.cpp:115), so a transparent BODY has a final alpha of zero and
+	 * FSlateDrawElement culls the whole element, outline included
+	 * (DrawElementTypes.cpp:154). bUseBrushTransparency stays FALSE here, which
+	 * makes the outline colour verbatim; the price is that each rung carries its
+	 * own alpha.
+	 *
+	 * Thicker than the pulse (3 pt against 2) because it is drawn OVER occupied
+	 * cells that already have a 1.5 pt rim of their own, and a ghost the same
+	 * weight as the thing it is overhanging reads as part of it.
+	 */
+	FSlateBrush RefusalGhost[GlowSteps];
+
 	/** The rung nearest Alpha, or null below the first — a null BorderImage draws
-	 *  nothing, which is exactly the resting state both of these want. */
+	 *  nothing, which is exactly the resting state all three of these want. */
 	const FSlateBrush* RefusalGlowFor(float Alpha) const;
 	const FSlateBrush* TransferFlashFor(float Alpha) const;
+	const FSlateBrush* RefusalGhostFor(float Alpha) const;
 
 	FSarkoInventoryStyles();
 };

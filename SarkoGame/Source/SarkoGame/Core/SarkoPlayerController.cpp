@@ -83,21 +83,6 @@ FBox2D SarkoInput::InteractButtonRect(FVector2D ViewportSize)
 	return InteractButtonRect(FBox2D(FVector2D::ZeroVector, ViewportSize));
 }
 
-FBox2D SarkoInput::InteractButtonRectBesidePanel(FBox2D Frame, FBox2D PanelRect)
-{
-	// Same size and the same vertical band as the ordinary rect: the thumb
-	// already knows where this control is, and moving it vertically as well
-	// would make finding it a search rather than a reach.
-	const FBox2D Ordinary = InteractButtonRect(Frame);
-	const FVector2D Size = Ordinary.GetSize();
-
-	// Left of the panel, with the button's own 0.3 as the gap — see the header
-	// for why that is a fraction and not 16 points. Clamped to the frame so a
-	// narrow window cannot push it off the leading edge.
-	const float Left = FMath::Max(Frame.Min.X, PanelRect.Min.X - Size.X * 0.3f - Size.X);
-	return FBox2D(FVector2D(Left, Ordinary.Min.Y), FVector2D(Left + Size.X, Ordinary.Max.Y));
-}
-
 ASarkoPlayerController::ASarkoPlayerController()
 {
 	bShowMouseCursor = false;
@@ -245,11 +230,12 @@ void ASarkoPlayerController::UpdateSticks()
 	bool bAimTouchStillDown = false;
 
 	// The same rect the HUD draws, safe area and all — a button hit-tested where
-	// it is not drawn is a button that misses. InteractButtonRectFor is the ONE
-	// place that decides whether the button is in its usual spot or shifted left
-	// of an open container panel, and both the drawing and this hit test ask it.
-	const FBox2D InteractRect = SarkoUI::InteractButtonRectFor(Cast<ASarkoCharacter>(GetPawn()),
-		SarkoInput::SafeFrame(Viewport), SarkoUI::PointScaleForViewport(Viewport));
+	// it is not drawn is a button that misses. SarkoInput::InteractButtonRect is
+	// the ONE authority both consult, and it takes no game state at all: the rect
+	// never shifts, because the container panel moved to the other half of the
+	// screen (spec §4.5) and there is nothing left for it to avoid. The function
+	// that used to choose between two rects is gone with the second rect.
+	const FBox2D InteractRect = SarkoInput::InteractButtonRect(SarkoInput::SafeFrame(Viewport));
 	bool bInteractTouchStillDown = false;
 
 	// Three fingers now, not two: movement, aim and the interact button are
@@ -649,9 +635,16 @@ void ASarkoPlayerController::SarkoDebugLoot(int32 Count)
 		return;
 	}
 
-	// The bag itself first, or the capacity is four and eight of these are
+	// The bag itself first, or the capacity is four cells and most of these are
 	// refused — which is a different screenshot from the one being asked for.
-	Pawn->BackpackComponent->EquipBackpack(SarkoLoot::BackpackItemId);
+	//
+	// Count 0 means NO BAG, not "a bag with nothing in it": the dimmed
+	// НЕМАЄ РЮКЗАКА page is a state the panel has to be photographed in, and it
+	// is the only state a worn bag makes unreachable.
+	if (Count > 0)
+	{
+		Pawn->BackpackComponent->EquipBackpack(SarkoLoot::BackpackItemId);
+	}
 
 	// Ordered so the first four cells are four different hues: a four-pocket
 	// pawn photographed with Count 4 still shows the palette doing its job.

@@ -148,4 +148,28 @@ namespace SarkoGrid
 	 */
 	int32 StashRowsFor(const TArray<FSarkoItemStack>& Stacks, const FSarkoItemCatalog& Catalog,
 		int32 Columns, int32 MinRows);
+
+	/**
+	 * Where to draw the rectangle that would NOT fit, so the player can see why.
+	 *
+	 * The free cell with the longest run of free cells to its right, scanning
+	 * pages in order and rows top to bottom — i.e. the most convincing gap on
+	 * screen, the one the player is already looking at thinking "but there is
+	 * space right there". Drawn at the refused Size, the ghost then runs out of
+	 * that gap and over the cell that actually blocked it, which is the whole
+	 * argument made in one rectangle.
+	 *
+	 * A completely full grid anchors at page 0's origin rather than returning
+	 * nothing: the loudest refusal must not be the one that draws nothing.
+	 *
+	 * The returned slot carries the REFUSED size, not a size that fits — it is a
+	 * ghost, not a placement, and it is expected to overhang an OCCUPIED cell.
+	 * Its origin is pulled back so the rectangle stays on the page wherever the
+	 * page can hold it at all: a gap in the last column would otherwise anchor a
+	 * 2x1 half off the plate, where the missing edge reads as a clipping fault and
+	 * the ghost overhangs nothing. The pull-back is at most W-1 columns, so the
+	 * gap itself is always still under the ghost.
+	 */
+	FSarkoGridSlot RefusalAnchor(const TArray<FSarkoGridSlot>& Placed,
+		const TArray<FSarkoGridPage>& Pages, FIntPoint Size);
 }

@@ -47,22 +47,6 @@ namespace SarkoInput
 
 	/** As above, on a screen with no cutouts: the frame is the whole viewport. */
 	FBox2D InteractButtonRect(FVector2D ViewportSize);
-
-	/**
-	 * Where the interact button sits while a container panel covers its usual
-	 * place. Same size and same vertical band, moved left of the panel — a button
-	 * drawn in one place and pressed in another is the one thing about this
-	 * control that must never happen.
-	 *
-	 * The gap is a fraction of the button rather than a point constant because
-	 * this function is handed pixels and has no scale to convert with; 0.3 of a
-	 * 52 pt button is ~16 pt, which is the number the Visual design asks for and
-	 * stays that on every density, since the button itself is density-derived.
-	 *
-	 * Callers use SarkoUI::InteractButtonRectFor rather than this directly: that
-	 * is the one place that decides WHICH of the two rects is live.
-	 */
-	FBox2D InteractButtonRectBesidePanel(FBox2D Frame, FBox2D PanelRect);
 }
 
 enum class ESarkoTakeRefusal : uint8;

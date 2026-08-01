@@ -2,6 +2,9 @@
 
 #include "Core/SarkoPlayerController.h"
 #include "Loot/SarkoItemCatalog.h"
+#include "Loot/SarkoItemGrid.h"
+#include "Loot/SarkoLootTable.h"
+#include "UI/SarkoCellWidgets.h"
 #include "UI/SarkoInventoryPanel.h"
 #include "UI/SarkoInventoryStyle.h"
 #include "UI/SarkoUiScale.h"
@@ -135,78 +138,166 @@ bool FSarkoOverlayScaleDividesOutTheLayerManager::RunTest(const FString& Paramet
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FSarkoPanelLeavesTheApproachVisible,
-	"Sarko.UI.PanelLeavesTheApproachVisible",
+	FSarkoPanelSitsInTheLeftHalfClearOfTheAimThumb,
+	"Sarko.UI.PanelSitsInTheLeftHalfClearOfTheAimThumb",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FSarkoPanelLeavesTheApproachVisible::RunTest(const FString& Parameters)
+bool FSarkoPanelSitsInTheLeftHalfClearOfTheAimThumb::RunTest(const FString& Parameters)
 {
-	// Spec §5: looting does not pause the world, so a panel that covers the
-	// approach is how a player dies. That is a layout requirement, and this is
-	// where it is enforced — a screenshot proves it looks right, this proves it
-	// STAYS right when someone edits a constant.
-	const FBox2D Safe(FVector2D::ZeroVector, FVector2D(844.f, 390.f));   // 1 px/pt
-	const FBox2D Panel = SarkoUI::InventoryPanelRect(Safe, /*PlayerCells*/ 12, /*PointScale*/ 1.f);
+	// Spec §4.5: the panel used to sit bottom-RIGHT, on top of the aim stick,
+	// passing touches through everywhere except its cells — so a thumb reaching
+	// to shoot could land on a cell instead. That is a genuine hazard and this is
+	// the assert that stops it coming back.
+	const FVector2D Viewport(2556.f, 1179.f);
+	const FBox2D Safe = SarkoInput::SafeFrame(Viewport);
+	const float Scale = SarkoUI::PointScaleForViewport(Viewport);
+	const FBox2D Panel = SarkoUI::InventoryPanelRect(Safe, Scale);
 
-	TestTrue(TEXT("the panel takes at most a third of the width"),
-		Panel.GetSize().X <= Safe.GetSize().X * 0.34f);
-	// The pawn is at the centre of a top-down camera. If the panel's left edge
-	// reached it, the player would be looting blind at their own feet.
-	TestTrue(TEXT("the pawn at screen centre is clear of the panel by 150 pt or more"),
-		Panel.Min.X - Safe.GetCenter().X >= 150.f);
-	TestTrue(TEXT("it stays inside the safe frame's right edge"), Panel.Max.X <= Safe.Max.X);
-	TestTrue(TEXT("and above its bottom edge, where the sticks live"), Panel.Max.Y < Safe.Max.Y);
-	// The HUD's health bar occupies y 14..29 at the top right. Overlapping it
+	TestTrue(TEXT("the panel starts at the safe frame's left edge, not its right"),
+		Panel.Min.X < Safe.GetCenter().X);
+	TestTrue(TEXT("and ends before the midline, so the whole right half is free"),
+		Panel.Max.X <= Viewport.X * 0.5f);
+	TestTrue(TEXT("it is bottom-anchored, clear of the home indicator"),
+		Panel.Max.Y < Safe.Max.Y && Panel.Max.Y > Safe.GetCenter().Y);
+
+	// And it does not eat the pawn, who is at the centre of the screen.
+	TestTrue(TEXT("the pawn at screen centre is not under the panel"),
+		Panel.Max.X < Viewport.X * 0.5f);
+
+	// The HUD's health bar occupies y 16..27 pt at the top right. Overlapping it
 	// would hide the one readout that says you are dying while you stand still.
-	TestTrue(TEXT("it clears the health bar's row"), Panel.Min.Y > 40.f);
+	TestTrue(TEXT("it clears the health bar's row"), Panel.Min.Y > 40.f * Scale);
 
-	// Four pocket cells is a SHORTER panel, not a differently-shaped one: a panel
-	// that changed width when you found a bag would reflow the screen mid-raid.
-	const FBox2D Pockets = SarkoUI::InventoryPanelRect(Safe, /*PlayerCells*/ 4, 1.f);
-	TestTrue(TEXT("width does not change with capacity"),
-		FMath::IsNearlyEqual(Pockets.GetSize().X, Panel.GetSize().X, 0.01f));
-	TestTrue(TEXT("a four-cell bag makes a shorter panel"), Pockets.GetSize().Y < Panel.GetSize().Y);
-	TestTrue(TEXT("and it stays bottom-anchored"),
-		FMath::IsNearlyEqual(Pockets.Max.Y, Panel.Max.Y, 0.01f));
+	// One size, whatever the pawn is carrying: the rect no longer takes a cell
+	// count at all, which is what makes that guarantee structural.
+	const FBox2D Again = SarkoUI::InventoryPanelRect(Safe, Scale);
+	TestEqual(TEXT("the rect is a pure function of the frame"), Panel.Min.X, Again.Min.X);
+	TestEqual(TEXT("the rect is a pure function of the frame"), Panel.Min.Y, Again.Min.Y);
 
-	// The specified height, to the point. 292 is not a round number anybody
-	// would land on twice: it is the vertical stack added up, and the reason the
-	// panel clears the health bar at full capacity by exactly the margin above.
-	TestEqual(TEXT("a twelve-cell panel is 292 pt tall"),
-		SarkoUI::InventoryPanelHeightPt(12), 292.f);
-
-	// The close button has to end up somewhere a thumb can reach and NOT under
-	// the plate it is supposed to dismiss.
-	const FBox2D Close = SarkoInput::InteractButtonRectBesidePanel(Safe, Panel);
-	TestTrue(TEXT("the close button clears the panel's left edge"), Close.Max.X <= Panel.Min.X);
-	TestTrue(TEXT("and stays on screen"), Close.Min.X >= Safe.Min.X);
-	TestTrue(TEXT("and keeps its tap-target size"), Close.GetSize().X >= 44.f && Close.GetSize().Y >= 44.f);
+	// And the thumb column is nowhere near it, at any of three sizes.
+	for (const FVector2D Size : { FVector2D(2556.f, 1179.f), FVector2D(1560.f, 720.f), FVector2D(1280.f, 720.f) })
+	{
+		const FBox2D Frame = SarkoInput::SafeFrame(Size);
+		const FBox2D Plate = SarkoUI::InventoryPanelRect(Frame, SarkoUI::PointScaleForViewport(Size));
+		TestFalse(*FString::Printf(TEXT("at %.0fx%.0f the panel does not touch the interact button"), Size.X, Size.Y),
+			Plate.Intersect(SarkoInput::InteractButtonRect(Frame)));
+	}
 	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FSarkoPanelCellsClearTheTapTargetMinimum,
-	"Sarko.UI.PanelCellsClearTheTapTargetMinimum",
+	FSarkoPanelGeometryIsFixed,
+	"Sarko.UI.PanelGeometryIsFixed",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FSarkoPanelCellsClearTheTapTargetMinimum::RunTest(const FString& Parameters)
+bool FSarkoPanelGeometryIsFixed::RunTest(const FString& Parameters)
 {
-	// The project's touch rule is written in points, which is exactly why the
-	// whole layout is authored in points. 44 is the floor and there is no
-	// rounding slack below it.
-	TestTrue(TEXT("a cell is at least 44 pt"), SarkoUI::CellSizePt >= 44.f);
-	TestTrue(TEXT("the take-all row is at least 44 pt"), SarkoUI::TakeAllRowPt >= 44.f);
-	// The grid must actually fit the panel it is padded inside, or the last
-	// column is drawn off the edge and cannot be tapped at all.
-	TestEqual(TEXT("four columns plus gutters plus padding is the panel width"),
-		SarkoUI::CellSizePt * 4.f + SarkoUI::CellGutterPt * 3.f + SarkoUI::PanelPadPt * 2.f,
-		SarkoUI::PanelWidthPt);
-	// Capacity divides into whole rows of four, both of the two capacities the
-	// game can produce. A capacity that did not would draw a ragged last row.
-	TestEqual(TEXT("four pocket cells is one row"), SarkoUI::PlayerGridRows(4), 1);
-	TestEqual(TEXT("twelve cells is three"), SarkoUI::PlayerGridRows(12), 3);
-	TestEqual(TEXT("and a zero-capacity pawn still gets a row rather than a sliver"),
-		SarkoUI::PlayerGridRows(0), 1);
+	// The panel is one size, always. It used to grow with capacity, which meant
+	// finding a backpack mid-raid reflowed the thing the player was reading. Now
+	// the backpack page is drawn whether or not one is worn — dimmed when it is
+	// not, which is the space a bag would give you, next to the 2-wide pockets a
+	// 3-wide rifle cannot enter.
+	TestEqual(TEXT("14 + (92 + 10 + 188) + 14"), SarkoUI::PanelWidthPt, 318.f);
+	TestEqual(TEXT("12 + 44 + 6 + 44 + 12 + 16 + 6 + 92 + 12"), SarkoUI::PanelHeightPt, 244.f);
+
+	// The pages, in points, from the same identity the cells use.
+	TestEqual(TEXT("the pocket page is 92 square"), SarkoUI::CellExtentPt(FIntPoint(2, 2)).X, 92.0);
+	TestEqual(TEXT("the backpack page is 188 x 92"), SarkoUI::CellExtentPt(FIntPoint(4, 2)).X, 188.0);
+	TestEqual(TEXT("the container row is 188 wide, so it fits inside the carry band"),
+		SarkoUI::CellExtentPt(FIntPoint(SarkoLoot::ContainerCells, 1)).X, 188.0);
+
+	// The width the two pages and the padding actually add up to. Written as the
+	// sum rather than as 318 a second time, so an edit to a page or a gap fails
+	// here instead of drawing a page off the edge of the plate.
+	TestEqual(TEXT("the pages and the padding fill the panel exactly"),
+		SarkoUI::CellExtentPt(FIntPoint(2, 2)).X + SarkoUI::PagesGapPt
+			+ SarkoUI::CellExtentPt(FIntPoint(4, 2)).X + SarkoUI::PanelPadPt * 2.0,
+		static_cast<double>(SarkoUI::PanelWidthPt));
+
+	// The 44 pt tap-target rule applies to the ONE thing in this panel that is
+	// tappable. The carry cells are SelfHitTestInvisible by design — the thumb
+	// aims through them — so they carry no minimum.
+	TestTrue(TEXT("a container cell clears the tap-target minimum"),
+		SarkoUI::CellSizePt >= 44.f);
+	TestTrue(TEXT("so does the take-all row"), SarkoUI::TakeAllRowPt >= 44.f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoRefusalAnchorOverhangsWhatBlockedIt,
+	"Sarko.UI.RefusalAnchorOverhangsWhatBlockedIt",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoRefusalAnchorOverhangsWhatBlockedIt::RunTest(const FString& Parameters)
+{
+	// Spec §5: "The refusal must say why — no space of that shape — and the panel
+	// should show the shape that failed." A ghost dropped at (0,0) would sit on a
+	// full row and say nothing. It has to land on the gap the player is looking
+	// at, so that it visibly runs OUT of that gap into the cell in the way.
+	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+	const TArray<FSarkoGridPage> Pages = SarkoGrid::CarryPages(true, FIntPoint(2, 2), FIntPoint(4, 2));
+
+	// Backpack row 0 fills first, then row 1 up to (1,1); the two cells left are
+	// (2,1) and (3,1) — adjacent, so a 2x1 WOULD fit and must not be refused.
+	TArray<FSarkoItemStack> Bag = {
+		FSarkoItemStack{ TEXT("bandage"), 1 },        // pockets (0,0)
+		FSarkoItemStack{ TEXT("medkit"), 1 },         // pockets (1,0)
+		FSarkoItemStack{ TEXT("painkillers"), 1 },    // pockets (0,1)
+		FSarkoItemStack{ TEXT("chain"), 1 },          // pockets (1,1) — pockets full
+		FSarkoItemStack{ TEXT("scrap_metal"), 1 },    // backpack (0,0)
+		FSarkoItemStack{ TEXT("copper_wire"), 1 },    // backpack (1,0)
+		FSarkoItemStack{ TEXT("duct_tape"), 1 },      // backpack (2,0)
+		FSarkoItemStack{ TEXT("canned_food"), 1 },    // backpack (3,0) — row 0 full
+		FSarkoItemStack{ TEXT("vodka"), 1 },          // backpack (0,1)
+		FSarkoItemStack{ TEXT("cigarettes"), 1 },     // backpack (1,1)
+	};
+	const TArray<FSarkoGridSlot> Placed = SarkoGrid::Place(Bag, Catalog, Pages);
+	for (const FSarkoGridSlot& Slot : Placed)
+	{
+		TestTrue(TEXT("the setup itself fits"), Slot.IsPlaced());
+	}
+
+	TArray<FSarkoItemStack> Copy = Bag;
+	TestEqual(TEXT("a 2x1 still fits the adjacent pair"),
+		SarkoGrid::AddToGrid(Copy, Catalog, Pages, TEXT("toolbox"), 1), 0);
+
+	// Now fill (2,1) so the only free cell is (3,1): a lone gap, and a 2x1 cannot
+	// use it. THIS is the case the ghost exists for.
+	Bag.Add(FSarkoItemStack{ TEXT("ammo_9mm"), 1 });      // backpack (2,1)
+	const TArray<FSarkoGridSlot> Nearly = SarkoGrid::Place(Bag, Catalog, Pages);
+
+	const FSarkoGridSlot Ghost = SarkoGrid::RefusalAnchor(Nearly, Pages, FIntPoint(2, 1));
+	TestTrue(TEXT("the ghost is anchored somewhere"), Ghost.IsPlaced());
+	TestEqual(TEXT("on the page that has the gap"), Ghost.Page, 1);
+	TestEqual(TEXT("drawn at the size that FAILED, not at the size that fits"), Ghost.W, 2);
+	TestEqual(TEXT("drawn at the size that FAILED, not at the size that fits"), Ghost.H, 1);
+
+	// The gap is at (3,1) and the ghost is 2 wide, so it is pulled back to x 2 —
+	// on the page rather than half off the plate, where a missing edge would read
+	// as a clipping fault. That is the frame this whole signal exists for: half of
+	// the ghost is on the gap the player is looking at and half is on the cell
+	// that is actually in the way.
+	TestEqual(TEXT("pulled back so the whole rectangle stays on the page"), Ghost.X, 2);
+	TestEqual(TEXT("in the row the gap is in"), Ghost.Y, 1);
+	TestTrue(TEXT("the gap is still under the ghost"),
+		Ghost.X <= 3 && 3 < Ghost.X + Ghost.W);
+	TestTrue(TEXT("and so is the occupied cell that blocked it"),
+		Ghost.X <= 2 && 2 < Ghost.X + Ghost.W);
+	TestTrue(TEXT("the ghost stays inside the page it is drawn on"),
+		Ghost.X + Ghost.W <= Pages[1].Columns);
+
+	// A completely full grid still has to anchor somewhere, or there is no ghost
+	// and the loudest refusal is the quietest one.
+	TArray<FSarkoItemStack> Full;
+	for (int32 Index = 0; Index < 12; ++Index)
+	{
+		SarkoGrid::AddToGrid(Full, Catalog, Pages, TEXT("chain"), 1);
+	}
+	const FSarkoGridSlot NoRoom =
+		SarkoGrid::RefusalAnchor(SarkoGrid::Place(Full, Catalog, Pages), Pages, FIntPoint(2, 1));
+	TestTrue(TEXT("a full grid still anchors the ghost, at the origin"), NoRoom.IsPlaced());
+	TestEqual(TEXT("at the origin"), NoRoom.X, 0);
+	TestEqual(TEXT("at the origin"), NoRoom.Y, 0);
 	return true;
 }
 

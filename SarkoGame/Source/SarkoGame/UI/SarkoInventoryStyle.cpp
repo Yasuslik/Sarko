@@ -203,6 +203,15 @@ FSarkoInventoryStyles::FSarkoInventoryStyles()
 			FLinearColor(1.f, 1.f, 1.f, Alpha), 2.f);
 		Flash.OutlineSettings.bUseBrushTransparency = false;
 		TransferFlash[Step] = Flash;
+
+		// The refused rectangle, at the size that FAILED. Same radius as a cell so
+		// it reads as a cell-shaped thing, and 3 pt of stroke against the pulse's
+		// 2 because it is drawn OVER occupied cells that already carry a 1.5 pt rim
+		// — a ghost the same weight as the thing it overhangs reads as part of it.
+		FSlateRoundedBoxBrush Ghost(FLinearColor::Transparent, SarkoUI::CellRadiusPt,
+			SarkoUI::AmberWarn.CopyWithNewOpacity(Alpha), 3.f);
+		Ghost.OutlineSettings.bUseBrushTransparency = false;
+		RefusalGhost[Step] = Ghost;
 	}
 }
 
@@ -230,6 +239,11 @@ const FSlateBrush* FSarkoInventoryStyles::RefusalGlowFor(float Alpha) const
 const FSlateBrush* FSarkoInventoryStyles::TransferFlashFor(float Alpha) const
 {
 	return RungFor(TransferFlash, GlowSteps, Alpha);
+}
+
+const FSlateBrush* FSarkoInventoryStyles::RefusalGhostFor(float Alpha) const
+{
+	return RungFor(RefusalGhost, GlowSteps, Alpha);
 }
 
 TSharedRef<const FSarkoInventoryStyles> FSarkoInventoryStyles::Get()

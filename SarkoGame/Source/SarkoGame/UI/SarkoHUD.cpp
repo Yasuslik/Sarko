@@ -454,17 +454,21 @@ void ASarkoHUD::DrawInteract()
 	// The button is always drawn, so the player learns where it is before they
 	// need it; it dims when there is nothing in reach.
 	//
-	// The rect comes from SarkoUI::InteractButtonRectFor and is *not* scaled
-	// here: it is already derived from the safe frame's shorter axis with a
-	// floor, which makes it 52 pt on a 14 Pro and 52 pt on a 720p phone — past
-	// the 44 pt tap-target minimum on both. Scaling it again here would make the
+	// The rect comes from SarkoInput::InteractButtonRect and is *not* scaled here:
+	// it is already derived from the safe frame. Scaling it again would make the
 	// drawn button a different rectangle from the one
-	// ASarkoPlayerController::UpdateSticks hit-tests, which is the one thing
-	// about this button that must never happen — and that is also why the
-	// shifted-beside-the-panel case is one shared function rather than a branch
-	// here and a matching branch there.
+	// ASarkoPlayerController::UpdateSticks hit-tests, which is the one thing about
+	// this button that must never happen — the owner experiences that as "the
+	// button doesn't work".
+	//
+	// It never shifts. There used to be a second rect, beside an open container
+	// panel, and a shared function to choose between them; the panel moved to the
+	// left half (spec §4.5), so the thing the shift was avoiding is not there any
+	// more and both the shifted rect and the chooser are deleted. This note is
+	// deliberately not deleted with them: a stale comment about the branch is how
+	// the branch comes back.
 	const ASarkoCharacter* OwningPawn = Cast<ASarkoCharacter>(GetOwningPawn());
-	const FBox2D Rect = SarkoUI::InteractButtonRectFor(OwningPawn, Safe, PointScale);
+	const FBox2D Rect = SarkoInput::InteractButtonRect(Safe);
 
 	// A container panel is up: this control is the CLOSE button now. Drawn with
 	// an X made of two lines rather than a glyph — no font, no asset, and no

@@ -274,3 +274,63 @@ int32 SarkoGrid::StashRowsFor(const TArray<FSarkoItemStack>& Stacks, const FSark
 	}
 	return Rows;
 }
+
+FSarkoGridSlot SarkoGrid::RefusalAnchor(const TArray<FSarkoGridSlot>& Placed,
+	const TArray<FSarkoGridPage>& Pages, FIntPoint Size)
+{
+	const int32 W = FMath::Max(1, Size.X);
+	const int32 H = FMath::Max(1, Size.Y);
+
+	FOccupancy Occupancy(Pages);
+	for (const FSarkoGridSlot& Slot : Placed)
+	{
+		if (Slot.IsPlaced() && Pages.IsValidIndex(Slot.Page))
+		{
+			Occupancy.Occupy(Pages[Slot.Page], Slot.Page, Slot.X, Slot.Y, Slot.W, Slot.H);
+		}
+	}
+
+	// Page 0's origin is the fallback, so a completely full grid still draws a
+	// ghost: the loudest refusal must not be the one that draws nothing.
+	FSarkoGridSlot Best{ 0, 0, 0, W, H };
+	int32 BestRun = -1;
+	for (int32 PageIndex = 0; PageIndex < Pages.Num(); ++PageIndex)
+	{
+		const FSarkoGridPage& Page = Pages[PageIndex];
+		for (int32 Y = 0; Y < Page.Rows; ++Y)
+		{
+			for (int32 X = 0; X < Page.Columns; ++X)
+			{
+				if (!Occupancy.IsFree(Page, PageIndex, X, Y, 1, 1))
+				{
+					continue;
+				}
+				int32 Run = 0;
+				while (X + Run < Page.Columns && Occupancy.IsFree(Page, PageIndex, X + Run, Y, 1, 1))
+				{
+					++Run;
+				}
+				// Strictly greater, so the FIRST longest run wins — the gap nearest
+				// the top-left, which is where the eye starts.
+				if (Run > BestRun)
+				{
+					BestRun = Run;
+					// Pulled back so the whole rectangle stays ON the page when the page
+					// is big enough to hold it anywhere. Without this a gap in the last
+					// column anchors a 2x1 half off the plate, where the missing edge
+					// reads as a clipping fault rather than as a refusal — and, worse,
+					// the ghost then overhangs NOTHING, when overhanging the cell that
+					// blocked it is the entire argument.
+					//
+					// The gap is still covered: the pull-back is at most W-1 columns, so
+					// the rectangle always still contains (X, Y). What changes is which
+					// side of the gap the surplus falls on.
+					const int32 DrawX = FMath::Max(0, FMath::Min(X, Page.Columns - W));
+					const int32 DrawY = FMath::Max(0, FMath::Min(Y, Page.Rows - H));
+					Best = FSarkoGridSlot{ PageIndex, DrawX, DrawY, W, H };
+				}
+			}
+		}
+	}
+	return Best;
+}

@@ -21,43 +21,13 @@
 #include "Widgets/SOverlay.h"
 #include "Widgets/Text/STextBlock.h"
 
-int32 SarkoUI::PlayerGridRows(int32 PlayerCells)
-{
-	// At least one row. A pawn with no backpack component at all reports zero
-	// capacity for one frame during possession, and a zero-row panel is a sliver
-	// that appears and then jumps to full height — worse than an empty grid.
-	return FMath::Max(1, FMath::DivideAndRoundUp(FMath::Max(0, PlayerCells), GridColumns));
-}
-
-float SarkoUI::InventoryPanelHeightPt(int32 PlayerCells)
-{
-	const int32 Rows = PlayerGridRows(PlayerCells);
-	const float PlayerGridPt = Rows * CellSizePt + (Rows - 1) * CellGutterPt;
-	const float ContainerGridPt = CellSizePt;   // one row of four; see SarkoLoot::ContainerCells
-	return PanelPadYPt + TakeAllRowPt + GridGapPt + ContainerGridPt
-		+ DividerPt + HeaderRowPt + GridGapPt + PlayerGridPt + PanelPadYPt;
-}
-
-FBox2D SarkoUI::InventoryPanelRect(FBox2D SafeFrame, int32 PlayerCells, float PointScale)
+FBox2D SarkoUI::InventoryPanelRect(FBox2D SafeFrame, float PointScale)
 {
 	const float Width = PanelWidthPt * PointScale;
-	const float Height = InventoryPanelHeightPt(PlayerCells) * PointScale;
-	const FVector2D Max(SafeFrame.Max.X - PanelRightInsetPt * PointScale,
-		SafeFrame.Max.Y - PanelBottomInsetPt * PointScale);
-	return FBox2D(FVector2D(Max.X - Width, Max.Y - Height), Max);
-}
-
-FBox2D SarkoUI::InteractButtonRectFor(const ASarkoCharacter* Pawn, FBox2D SafeFrame, float PointScale)
-{
-	const FBox2D Ordinary = SarkoInput::InteractButtonRect(SafeFrame);
-	if (!Pawn || Pawn->GetOpenContainerIndex() == INDEX_NONE)
-	{
-		return Ordinary;
-	}
-
-	const int32 Cells = Pawn->BackpackComponent ? Pawn->BackpackComponent->GetCellCount() : GridColumns;
-	const FBox2D Panel = InventoryPanelRect(SafeFrame, Cells, PointScale);
-	return SarkoInput::InteractButtonRectBesidePanel(SafeFrame, Panel);
+	const float Height = PanelHeightPt * PointScale;
+	const FVector2D Min(SafeFrame.Min.X + PanelLeftInsetPt * PointScale,
+		SafeFrame.Max.Y - PanelBottomInsetPt * PointScale - Height);
+	return FBox2D(Min, Min + FVector2D(Width, Height));
 }
 
 namespace
@@ -132,12 +102,6 @@ float SSarkoInventoryPanel::OverlayScale() const
 	return SarkoUI::OverlayPointScale(ViewportPx());
 }
 
-int32 SSarkoInventoryPanel::PlayerCells() const
-{
-	const ASarkoCharacter* P = Pawn.Get();
-	return (P && P->BackpackComponent) ? P->BackpackComponent->GetCellCount() : SarkoUI::GridColumns;
-}
-
 FMargin SSarkoInventoryPanel::PanelPadding() const
 {
 	// SafeFrame answers in viewport pixels; everything inside the DPI scaler is
@@ -148,16 +112,11 @@ FMargin SSarkoInventoryPanel::PanelPadding() const
 	const float Scale = FMath::Max(KINDA_SMALL_NUMBER, SarkoUI::PointScaleForViewport(Viewport));
 	const FBox2D SafePx = SarkoInput::SafeFrame(Viewport);
 	const FBox2D SafePt(SafePx.Min / Scale, SafePx.Max / Scale);
-	const FBox2D Rect = SarkoUI::InventoryPanelRect(SafePt, PlayerCells(), 1.f);
+	const FBox2D Rect = SarkoUI::InventoryPanelRect(SafePt, 1.f);
 
 	// Left and top only: the box is HAlign_Left/VAlign_Top inside a scaler that
 	// covers the whole viewport, so these two numbers place it outright.
 	return FMargin(FMath::Max(0.f, Rect.Min.X), FMath::Max(0.f, Rect.Min.Y), 0.f, 0.f);
-}
-
-FOptionalSize SSarkoInventoryPanel::PanelHeight() const
-{
-	return FOptionalSize(SarkoUI::InventoryPanelHeightPt(PlayerCells()));
 }
 
 float SSarkoInventoryPanel::PanelOpacity() const
@@ -201,6 +160,42 @@ const FSlateBrush* SSarkoInventoryPanel::RefusalGlowBrush() const
 		return nullptr;
 	}
 	return Styles->RefusalGlowFor(FMath::Sin(PI * RefusalCurve.GetLerp()));
+}
+
+FMargin SSarkoInventoryPanel::GhostPadding() const
+{
+	// Page 0 starts at x 0; page 1 starts one pocket page plus the gap to its
+	// right. Both are inside the DPI scaler, so these are points outright.
+	const FVector2D Origin = SarkoUI::CellOriginPt(RefusedGhost);
+	const float PageOffset = RefusedGhost.Page == 1
+		? SarkoUI::CellExtentPt(FIntPoint(2, 2)).X + SarkoUI::PagesGapPt
+		: 0.f;
+	return FMargin(PageOffset + Origin.X, Origin.Y, 0.f, 0.f);
+}
+
+FOptionalSize SSarkoInventoryPanel::GhostWidth() const
+{
+	return FOptionalSize(SarkoUI::CellExtentPt(FIntPoint(RefusedGhost.W, RefusedGhost.H)).X);
+}
+
+FOptionalSize SSarkoInventoryPanel::GhostHeight() const
+{
+	return FOptionalSize(SarkoUI::CellExtentPt(FIntPoint(RefusedGhost.W, RefusedGhost.H)).Y);
+}
+
+const FSlateBrush* SSarkoInventoryPanel::RefusalGhostBrush() const
+{
+	// Signal 4, and the one that answers "there is room but it will not fit": the
+	// exact rectangle that failed, drawn at the most convincing gap on screen so
+	// that it visibly runs OUT of that gap and over the cell that blocked it.
+	//
+	// NoSpace only. A TooFar or a Gone refusal shakes and says nothing about
+	// shape, because shape is not what was wrong.
+	if (!RefusalCurve.IsPlaying() || LastRefusal != ESarkoTakeRefusal::NoSpace)
+	{
+		return nullptr;
+	}
+	return Styles->RefusalGhostFor(FMath::Sin(PI * RefusalCurve.GetLerp()));
 }
 
 FSlateColor SSarkoInventoryPanel::BackpackHeaderColour() const
@@ -283,7 +278,7 @@ void SSarkoInventoryPanel::Construct(const FArguments& InArgs)
 				SNew(SBox)
 				.Visibility(EVisibility::SelfHitTestInvisible)
 				.WidthOverride(SarkoUI::PanelWidthPt)
-				.HeightOverride(TAttribute<FOptionalSize>::CreateSP(this, &SSarkoInventoryPanel::PanelHeight))
+				.HeightOverride(SarkoUI::PanelHeightPt)
 				[
 					// The plate: rounded, outlined, translucent at 0.86 — and NOT a
 					// dim of the world behind it. A bot crossing behind this has to
@@ -378,6 +373,10 @@ void SSarkoInventoryPanel::Construct(const FArguments& InArgs)
 							]
 						]
 
+						// The header row: one label over each page, and the refusal's
+						// "НЕ ВЛІЗЕ w×h" at the right end of it. The labels sit over the
+						// page they describe, so "КИШЕНІ 4/4" is above the 2x2 that is
+						// full rather than above the panel in general.
 						+ SVerticalBox::Slot().AutoHeight()
 						[
 							SNew(SBox)
@@ -385,11 +384,51 @@ void SSarkoInventoryPanel::Construct(const FArguments& InArgs)
 							.HeightOverride(SarkoUI::HeaderRowPt)
 							.VAlign(VAlign_Center)
 							[
-								SAssignNew(BackpackHeader, STextBlock)
-								.Font(PanelFont(SarkoUI::SectionHeaderPt))
-								.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
-								.ColorAndOpacity(TAttribute<FSlateColor>::CreateSP(
-									this, &SSarkoInventoryPanel::BackpackHeaderColour))
+								SNew(SHorizontalBox)
+								.Visibility(EVisibility::SelfHitTestInvisible)
+
+								+ SHorizontalBox::Slot().AutoWidth()
+								[
+									SNew(SBox)
+									.Visibility(EVisibility::SelfHitTestInvisible)
+									.WidthOverride(SarkoUI::CellExtentPt(FIntPoint(2, 2)).X)
+									[
+										SAssignNew(PocketHeader, STextBlock)
+										.Visibility(EVisibility::SelfHitTestInvisible)
+										.Font(PanelFont(SarkoUI::SectionHeaderPt))
+										.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+										.ColorAndOpacity(FSlateColor(SarkoUI::HeaderColour))
+									]
+								]
+
+								+ SHorizontalBox::Slot().FillWidth(1.f)
+									.Padding(SarkoUI::PagesGapPt, 0.f, 0.f, 0.f)
+								[
+									SNew(SHorizontalBox)
+									.Visibility(EVisibility::SelfHitTestInvisible)
+
+									+ SHorizontalBox::Slot().AutoWidth()
+									[
+										SAssignNew(BackpackHeader, STextBlock)
+										.Visibility(EVisibility::SelfHitTestInvisible)
+										.Font(PanelFont(SarkoUI::SectionHeaderPt))
+										.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+										.ColorAndOpacity(TAttribute<FSlateColor>::CreateSP(
+											this, &SSarkoInventoryPanel::BackpackHeaderColour))
+									]
+
+									+ SHorizontalBox::Slot().FillWidth(1.f).HAlign(HAlign_Right)
+									[
+										// The words half of the refusal: the SHAPE that failed,
+										// beside the grid that refused it. Cleared by the next
+										// Refresh, which a successful take always triggers.
+										SAssignNew(RefusalNote, STextBlock)
+										.Visibility(EVisibility::SelfHitTestInvisible)
+										.Font(PanelFont(SarkoUI::SectionHeaderPt))
+										.Justification(ETextJustify::Right)
+										.ColorAndOpacity(FSlateColor(SarkoUI::AmberWarn))
+									]
+								]
 							]
 						]
 
@@ -400,16 +439,66 @@ void SSarkoInventoryPanel::Construct(const FArguments& InArgs)
 
 							+ SOverlay::Slot()
 							[
-								SAssignNew(PlayerGrid, SVerticalBox)
+								// Two pages, side by side: the 2x2 pockets that survive death
+								// and the 4x2 a bag adds. Drawn as two grids and not one
+								// growing one, so the player can see at a glance what losing
+								// the bag costs (spec §1.2).
+								SNew(SHorizontalBox)
+								.Visibility(EVisibility::SelfHitTestInvisible)
+
+								+ SHorizontalBox::Slot().AutoWidth()
+								[
+									SAssignNew(PocketPage, SBox)
+									.Visibility(EVisibility::SelfHitTestInvisible)
+								]
+
+								+ SHorizontalBox::Slot().AutoWidth()
+									.Padding(SarkoUI::PagesGapPt, 0.f, 0.f, 0.f)
+								[
+									SAssignNew(BackpackPage, SBox)
+									.Visibility(EVisibility::SelfHitTestInvisible)
+								]
 							]
 
-							// The refusal pulse, laid OVER the whole player grid.
+							// The refusal pulse, laid OVER both carry pages.
 							+ SOverlay::Slot()
 							[
 								SNew(SBorder)
 								.Visibility(EVisibility::SelfHitTestInvisible)
 								.BorderImage(TAttribute<const FSlateBrush*>::CreateSP(
 									this, &SSarkoInventoryPanel::RefusalGlowBrush))
+							]
+
+							// The ghost: the exact rectangle that would not fit, laid over
+							// the carry pages at RefusalAnchor's gap, so it runs out of that
+							// gap and over the cell that blocked it. This is the answer to
+							// "there is room but it will not fit".
+							//
+							// Two boxes, not one: an SBox's Padding shrinks its CONTENT
+							// inside its own allotted space, so a padded box that also had
+							// the size overrides would draw the ghost clipped. The outer box
+							// carries only the offset — its desired size is offset + inner —
+							// and a top-left-aligned overlay slot then places it exactly.
+							+ SOverlay::Slot()
+							.HAlign(HAlign_Left).VAlign(VAlign_Top)
+							[
+								SNew(SBox)
+								.Visibility(EVisibility::SelfHitTestInvisible)
+								.Padding(TAttribute<FMargin>::CreateSP(this, &SSarkoInventoryPanel::GhostPadding))
+								[
+									SNew(SBox)
+									.Visibility(EVisibility::SelfHitTestInvisible)
+									.WidthOverride(TAttribute<FOptionalSize>::CreateSP(
+										this, &SSarkoInventoryPanel::GhostWidth))
+									.HeightOverride(TAttribute<FOptionalSize>::CreateSP(
+										this, &SSarkoInventoryPanel::GhostHeight))
+									[
+										SNew(SBorder)
+										.Visibility(EVisibility::SelfHitTestInvisible)
+										.BorderImage(TAttribute<const FSlateBrush*>::CreateSP(
+											this, &SSarkoInventoryPanel::RefusalGhostBrush))
+									]
+								]
 							]
 						]
 					]
@@ -452,52 +541,44 @@ TSharedRef<SWidget> SSarkoInventoryPanel::BuildContainerCell(const FSarkoItemSta
 	return Cell;
 }
 
-TSharedRef<SWidget> SSarkoInventoryPanel::BuildPlayerCell(const FSarkoItemStack& Stack, int32 SlotIndex)
+TSharedRef<SWidget> SSarkoInventoryPanel::DecorateCarryCell(int32 SlotIndex, TSharedRef<SWidget> Cell)
 {
-	// Deliberately NOT a button. Putting an item back is out of scope for this
-	// slice, and a hit-testable player grid would eat every tap in the bottom
-	// right of the screen — which is exactly where the aim thumb lives. As a
-	// border it is SelfHitTestInvisible, so the player keeps aiming through it.
-	TSharedRef<SBox> Cell = SNew(SBox)
+	// What a carry cell LOOKS like now comes from SarkoUI::BuildGridPage, shared
+	// with the shelter's stash. What is left here is what only this panel does:
+	// the transfer flash and the grow-into-place scale on whichever cell just
+	// received.
+	//
+	// Deliberately NOT a button, and everything below is SelfHitTestInvisible.
+	// Putting an item back is out of scope for this slice, and a hit-testable
+	// carry grid would eat taps in the half of the screen the panel now lives in.
+	TSharedRef<SOverlay> Wrapped = SNew(SOverlay)
 		.Visibility(EVisibility::SelfHitTestInvisible)
-		.WidthOverride(SarkoUI::CellSizePt)
-		.HeightOverride(SarkoUI::CellSizePt)
+
+		+ SOverlay::Slot()
 		[
-			SNew(SOverlay)
+			Cell
+		]
+
+		// The transfer flash: a white rim over the receiving cell, fading into the
+		// category colour under it across 120 ms.
+		+ SOverlay::Slot()
+		[
+			SNew(SBorder)
 			.Visibility(EVisibility::SelfHitTestInvisible)
-
-			+ SOverlay::Slot()
-			[
-				SNew(SBorder)
-				.Visibility(EVisibility::SelfHitTestInvisible)
-				.BorderImage(&Styles->CellByCategory[static_cast<int32>(CategoryOf(Stack.Item))].Normal)
-				.Padding(FMargin(SarkoUI::CellPadPt))
-				[
-					SarkoUI::BuildCellContent(Stack)
-				]
-			]
-
-			// The transfer flash: a white rim over the receiving cell, fading into
-			// the category colour under it across 120 ms.
-			+ SOverlay::Slot()
-			[
-				SNew(SBorder)
-				.Visibility(EVisibility::SelfHitTestInvisible)
-				.BorderImage(TAttribute<const FSlateBrush*>::CreateSP(
-					this, &SSarkoInventoryPanel::TransferFlashBrush, SlotIndex))
-			]
+			.BorderImage(TAttribute<const FSlateBrush*>::CreateSP(
+				this, &SSarkoInventoryPanel::TransferFlashBrush, SlotIndex))
 		];
 
-	Cell->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
-	Cell->SetRenderTransform(TAttribute<TOptional<FSlateRenderTransform>>::CreateSP(
+	Wrapped->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
+	Wrapped->SetRenderTransform(TAttribute<TOptional<FSlateRenderTransform>>::CreateSP(
 		this, &SSarkoInventoryPanel::PlayerCellTransform, SlotIndex));
-	return Cell;
+	return Wrapped;
 }
 
 void SSarkoInventoryPanel::Refresh()
 {
 	ASarkoCharacter* P = Pawn.Get();
-	if (!P || !ContainerRow.IsValid() || !PlayerGrid.IsValid())
+	if (!P || !ContainerRow.IsValid() || !PocketPage.IsValid() || !BackpackPage.IsValid())
 	{
 		return;
 	}
@@ -524,11 +605,44 @@ void SSarkoInventoryPanel::Refresh()
 	// --- the bag -----------------------------------------------------------
 	static const TArray<FSarkoItemStack> NoSlots;
 	const TArray<FSarkoItemStack>& Bag = P->BackpackComponent ? P->BackpackComponent->GetSlots() : NoSlots;
-	const int32 Limit = PlayerCells();
-	bBagFull = Bag.Num() >= Limit;
+	const TArray<FSarkoGridPage> Pages = P->BackpackComponent
+		? P->BackpackComponent->GetCarryPages()
+		: SarkoGrid::CarryPages(false, FIntPoint(2, 2), FIntPoint(4, 2));
+	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+	const TArray<FSarkoGridSlot> Layout = SarkoGrid::Place(Bag, Catalog, Pages);
 
-	BackpackHeader->SetText(FText::FromString(
-		FString::Printf(TEXT("РЮКЗАК %d/%d"), Bag.Num(), Limit)));
+	const int32 Used = SarkoGrid::UsedCells(Bag, Catalog);
+	const int32 Total = SarkoGrid::TotalCells(Pages);
+	bBagFull = Used >= Total;
+
+	// Page 0 always exists. Page 1 is drawn whether or not a bag is worn — as a
+	// dimmed 4x2 outline labelled НЕМАЄ РЮКЗАКА when it is not — because that is
+	// the space a bag would give you, shown beside 2-wide pockets a 3-wide rifle
+	// cannot enter. Nothing reflows when a bag is found.
+	const bool bWorn = Pages.Num() > 1;
+	const FSarkoGridPage Pockets = Pages[0];
+	const FSarkoGridPage BagPage = bWorn ? Pages[1] : FSarkoGridPage{ 4, 2 };
+
+	// Per page, because a header over a page has to be about that page: a pocket
+	// grid that is full while the bag is empty is the exact state the player has
+	// to be able to read at a glance.
+	int32 PocketUsed = 0;
+	int32 BagUsed = 0;
+	for (const FSarkoGridSlot& Slot : Layout)
+	{
+		if (Slot.Page == 0)      { PocketUsed += Slot.W * Slot.H; }
+		else if (Slot.Page == 1) { BagUsed += Slot.W * Slot.H; }
+	}
+
+	PocketHeader->SetText(FText::FromString(
+		FString::Printf(TEXT("КИШЕНІ %d/%d"), PocketUsed, Pockets.Cells())));
+	BackpackHeader->SetText(FText::FromString(bWorn
+		? FString::Printf(TEXT("РЮКЗАК %d/%d"), BagUsed, BagPage.Cells())
+		: FString(TEXT("НЕМАЄ РЮКЗАКА"))));
+
+	// A successful take is what clears the refusal's words. Nothing else has to:
+	// a take that succeeds is the answer to the take that did not.
+	RefusalNote->SetText(FText::GetEmpty());
 
 	// Which cell received, so the transfer animation has something to play on.
 	// The first index whose stack is not what it was is the answer: a take either
@@ -551,33 +665,16 @@ void SSarkoInventoryPanel::Refresh()
 	PreviousBag = Bag;
 	bHasPreviousBag = true;
 
-	PlayerGrid->ClearChildren();
-	const int32 Rows = SarkoUI::PlayerGridRows(Limit);
-	for (int32 Row = 0; Row < Rows; ++Row)
-	{
-		TSharedRef<SHorizontalBox> RowBox = SNew(SHorizontalBox).Visibility(EVisibility::SelfHitTestInvisible);
-		for (int32 Column = 0; Column < SarkoUI::GridColumns; ++Column)
-		{
-			const int32 Index = Row * SarkoUI::GridColumns + Column;
-			const bool bOccupied = Index < Limit && Bag.IsValidIndex(Index) && Bag[Index].Quantity > 0;
-			// Past the capacity there is no cell at all, not an empty one: a
-			// four-pocket pawn must not be shown eight slots it cannot use.
-			TSharedRef<SWidget> Cell = Index >= Limit
-				? StaticCastSharedRef<SWidget>(SNew(SSpacer).Size(FVector2D(SarkoUI::CellSizePt, SarkoUI::CellSizePt)))
-				: (bOccupied ? BuildPlayerCell(Bag[Index], Index)
-					: SarkoUI::BuildEmptyCell(*Styles, FIntPoint(1, 1)));
-			RowBox->AddSlot().AutoWidth()
-				.Padding(Column == 0 ? 0.f : SarkoUI::CellGutterPt, 0.f, 0.f, 0.f)
-				[
-					Cell
-				];
-		}
-		PlayerGrid->AddSlot().AutoHeight()
-			.Padding(0.f, Row == 0 ? 0.f : SarkoUI::CellGutterPt, 0.f, 0.f)
-			[
-				RowBox
-			];
-	}
+	const SarkoUI::FStackCellDecorator Decorate =
+		[this](int32 StackIndex, TSharedRef<SWidget> Cell) { return DecorateCarryCell(StackIndex, Cell); };
+
+	PocketPage->SetContent(SarkoUI::BuildGridPage(Bag, Layout, 0, Pockets, *Styles, Decorate));
+	BackpackPage->SetContent(bWorn
+		? SarkoUI::BuildGridPage(Bag, Layout, 1, BagPage, *Styles, Decorate)
+		: SarkoUI::BuildGridPage({}, {}, 1, BagPage, *Styles));
+	// Dimmed rather than absent: the space a bag would give you, visible next to
+	// the pockets it dwarfs.
+	BackpackPage->SetRenderOpacity(bWorn ? 1.f : 0.45f);
 
 	if (ReceivingCell != INDEX_NONE)
 	{
@@ -587,22 +684,55 @@ void SSarkoInventoryPanel::Refresh()
 
 void SSarkoInventoryPanel::PlayRefusal(int32 SlotIndex, ESarkoTakeRefusal Reason)
 {
-	// Three signals at once, all of them on the PLAYER's half except the shake:
-	// 1. the player grid's outline pulses amber (NoSpace only);
+	// FOUR signals at once, all of them on the PLAYER's half except the shake:
+	// 1. the carry grids' outline pulses amber (NoSpace only);
 	// 2. the РЮКЗАК header turns amber and stays amber while the bag is full;
-	// 3. the refused container cell shakes, +-4 pt, two cycles.
+	// 3. the refused container cell shakes, +-4 pt, two cycles;
+	// 4. a ghost of the exact w x h that failed is drawn at the most convincing
+	//    gap, and the header says НЕ ВЛІЗЕ w×h beside it.
 	//
 	// "I tapped and nothing happened" is the failure mode the spec names, and
 	// one signal is not enough to beat it: a shake alone is read as a glitch and
-	// a colour alone is missed by a thumb that is covering the cell.
+	// a colour alone is missed by a thumb that is covering the cell. The fourth
+	// answers the one thing the other three cannot — spec §5's "there is room but
+	// it will not fit", which is the classic spatial-grid frustration. The player
+	// sees how many cells are free (the grid), what shape was needed (the words),
+	// and where it was tried and what stopped it (the ghost, half on a gap and
+	// half on the thing in the way).
 	RefusedSlot = SlotIndex;
 	LastRefusal = Reason;
+
+	// A 1x1 at the origin is the resting value, not a claim: the ghost's brush is
+	// null unless the curve is playing on a NoSpace, so this is never drawn.
+	RefusedGhost = FSarkoGridSlot{ 0, 0, 0, 1, 1 };
+	if (RefusalNote.IsValid())
+	{
+		RefusalNote->SetText(FText::GetEmpty());
+	}
 
 	if (const ASarkoCharacter* P = Pawn.Get())
 	{
 		if (P->BackpackComponent)
 		{
-			bBagFull = P->BackpackComponent->GetUsedCells() >= P->BackpackComponent->GetCellCount();
+			const TArray<FSarkoGridPage> Pages = P->BackpackComponent->GetCarryPages();
+			const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+			bBagFull = SarkoGrid::UsedCells(P->BackpackComponent->GetSlots(), Catalog)
+				>= SarkoGrid::TotalCells(Pages);
+
+			// The size that failed comes from the container slot the player tapped —
+			// the panel already has it, so no new RPC field is needed to carry it.
+			const TArray<FSarkoItemStack>& CrateSlots = P->GetOpenContainerSlots();
+			const FIntPoint Size = CrateSlots.IsValidIndex(SlotIndex)
+				? SarkoGrid::SizeOf(Catalog, CrateSlots[SlotIndex].Item)
+				: FIntPoint(1, 1);
+			RefusedGhost = SarkoGrid::RefusalAnchor(
+				SarkoGrid::Place(P->BackpackComponent->GetSlots(), Catalog, Pages), Pages, Size);
+
+			if (RefusalNote.IsValid() && Reason == ESarkoTakeRefusal::NoSpace)
+			{
+				RefusalNote->SetText(FText::FromString(
+					FString::Printf(TEXT("НЕ ВЛІЗЕ %d×%d"), Size.X, Size.Y)));
+			}
 		}
 	}
 

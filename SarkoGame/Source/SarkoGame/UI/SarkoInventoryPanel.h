@@ -9,6 +9,7 @@
 // By value in PreviousBag and by const-ref in BuildCell, so the complete
 // USTRUCT has to be visible here rather than forward-declared.
 #include "Loot/SarkoItemCatalog.h"
+#include "Loot/SarkoItemGrid.h"
 
 class ASarkoCharacter;
 class SBorder;
@@ -28,15 +29,31 @@ namespace SarkoUI
 	constexpr float CellPadPt = 4.f;          // inside a cell, around its label
 	constexpr float PanelPadPt = 14.f;        // left and right
 	/**
-	 * Top and bottom. Twelve and not fourteen, because the Visual design's
-	 * vertical stack adds up to the 292 pt the panel is specified at only with
-	 * twelve (12 + 44 + 6 + 44 + 12 + 16 + 6 + 140 + 12), and the height is the
-	 * axis that decides whether a full panel clears the health bar. The
-	 * horizontal padding stays 14, which is what makes the width exactly 216.
+	 * Top and bottom. Twelve and not fourteen, because the vertical stack adds up
+	 * to the 244 pt the panel is specified at only with twelve
+	 * (12 + 44 + 6 + 44 + 12 + 16 + 6 + 92 + 12), and the height is the axis that
+	 * decides whether the panel clears the HUD's health bar. The horizontal
+	 * padding stays 14, which is what makes the width exactly 318.
 	 */
 	constexpr float PanelPadYPt = 12.f;
-	constexpr int32 GridColumns = 4;
-	constexpr float PanelWidthPt = CellSizePt * GridColumns + CellGutterPt * (GridColumns - 1) + PanelPadPt * 2.f;  // 216
+
+	/** Between the pockets page and the backpack page. */
+	constexpr float PagesGapPt = 10.f;
+
+	/**
+	 * 14 + (92 pockets + 10 gap + 188 backpack) + 14.
+	 *
+	 * A CONSTANT since 2026-08-05: the panel no longer grows with capacity, so
+	 * finding a bag mid-raid cannot reflow the thing the player is reading. The
+	 * 4x2 backpack page is drawn whether or not one is worn — dimmed and labelled
+	 * НЕМАЄ РЮКЗАКА when it is not — because that is the space a bag would give
+	 * you, shown beside 2-wide pockets a 3-wide rifle cannot enter.
+	 */
+	constexpr float PanelWidthPt = 318.f;
+
+	/** 12 + 44 take-all + 6 + 44 container + 12 divider + 16 header + 6 + 92 cells + 12. */
+	constexpr float PanelHeightPt = 244.f;
+
 	constexpr float TakeAllRowPt = 44.f;
 	constexpr float HeaderRowPt = 16.f;
 	constexpr float DividerPt = 12.f;
@@ -59,7 +76,8 @@ namespace SarkoUI
 
 	/**
 	 * The crate's tier is the header's headline and "ОБШУК" is its dim label
-	 * above it, stacked rather than run together on one line: at 216 pt wide,
+	 * above it, stacked rather than run together on one line: at 190 pt of inner
+	 * width,
 	 * "ОБШУК · MILITARY" and "ЗАБРАТИ ВСЕ" on one row overlapped each other, and
 	 * a header printed through a button label is the first thing that makes a
 	 * screen look unfinished.
@@ -67,24 +85,14 @@ namespace SarkoUI
 	constexpr float SectionLabelPt = 9.f;
 	constexpr float TierPt = 13.f;
 
-	/** How far the panel slides in from the right on entry. */
+	/** How far the panel slides on entry. */
 	constexpr float EntrySlidePt = 24.f;
 
-	/** In from the safe frame's right edge, and up from its bottom. The bottom
-	 *  number keeps the panel clear of the home indicator AND of the aim thumb's
-	 *  resting corner, in that order of importance. */
-	constexpr float PanelRightInsetPt = 16.f;
+	/** In from the safe frame's LEFT edge, and up from its bottom. The bottom
+	 *  number keeps the panel clear of the home indicator; the left number is the
+	 *  half of spec §4.5 that moves it off the aim thumb. */
+	constexpr float PanelLeftInsetPt = 16.f;
 	constexpr float PanelBottomInsetPt = 20.f;
-
-	/** Rows of four the player's cells occupy. At least one, so an impossible
-	 *  zero-capacity pawn still draws a panel rather than a sliver. */
-	int32 PlayerGridRows(int32 PlayerCells);
-
-	/** The vertical stack, added up: 12 + 44 + 6 + 44 + 12 + 16 + 6 + grid + 12.
-	 *  Shared with the widget rather than re-derived there, so the rect the HUD
-	 *  positions the close button against and the box Slate actually lays out
-	 *  cannot disagree. */
-	float InventoryPanelHeightPt(int32 PlayerCells);
 
 	/**
 	 * Where the panel goes, in whatever unit SafeFrame is in (pixels for the HUD,
@@ -92,23 +100,15 @@ namespace SarkoUI
 	 * that decides whether a player can see the bot walking at them is unit tested
 	 * without a viewport, a widget or a Slate application.
 	 *
-	 * Bottom-anchored and growing UPWARD, which is what keeps a full 12-cell
-	 * panel clear of the HUD's health bar (y 14..29) while a 4-cell one sits
-	 * lower still. Top-anchoring put the header 3 points under the bar, which
-	 * reads as a collision rather than as a layout.
-	 */
-	FBox2D InventoryPanelRect(FBox2D SafeFrame, int32 PlayerCells, float PointScale);
-
-	/**
-	 * Where the interact button is for this pawn right now, in viewport pixels:
-	 * its usual place, or beside the panel while one is open.
+	 * Bottom-LEFT since 2026-08-05 (spec §4.5): it used to sit over the aim stick,
+	 * where a thumb reaching to shoot could land on a cell instead. Moving it is
+	 * only half the fix — the other half is that the move stick sleeps while it is
+	 * open (SarkoInput::IsMoveStickSuppressed).
 	 *
-	 * One function and not two branches in two files, because the HUD draws that
-	 * button and the controller hit-tests it, and a button drawn in one place and
-	 * pressed in another is the one thing about this control that must never
-	 * happen. A null pawn, or one with nothing open, gets the ordinary rect.
+	 * It takes no cell count, and that is what makes "one size, whatever the pawn
+	 * is carrying" structural rather than a promise.
 	 */
-	FBox2D InteractButtonRectFor(const ASarkoCharacter* Pawn, FBox2D SafeFrame, float PointScale);
+	FBox2D InventoryPanelRect(FBox2D SafeFrame, float PointScale);
 
 	/** +-4 pt over two full cycles, starting and ending at exactly zero. Pure, so
 	 *  the "ends at rest" property is a test rather than an eyeball. */
@@ -122,10 +122,16 @@ namespace SarkoUI
  * The container panel: what is in the crate, what is in your bag, and one tap
  * between them.
  *
- * Bottom-right quarter of the safe frame and translucent, because looting does
- * not pause the world (spec §2.4/§5): the pawn at screen centre and 190 points
- * of ground to its right are never covered, and a bot crossing behind the plate
- * stays a moving silhouette rather than disappearing behind a dim.
+ * Bottom-LEFT of the safe frame and translucent, because looting does not pause
+ * the world (spec §2.4/§5): the pawn at screen centre and the whole right half
+ * of the screen are never covered, and a bot crossing behind the plate stays a
+ * moving silhouette rather than disappearing behind a dim.
+ *
+ * It sat bottom-RIGHT until 2026-08-05, on top of the aim stick, passing touches
+ * through everywhere except its cells — so a thumb reaching to shoot could land
+ * on a cell instead. Spec §4.5 moved it here and put the move stick to sleep
+ * while it is open: looting already requires standing still, so movement is the
+ * input you can afford to lose, and shooting is not.
  *
  * **The controller must NOT set FInputModeUIOnly for this panel.** That mode
  * calls UGameViewportClient::SetIgnoreInput(true), the viewport client belongs
@@ -184,9 +190,22 @@ private:
 
 	/** Rebuilt by Refresh; the cells hang off these. */
 	TSharedPtr<SHorizontalBox> ContainerRow;
-	TSharedPtr<SVerticalBox> PlayerGrid;
 	TSharedPtr<STextBlock> ContainerHeader;
+
+	/** One box per carry page, refilled by Refresh. Pockets is always page 0, and
+	 *  the backpack page is drawn even when no bag is worn — dimmed, so the shape
+	 *  of what a bag would give you is visible beside the pockets it dwarfs. */
+	TSharedPtr<class SBox> PocketPage;
+	TSharedPtr<class SBox> BackpackPage;
+	TSharedPtr<STextBlock> PocketHeader;
 	TSharedPtr<STextBlock> BackpackHeader;
+
+	/** "НЕ ВЛІЗЕ 2×1" for the 240 ms of a NoSpace refusal, then empty. */
+	TSharedPtr<STextBlock> RefusalNote;
+
+	/** The refused rectangle and where to draw it, valid only while RefusalCurve
+	 *  is playing and LastRefusal is NoSpace. */
+	FSarkoGridSlot RefusedGhost;
 
 	/** The plate itself, which is what the entry slide moves — inside the DPI
 	 *  scaler, so the 24 pt it travels is 24 points and not 24 pixels. */
@@ -237,9 +256,6 @@ private:
 	/** Slot padding that pushes the panel into the bottom-right of the SAFE frame,
 	 *  expressed in points because everything inside the DPI scaler is. */
 	FMargin PanelPadding() const;
-	FOptionalSize PanelHeight() const;
-
-	int32 PlayerCells() const;
 
 	/** 1 while the panel is settled, ramping on entry and falling on exit. */
 	float PanelOpacity() const;
@@ -251,6 +267,19 @@ private:
 	 *  transparent-bodied rim at all. See FSarkoInventoryStyles::RefusalGlow. */
 	const FSlateBrush* RefusalGlowBrush() const;
 	FSlateColor BackpackHeaderColour() const;
+
+	/**
+	 * The ghost: the exact w x h that would not fit, drawn at RefusalAnchor's gap.
+	 *
+	 * Positioned by padding an outer box rather than by a canvas offset, which is
+	 * the pattern PanelPadding already uses: the outer box's desired size is the
+	 * offset plus the inner box's, so a top-left-aligned overlay slot puts the
+	 * inner box exactly where the layout says without any clipping.
+	 */
+	FMargin GhostPadding() const;
+	FOptionalSize GhostWidth() const;
+	FOptionalSize GhostHeight() const;
+	const FSlateBrush* RefusalGhostBrush() const;
 
 	/** Per-cell animation, read as attributes so nothing has to tick to keep a
 	 *  cell honest. Both return the identity/invisible answer for every cell that
@@ -264,7 +293,10 @@ private:
 	// is what only this panel does: a tappable container cell, and a carry cell
 	// carrying this panel's transfer animation.
 	TSharedRef<SWidget> BuildContainerCell(const FSarkoItemStack& Stack, int32 SlotIndex);
-	TSharedRef<SWidget> BuildPlayerCell(const FSarkoItemStack& Stack, int32 SlotIndex);
+
+	/** The hook SarkoUI::BuildGridPage calls for each placed carry stack: wraps
+	 *  the shared cell in this panel's transfer flash and receive-scale. */
+	TSharedRef<SWidget> DecorateCarryCell(int32 SlotIndex, TSharedRef<SWidget> Cell);
 
 	FReply HandleTakeSlot(int32 SlotIndex);
 	FReply HandleTakeAll();
