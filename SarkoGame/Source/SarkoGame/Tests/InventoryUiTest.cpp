@@ -210,4 +210,28 @@ bool FSarkoPanelCellsClearTheTapTargetMinimum::RunTest(const FString& Parameters
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoRefusalShakeStartsAndEndsAtRest,
+	"Sarko.UI.RefusalShakeStartsAndEndsAtRest",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoRefusalShakeStartsAndEndsAtRest::RunTest(const FString& Parameters)
+{
+	// A shake that does not return to zero leaves the cell permanently offset by
+	// a few points — which nobody notices as an animation bug and everybody
+	// notices as a grid that is subtly crooked.
+	TestTrue(TEXT("starts at rest"), FMath::IsNearlyZero(SarkoUI::RefusalShakeOffsetPt(0.f), 0.001f));
+	TestTrue(TEXT("ends at rest"), FMath::IsNearlyZero(SarkoUI::RefusalShakeOffsetPt(1.f), 0.001f));
+	// Two full cycles, so it reads as "no" rather than as a glitch.
+	TestTrue(TEXT("swings both ways"),
+		SarkoUI::RefusalShakeOffsetPt(0.125f) > 3.f && SarkoUI::RefusalShakeOffsetPt(0.375f) < -3.f);
+	TestTrue(TEXT("never exceeds the amplitude, so it cannot leave the cell"),
+		FMath::Abs(SarkoUI::RefusalShakeOffsetPt(0.2f)) <= 4.001f);
+	// Clamped, because a curve read one frame past its end must not fling the
+	// cell across the panel.
+	TestTrue(TEXT("a lerp past the end is clamped, not extrapolated"),
+		FMath::IsNearlyZero(SarkoUI::RefusalShakeOffsetPt(1.7f), 0.001f));
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS
