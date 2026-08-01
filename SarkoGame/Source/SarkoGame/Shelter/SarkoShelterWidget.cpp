@@ -3,6 +3,10 @@
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Styling/CoreStyle.h"
+#include "Loot/SarkoItemCatalog.h"
+#include "Loot/SarkoItemGrid.h"
+#include "UI/SarkoCellWidgets.h"
+#include "UI/SarkoInventoryStyle.h"
 #include "UI/SarkoUiScale.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBorder.h"
@@ -10,6 +14,7 @@
 #include "Widgets/Layout/SDPIScaler.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
 #include "Widgets/Text/STextBlock.h"
 
 namespace
@@ -390,16 +395,33 @@ void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 							HorizontalRule()
 						]
 
-						// The stash can be any length, which is the reason this
-						// screen is Slate and not DrawHUD primitives: SScrollBox is
-						// the whole feature. It gets the full height of the body in
-						// landscape instead of whatever was left over in portrait.
+						// The stash is the SAME cell grid the raid's crate panel draws
+						// (spec §2: one visual language for "things you own"), and it
+						// can be any height — which is the reason this screen is Slate
+						// and not DrawHUD primitives. It grows downward and scrolls; it
+						// is never packed by the player.
 						+ SVerticalBox::Slot().FillHeight(1.f)
 						[
-							SNew(SScrollBox)
-							+ SScrollBox::Slot()
+							SNew(SOverlay)
+
+							+ SOverlay::Slot()
 							[
-								SAssignNew(StashBox, SVerticalBox)
+								SNew(SScrollBox)
+								+ SScrollBox::Slot()
+								[
+									SAssignNew(StashBox, SBox)
+								]
+							]
+
+							+ SOverlay::Slot()
+							.HAlign(HAlign_Center).VAlign(VAlign_Top)
+							.Padding(0.f, 24.f, 0.f, 0.f)
+							[
+								// Over the grid, not instead of it: an empty stash still
+								// shows the shape it will fill.
+								SAssignNew(StashNoteText, STextBlock)
+								.Font(ShelterFont(15.f))
+								.ColorAndOpacity(LabelColour)
 							]
 						]
 					]
@@ -437,8 +459,19 @@ void SSarkoShelterWidget::SetView(const FSarkoShelterView& View)
 	};
 
 	Fill(HaulBox, View.HaulLines, 14.f);
-	Fill(StashBox, View.StashLines, 15.f);
 	Fill(GarageParts, View.Garage.PartLines, 13.f);
+
+	StashNoteText->SetText(FText::FromString(View.StashNote));
+
+	// Rebuilt wholesale, once per profile fetch and once per craft — never per
+	// frame. Slate is not a tick path.
+	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+	const int32 Rows = SarkoGrid::StashRowsFor(View.StashStacks, Catalog,
+		SarkoUI::StashColumns, SarkoUI::StashMinRows);
+	const FSarkoGridPage Page{ SarkoUI::StashColumns, Rows };
+	const TArray<FSarkoGridSlot> Slots = SarkoGrid::Place(View.StashStacks, Catalog, { Page });
+	StashBox->SetContent(SarkoUI::BuildGridPage(View.StashStacks, Slots, /*PageIndex*/ 0,
+		Page, *FSarkoInventoryStyles::Get()));
 }
 
 void SSarkoShelterWidget::SetCraftInFlight(bool bInFlight)

@@ -9,6 +9,7 @@
 #include "Loot/SarkoLootTable.h"
 #include "Pawn/SarkoCharacter.h"
 #include "Styling/CoreStyle.h"
+#include "UI/SarkoCellWidgets.h"
 #include "UI/SarkoInventoryStyle.h"
 #include "UI/SarkoUiScale.h"
 #include "Widgets/Input/SButton.h"
@@ -428,58 +429,6 @@ void SSarkoInventoryPanel::Construct(const FArguments& InArgs)
 	Refresh();
 }
 
-TSharedRef<SWidget> SSarkoInventoryPanel::BuildCellContent(const FSarkoItemStack& Stack) const
-{
-	const FSarkoItemDef* Def = SarkoLoot::GetItemCatalog().Find(Stack.Item);
-	const FString Label = SarkoUI::CellLabel(Def ? Def->Name : Stack.Item.ToString());
-
-	TSharedRef<SOverlay> Content = SNew(SOverlay).Visibility(EVisibility::SelfHitTestInvisible);
-
-	Content->AddSlot()
-		.HAlign(HAlign_Left).VAlign(VAlign_Top)
-		[
-			SNew(STextBlock)
-			.Visibility(EVisibility::SelfHitTestInvisible)
-			.Font(PanelFont(SarkoUI::CellLabelPt))
-			.ColorAndOpacity(FSlateColor(SarkoUI::CellLabelColour))
-			// A 36 pt strip of cell interior cannot hold every label even after
-			// CellLabel's nine-character cut, and a word running out of its cell
-			// reads as a rendering fault. Ellipsis, never a clip.
-			.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
-			.Text(FText::FromString(Label))
-		];
-
-	// Only when there is more than one: "1" on every cell is noise, and the
-	// count is meant to be the thing the eye stops on when it matters.
-	if (Stack.Quantity > 1)
-	{
-		Content->AddSlot()
-			.HAlign(HAlign_Right).VAlign(VAlign_Bottom)
-			[
-				SNew(STextBlock)
-				.Visibility(EVisibility::SelfHitTestInvisible)
-				.Font(PanelFont(SarkoUI::CellCountPt))
-				.ColorAndOpacity(FSlateColor(SarkoUI::CellCountColour))
-				.Text(FText::AsNumber(Stack.Quantity))
-			];
-	}
-
-	return Content;
-}
-
-TSharedRef<SWidget> SSarkoInventoryPanel::BuildEmptyCell() const
-{
-	return SNew(SBox)
-		.Visibility(EVisibility::SelfHitTestInvisible)
-		.WidthOverride(SarkoUI::CellSizePt)
-		.HeightOverride(SarkoUI::CellSizePt)
-		[
-			SNew(SBorder)
-			.Visibility(EVisibility::SelfHitTestInvisible)
-			.BorderImage(&Styles->EmptyCell.Normal)
-		];
-}
-
 TSharedRef<SWidget> SSarkoInventoryPanel::BuildContainerCell(const FSarkoItemStack& Stack, int32 SlotIndex)
 {
 	TSharedPtr<SButton> Button;
@@ -492,7 +441,7 @@ TSharedRef<SWidget> SSarkoInventoryPanel::BuildContainerCell(const FSarkoItemSta
 			.ContentPadding(FMargin(SarkoUI::CellPadPt))
 			.OnClicked(FOnClicked::CreateSP(this, &SSarkoInventoryPanel::HandleTakeSlot, SlotIndex))
 			[
-				BuildCellContent(Stack)
+				SarkoUI::BuildCellContent(Stack)
 			]
 		];
 
@@ -524,7 +473,7 @@ TSharedRef<SWidget> SSarkoInventoryPanel::BuildPlayerCell(const FSarkoItemStack&
 				.BorderImage(&Styles->CellByCategory[static_cast<int32>(CategoryOf(Stack.Item))].Normal)
 				.Padding(FMargin(SarkoUI::CellPadPt))
 				[
-					BuildCellContent(Stack)
+					SarkoUI::BuildCellContent(Stack)
 				]
 			]
 
@@ -567,7 +516,8 @@ void SSarkoInventoryPanel::Refresh()
 		ContainerRow->AddSlot().AutoWidth()
 			.Padding(Index == 0 ? 0.f : SarkoUI::CellGutterPt, 0.f, 0.f, 0.f)
 			[
-				bOccupied ? BuildContainerCell(Slots[Index], Index) : BuildEmptyCell()
+				bOccupied ? BuildContainerCell(Slots[Index], Index)
+					: SarkoUI::BuildEmptyCell(*Styles, FIntPoint(1, 1))
 			];
 	}
 
@@ -614,7 +564,8 @@ void SSarkoInventoryPanel::Refresh()
 			// four-pocket pawn must not be shown eight slots it cannot use.
 			TSharedRef<SWidget> Cell = Index >= Limit
 				? StaticCastSharedRef<SWidget>(SNew(SSpacer).Size(FVector2D(SarkoUI::CellSizePt, SarkoUI::CellSizePt)))
-				: (bOccupied ? BuildPlayerCell(Bag[Index], Index) : BuildEmptyCell());
+				: (bOccupied ? BuildPlayerCell(Bag[Index], Index)
+					: SarkoUI::BuildEmptyCell(*Styles, FIntPoint(1, 1)));
 			RowBox->AddSlot().AutoWidth()
 				.Padding(Column == 0 ? 0.f : SarkoUI::CellGutterPt, 0.f, 0.f, 0.f)
 				[

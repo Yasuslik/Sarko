@@ -4,8 +4,10 @@
 #include "Core/SarkoTravel.h"
 #include "Kismet/GameplayStatics.h"
 #include "Loot/SarkoItemCatalog.h"
+#include "Loot/SarkoItemGrid.h"
 #include "Net/SarkoBackendClient.h"
 #include "Shelter/SarkoShelterView.h"
+#include "UI/SarkoCellWidgets.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -80,12 +82,15 @@ namespace
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FSarkoStashLinesUseUkrainianNames,
-	"Sarko.Shelter.StashLinesUseUkrainianNames",
+	FSarkoStashStacksSurviveTheCatalog,
+	"Sarko.Shelter.StashStacksSurviveTheCatalog",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FSarkoStashLinesUseUkrainianNames::RunTest(const FString& Parameters)
+bool FSarkoStashStacksSurviveTheCatalog::RunTest(const FString& Parameters)
 {
+	// The stash is a GRID of cells now (spec §2), not a list of "<name>  x<qty>"
+	// lines, so what this pins moved with it: every row the server sent survives
+	// as a stack, in the grid's order, and nothing the player owns is dropped.
 	const FSarkoItemCatalog Catalog = MakeTestCatalog();
 
 	FSarkoProfile Profile;
@@ -95,23 +100,109 @@ bool FSarkoStashLinesUseUkrainianNames::RunTest(const FString& Parameters)
 		FSarkoItemStack{ FName(TEXT("scrap_metal")), 14 },
 		FSarkoItemStack{ FName(TEXT("medkit")), 2 },
 		// An id the catalog does not know. It must still be shown: a stash row the
-		// player owns and cannot see is worse than an ugly line, and an id on
-		// screen is the visible symptom of items.json drifting from the backend.
+		// player owns and cannot see is worse than an odd-looking cell, and an id
+		// on screen is the visible symptom of items.json drifting from the backend.
 		FSarkoItemStack{ FName(TEXT("mystery_cog")), 1 },
+		// A zero row IS dropped: it would draw as an empty cell that is not an
+		// empty slot — a hole in the grid the player cannot fill.
+		FSarkoItemStack{ FName(TEXT("chain")), 0 },
 	};
 
-	const TArray<FString> Lines = SarkoShelter::BuildStashLines(Profile, Catalog);
-	TestEqual(TEXT("one line per stash row, none dropped"), Lines.Num(), 3);
-	TestEqual(TEXT("the UA display name is used, never the id"), Lines[0], FString(TEXT("Металолом  x14")));
-	TestEqual(TEXT("server order is preserved"), Lines[1], FString(TEXT("Аптечка  x2")));
-	TestEqual(TEXT("an unknown id falls back to the id itself"), Lines[2], FString(TEXT("mystery_cog  x1")));
+	const TArray<FSarkoItemStack> Stacks = SarkoShelter::BuildStashStacks(Profile, Catalog);
+	TestEqual(TEXT("every non-empty row survives, none dropped"), Stacks.Num(), 3);
+	TestEqual(TEXT("med sorts before junk"), Stacks[0].Item, FName(TEXT("medkit")));
+	TestEqual(TEXT("quantities are carried through untouched"), Stacks[0].Quantity, 2);
+	TestEqual(TEXT("then junk"), Stacks[1].Item, FName(TEXT("scrap_metal")));
+	TestEqual(TEXT("an id the catalog does not know sorts LAST, and is still there"),
+		Stacks[2].Item, FName(TEXT("mystery_cog")));
 
 	FSarkoProfile Empty;
 	Empty.PlayerId = TEXT("p");
 	Empty.VehicleTier = TEXT("none");
-	const TArray<FString> EmptyLines = SarkoShelter::BuildStashLines(Empty, Catalog);
-	TestEqual(TEXT("an empty stash says so rather than drawing nothing"), EmptyLines.Num(), 1);
-	TestEqual(TEXT("and says it in Ukrainian"), EmptyLines[0], FString(TEXT("СХОВОК ПОРОЖНІЙ")));
+	TestEqual(TEXT("an empty stash yields no stacks at all"),
+		SarkoShelter::BuildStashStacks(Empty, Catalog).Num(), 0);
+
+	// ...and the view says so in words, over a grid that is still drawn — that is
+	// the difference between "you own nothing" and "this screen failed to load".
+	const FSarkoShelterView Loaded = SarkoShelter::BuildView(FSarkoLastRaid(), Empty,
+		/*bProfileLoaded*/ true, FString(), FString(), Catalog);
+	TestEqual(TEXT("a fetched empty stash says so in Ukrainian"), Loaded.StashNote,
+		FString(TEXT("СХОВОК ПОРОЖНІЙ")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoStashGridSortsAndGrows,
+	"Sarko.UI.StashGridSortsAndGrows",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoStashGridSortsAndGrows::RunTest(const FString& Parameters)
+{
+	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+
+	// Spec §2: sorted by category then name, "so the same item is always in the
+	// same place". The server hands the stash back ordered by item id, which puts
+	// ammo_9mm next to bandage and a medkit three rows from a bandage — an order
+	// that is stable but means nothing to a player.
+	TArray<FSarkoItemStack> Stash = {
+		FSarkoItemStack{ TEXT("scrap_metal"), 4 },     // junk
+		FSarkoItemStack{ TEXT("pistol"), 1 },          // weapon  — the first category
+		FSarkoItemStack{ TEXT("bandage"), 5 },         // med
+		FSarkoItemStack{ TEXT("ammo_9mm"), 60 },       // ammo
+		FSarkoItemStack{ TEXT("medkit"), 2 },          // med, and 'Аптечка' sorts before 'Бинт'
+	};
+	SarkoGrid::SortForStash(Stash, Catalog);
+
+	TestEqual(TEXT("weapons first"), Stash[0].Item, FName(TEXT("pistol")));
+	TestEqual(TEXT("then ammo"), Stash[1].Item, FName(TEXT("ammo_9mm")));
+	TestEqual(TEXT("then med, by display name: Аптечка before Бинт"),
+		Stash[2].Item, FName(TEXT("medkit")));
+	TestEqual(TEXT("then med, by display name: Аптечка before Бинт"),
+		Stash[3].Item, FName(TEXT("bandage")));
+	TestEqual(TEXT("then junk"), Stash[4].Item, FName(TEXT("scrap_metal")));
+
+	// Sorting is idempotent, or the grid reshuffles every time the shelter
+	// redraws and "always in the same place" is a lie.
+	TArray<FSarkoItemStack> Again = Stash;
+	SarkoGrid::SortForStash(Again, Catalog);
+	for (int32 Index = 0; Index < Stash.Num(); ++Index)
+	{
+		TestEqual(TEXT("sorting twice changes nothing"), Again[Index].Item, Stash[Index].Item);
+	}
+
+	// Spec §2: "If it ever fills, grow it rather than making the player pack it."
+	TestEqual(TEXT("an empty stash still draws a full grid, not a sliver"),
+		SarkoGrid::StashRowsFor({}, Catalog, SarkoUI::StashColumns, SarkoUI::StashMinRows),
+		SarkoUI::StashMinRows);
+
+	// Twenty 3x2 frames is 120 cells; eight columns cannot hold that in five rows,
+	// so the grid must have grown rather than refused anything.
+	TArray<FSarkoItemStack> Heavy;
+	for (int32 Index = 0; Index < 20; ++Index)
+	{
+		Heavy.Add(FSarkoItemStack{ TEXT("bike_frame"), 1 });
+	}
+	const int32 Rows = SarkoGrid::StashRowsFor(Heavy, Catalog, SarkoUI::StashColumns, SarkoUI::StashMinRows);
+	TestTrue(*FString::Printf(TEXT("the stash grew to %d rows"), Rows), Rows > SarkoUI::StashMinRows);
+
+	const TArray<FSarkoGridPage> Page = { FSarkoGridPage{ SarkoUI::StashColumns, Rows } };
+	const TArray<FSarkoGridSlot> Placed = SarkoGrid::Place(Heavy, Catalog, Page);
+	for (int32 Index = 0; Index < Placed.Num(); ++Index)
+	{
+		TestTrue(*FString::Printf(TEXT("stash item %d is placed — the stash is never a puzzle"), Index),
+			Placed[Index].IsPlaced());
+	}
+
+	// The one geometric identity the two grids share: a w x h item is ONE box of
+	// w cells plus the gutters between them, not w separate boxes.
+	TestEqual(TEXT("a 1x1 is 44 wide"), SarkoUI::CellExtentPt(FIntPoint(1, 1)).X, 44.0);
+	TestEqual(TEXT("a 2x1 is 92 wide, not 88"), SarkoUI::CellExtentPt(FIntPoint(2, 1)).X, 92.0);
+	TestEqual(TEXT("a 3x2 is 140 x 92"), SarkoUI::CellExtentPt(FIntPoint(3, 2)).X, 140.0);
+	TestEqual(TEXT("a 3x2 is 140 x 92"), SarkoUI::CellExtentPt(FIntPoint(3, 2)).Y, 92.0);
+	TestEqual(TEXT("cell (2,1) starts at 96, 48 — a 48 pt pitch"),
+		SarkoUI::CellOriginPt(FSarkoGridSlot{ 0, 2, 1, 1, 1 }).X, 96.0);
+	TestEqual(TEXT("cell (2,1) starts at 96, 48 — a 48 pt pitch"),
+		SarkoUI::CellOriginPt(FSarkoGridSlot{ 0, 2, 1, 1, 1 }).Y, 48.0);
 	return true;
 }
 
@@ -188,7 +279,8 @@ bool FSarkoShelterViewSeparatesUnknownFromEmpty::RunTest(const FString& Paramete
 	const FSarkoShelterView Loading = SarkoShelter::BuildView(NoRaidYet, Profile, /*bProfileLoaded*/ false,
 		FString(), FString(), Catalog);
 	TestEqual(TEXT("the title is the shelter's name"), Loading.Title, FString(TEXT("УКРИТТЯ")));
-	TestEqual(TEXT("an unfetched profile draws no stash lines at all"), Loading.StashLines.Num(), 0);
+	TestEqual(TEXT("an unfetched profile draws no stash cells at all"), Loading.StashStacks.Num(), 0);
+	TestEqual(TEXT("and does not claim it is empty, either"), Loading.StashNote, FString());
 	TestEqual(TEXT("and says it is connecting"), Loading.StatusLine, FString(TEXT("З'ЄДНАННЯ...")));
 	TestFalse(TEXT("the raid button is disabled until the profile lands"), Loading.bRaidEnabled);
 	// The garage count comes out of that same unknown stash, so it is withheld with
@@ -200,7 +292,7 @@ bool FSarkoShelterViewSeparatesUnknownFromEmpty::RunTest(const FString& Paramete
 	// Fetched and genuinely empty.
 	const FSarkoShelterView Loaded = SarkoShelter::BuildView(NoRaidYet, Profile, /*bProfileLoaded*/ true,
 		FString(), FString(), Catalog);
-	TestEqual(TEXT("a fetched empty stash says so"), Loaded.StashLines.Num(), 1);
+	TestEqual(TEXT("a fetched empty stash says so"), Loaded.StashNote, FString(TEXT("СХОВОК ПОРОЖНІЙ")));
 	TestEqual(TEXT("no status line once the profile is in"), Loaded.StatusLine, FString());
 	TestTrue(TEXT("the raid button is live once the profile is in"), Loaded.bRaidEnabled);
 	TestEqual(TEXT("the garage line is present"), Loaded.Garage.Title, FString(TEXT("ГАРАЖ: ВЕЛОСИПЕД 0/3")));
@@ -239,7 +331,7 @@ bool FSarkoShelterViewSeparatesUnknownFromEmpty::RunTest(const FString& Paramete
 		/*bProfileLoaded*/ false, FString(), FString(), Catalog);
 	TestEqual(TEXT("a stale profile draws no garage count after a raid"), AfterRaid.Garage.Title,
 		FString(TEXT("ГАРАЖ: ВЕЛОСИПЕД —/3")));
-	TestEqual(TEXT("nor a stale stash"), AfterRaid.StashLines.Num(), 0);
+	TestEqual(TEXT("nor a stale stash"), AfterRaid.StashStacks.Num(), 0);
 	// The haul is not stale — it came from the raid that just ended, not from the
 	// profile — so it is still drawn, and that is the whole reason the stale
 	// profile is kept around at all.

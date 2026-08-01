@@ -259,10 +259,12 @@ private:
 	TOptional<FSlateRenderTransform> PlayerCellTransform(int32 SlotIndex) const;
 	const FSlateBrush* TransferFlashBrush(int32 SlotIndex) const;
 
+	// What a cell IS lives in UI/SarkoCellWidgets.h, shared with the shelter's
+	// stash (spec §2: one visual language for "things you own"). What is left here
+	// is what only this panel does: a tappable container cell, and a carry cell
+	// carrying this panel's transfer animation.
 	TSharedRef<SWidget> BuildContainerCell(const FSarkoItemStack& Stack, int32 SlotIndex);
 	TSharedRef<SWidget> BuildPlayerCell(const FSarkoItemStack& Stack, int32 SlotIndex);
-	TSharedRef<SWidget> BuildCellContent(const FSarkoItemStack& Stack) const;
-	TSharedRef<SWidget> BuildEmptyCell() const;
 
 	FReply HandleTakeSlot(int32 SlotIndex);
 	FReply HandleTakeAll();

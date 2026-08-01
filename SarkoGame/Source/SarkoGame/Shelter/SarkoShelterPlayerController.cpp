@@ -187,6 +187,44 @@ void ASarkoShelterPlayerController::SarkoDebugParts(float DelaySeconds)
 #endif
 }
 
+void ASarkoShelterPlayerController::SarkoDebugStash(float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	TWeakObjectPtr<ASarkoShelterPlayerController> WeakThis(this);
+	FTimerHandle Handle;
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda([WeakThis]()
+	{
+		ASarkoShelterPlayerController* Self = WeakThis.Get();
+		USarkoGameInstance* GameInstance = Self ? Self->GetGameInstance<USarkoGameInstance>() : nullptr;
+		if (!GameInstance)
+		{
+			return;
+		}
+		// Deliberately UNSORTED and spanning every category, with a 2x1, a 2x2 and
+		// a 3x2 in it: the sort is what the frame is checking, and a multi-cell item
+		// is what proves the cell draws one box rather than w boxes with seams.
+		static const FName Mixed[] = {
+			TEXT("scrap_metal"), TEXT("pistol"),      TEXT("bandage"),    TEXT("ammo_9mm"),
+			TEXT("medkit"),      TEXT("toolbox"),     TEXT("bike_frame"), TEXT("wheel_small"),
+			TEXT("chain"),       TEXT("copper_wire"), TEXT("vodka"),      TEXT("cigarettes"),
+			TEXT("duct_tape"),   TEXT("canned_food"), TEXT("painkillers"), TEXT("backpack"),
+		};
+		static const int32 Amounts[] = { 14, 1, 5, 60, 2, 1, 1, 2, 3, 9, 2, 7, 4, 6, 5, 1 };
+
+		GameInstance->CachedProfile.Stash.Reset();
+		for (int32 Index = 0; Index < UE_ARRAY_COUNT(Mixed); ++Index)
+		{
+			GameInstance->CachedProfile.Stash.Add(FSarkoItemStack{ Mixed[Index], Amounts[Index] });
+		}
+		GameInstance->bProfileLoaded = true;
+		UE_LOG(LogTemp, Warning,
+			TEXT("SarkoDebugStash: the CACHED profile now holds %d mixed stacks. Nothing was sent to the backend."),
+			GameInstance->CachedProfile.Stash.Num());
+		Self->RefreshWidget();
+	}), FMath::Max(0.01f, DelaySeconds), false);
+#endif
+}
+
 void ASarkoShelterPlayerController::Craft()
 {
 	if (bCraftInFlight)

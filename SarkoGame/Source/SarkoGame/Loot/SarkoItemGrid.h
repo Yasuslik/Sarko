@@ -125,4 +125,27 @@ namespace SarkoGrid
 	 */
 	int32 AddToGrid(TArray<FSarkoItemStack>& Stacks, const FSarkoItemCatalog& Catalog,
 		const TArray<FSarkoGridPage>& Pages, FName Item, int32 Quantity);
+
+	/**
+	 * Category, then display name, then id. The stash's order (spec §2) — the
+	 * scarcity is in the raid, not in storage, so the one job this order has is
+	 * that the same item is always in the same place.
+	 *
+	 * StableSort and a total order down to the id, so it is idempotent: sorting an
+	 * already-sorted stash must not move anything, or the grid reshuffles on every
+	 * redraw and "always in the same place" stops being true.
+	 */
+	void SortForStash(TArray<FSarkoItemStack>& Stacks, const FSarkoItemCatalog& Catalog);
+
+	/**
+	 * How many rows a grid this wide needs to hold these stacks, never fewer than
+	 * MinRows.
+	 *
+	 * Grown by probing rather than by dividing area by width: a 3x2 frame in an
+	 * 8-wide grid can leave cells that nothing fits into, so the honest answer is
+	 * the smallest row count for which Place() places everything. Bounded, because
+	 * an item wider than the grid would otherwise never place and this would spin.
+	 */
+	int32 StashRowsFor(const TArray<FSarkoItemStack>& Stacks, const FSarkoItemCatalog& Catalog,
+		int32 Columns, int32 MinRows);
 }

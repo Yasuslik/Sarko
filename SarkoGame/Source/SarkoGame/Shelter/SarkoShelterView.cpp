@@ -3,6 +3,7 @@
 // For SarkoRaid::OutcomeLosesHaul. Reached transitively through the game
 // instance header too, but named here because this file depends on it directly.
 #include "Core/SarkoRaidGameState.h"
+#include "Loot/SarkoItemGrid.h"
 
 TArray<FSarkoItemStack> SarkoShelter::BicycleRecipe()
 {
@@ -61,23 +62,15 @@ TArray<FString> SarkoShelter::BuildHaulLines(const FSarkoLastRaid& LastRaid, con
 	return Lines;
 }
 
-TArray<FString> SarkoShelter::BuildStashLines(const FSarkoProfile& Profile, const FSarkoItemCatalog& Catalog)
+TArray<FSarkoItemStack> SarkoShelter::BuildStashStacks(const FSarkoProfile& Profile,
+	const FSarkoItemCatalog& Catalog)
 {
-	TArray<FString> Lines;
-	if (Profile.Stash.Num() == 0)
-	{
-		Lines.Add(TEXT("СХОВОК ПОРОЖНІЙ"));
-		return Lines;
-	}
-
-	Lines.Reserve(Profile.Stash.Num());
-	for (const FSarkoItemStack& Stack : Profile.Stash)
-	{
-		const FSarkoItemDef* Def = Catalog.Find(Stack.Item);
-		Lines.Add(FString::Printf(TEXT("%s  x%d"),
-			Def ? *Def->Name : *Stack.Item.ToString(), Stack.Quantity));
-	}
-	return Lines;
+	TArray<FSarkoItemStack> Stacks = Profile.Stash;
+	// Rows with nothing in them would draw as empty cells that are not empty
+	// slots — a hole in the grid the player cannot fill.
+	Stacks.RemoveAll([](const FSarkoItemStack& Stack) { return Stack.Quantity <= 0; });
+	SarkoGrid::SortForStash(Stacks, Catalog);
+	return Stacks;
 }
 
 FSarkoGarageView SarkoShelter::BuildGarageView(const FSarkoProfile& Profile, bool bProfileLoaded)
@@ -186,7 +179,11 @@ FSarkoShelterView SarkoShelter::BuildView(const FSarkoLastRaid& LastRaid, const 
 
 	if (bProfileLoaded)
 	{
-		View.StashLines = BuildStashLines(Profile, Catalog);
+		View.StashStacks = BuildStashStacks(Profile, Catalog);
+		if (View.StashStacks.Num() == 0)
+		{
+			View.StashNote = TEXT("СХОВОК ПОРОЖНІЙ");
+		}
 	}
 
 	if (!Error.IsEmpty())

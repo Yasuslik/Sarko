@@ -68,6 +68,20 @@ public:
 	UFUNCTION(Exec)
 	void SarkoDebugParts(float DelaySeconds = 4.f);
 
+	/**
+	 * Debug only: drops a MIXED haul into the cached client-side profile so the
+	 * stash grid can be photographed with something in it.
+	 *
+	 * Same shape and the same honesty as SarkoDebugParts above — it writes nothing
+	 * to the backend and entitles nothing; it fakes the readout so a headless run
+	 * can answer "does this grid look like the crate panel's grid", which is a
+	 * question only a frame someone reads can settle. Deliberately spans every
+	 * category the palette has a hue for and includes 2x1, 2x2 and 3x2 items, so
+	 * the frame also answers whether a multi-cell item draws as ONE box.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugStash(float DelaySeconds = 4.f);
+
 private:
 	/** Rebuilds the view from the game instance's state and hands it to the widget. */
 	void RefreshWidget();

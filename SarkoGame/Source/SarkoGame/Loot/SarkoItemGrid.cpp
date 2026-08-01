@@ -214,3 +214,63 @@ int32 SarkoGrid::AddToGrid(TArray<FSarkoItemStack>& Stacks, const FSarkoItemCata
 
 	return Remaining;
 }
+
+void SarkoGrid::SortForStash(TArray<FSarkoItemStack>& Stacks, const FSarkoItemCatalog& Catalog)
+{
+	Stacks.StableSort([&Catalog](const FSarkoItemStack& A, const FSarkoItemStack& B)
+	{
+		const FSarkoItemDef* DefA = Catalog.Find(A.Item);
+		const FSarkoItemDef* DefB = Catalog.Find(B.Item);
+
+		// An id the catalog does not know sorts last rather than first: it is the
+		// visible symptom of items.json drifting from the backend, and it belongs
+		// at the bottom of the grid where it is odd rather than at the top where
+		// it looks like the most important thing the player owns.
+		const int32 CategoryA = DefA ? static_cast<int32>(DefA->Category) : MAX_int32;
+		const int32 CategoryB = DefB ? static_cast<int32>(DefB->Category) : MAX_int32;
+		if (CategoryA != CategoryB)
+		{
+			return CategoryA < CategoryB;
+		}
+
+		const FString NameA = DefA ? DefA->Name : A.Item.ToString();
+		const FString NameB = DefB ? DefB->Name : B.Item.ToString();
+		// CaseSensitive, i.e. by code point: FString's own operator< folds case
+		// through TChar::ToUpper, which is ASCII-only, so every Ukrainian name
+		// would compare through a fold that does nothing — right by accident on
+		// this catalog and wrong the moment a Latin name is added beside them.
+		const int32 NameOrder = NameA.Compare(NameB, ESearchCase::CaseSensitive);
+		if (NameOrder != 0)
+		{
+			return NameOrder < 0;
+		}
+		// The id is the tiebreaker, so the order is TOTAL and therefore idempotent.
+		return A.Item.LexicalLess(B.Item);
+	});
+}
+
+int32 SarkoGrid::StashRowsFor(const TArray<FSarkoItemStack>& Stacks, const FSarkoItemCatalog& Catalog,
+	int32 Columns, int32 MinRows)
+{
+	const int32 SafeColumns = FMath::Max(1, Columns);
+	int32 Rows = FMath::Max(1, MinRows);
+
+	// The bound: one row per stack plus the tallest item is always enough, and it
+	// stops an item wider than the grid — which can never place — from spinning
+	// this forever. Such an item is a data bug the catalog's own size test
+	// catches; this is only here so a bad file cannot hang the shelter.
+	const int32 Ceiling = FMath::Max(Rows, Stacks.Num() * 2 + 2);
+	while (Rows < Ceiling)
+	{
+		const TArray<FSarkoGridPage> Page = { FSarkoGridPage{ SafeColumns, Rows } };
+		const TArray<FSarkoGridSlot> Slots = Place(Stacks, Catalog, Page);
+		const bool bAllPlaced = !Slots.ContainsByPredicate(
+			[](const FSarkoGridSlot& Slot) { return !Slot.IsPlaced(); });
+		if (bAllPlaced)
+		{
+			return Rows;
+		}
+		++Rows;
+	}
+	return Rows;
+}

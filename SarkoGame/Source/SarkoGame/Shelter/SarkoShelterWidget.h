@@ -121,5 +121,16 @@ private:
 
 	/** Rebuilt wholesale on SetView. A few dozen rows, a few times per session. */
 	TSharedPtr<SVerticalBox> HaulBox;
-	TSharedPtr<SVerticalBox> StashBox;
+
+	/**
+	 * The stash grid, not a list of lines: the same cell the raid's crate panel
+	 * draws (spec §2, one visual language for "things you own"). An SBox rather
+	 * than an SVerticalBox because SarkoUI::BuildGridPage returns one whole page
+	 * and the box just holds it.
+	 */
+	TSharedPtr<class SBox> StashBox;
+
+	/** "СХОВОК ПОРОЖНІЙ", drawn OVER the grid rather than instead of it, so an
+	 *  empty stash still shows the shape it will fill. */
+	TSharedPtr<STextBlock> StashNoteText;
 };

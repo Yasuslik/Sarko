@@ -63,9 +63,17 @@ struct FSarkoShelterView
 	 *  sentence for every raid before it (spec §3). */
 	FString CraftLine;
 
-	/** One line per stash row, or a single "СХОВОК ПОРОЖНІЙ". **Empty** — not the
-	 *  porozhniy line — while the profile has not been fetched. */
-	TArray<FString> StashLines;
+	/**
+	 * The stash, as stacks rather than strings, already sorted for the grid.
+	 * **Empty — not a message** — while the profile has not been fetched: an
+	 * unfetched profile carries an empty stash, and telling a player their haul
+	 * vanished is the single worst thing this screen can do.
+	 */
+	TArray<FSarkoItemStack> StashStacks;
+
+	/** "СХОВОК ПОРОЖНІЙ" for a fetched-but-empty stash, or empty. Drawn OVER the
+	 *  grid, so an empty stash still shows the grid it will fill. */
+	FString StashNote;
 
 	/** "З'ЄДНАННЯ..." while fetching, "ОФЛАЙН: <reason>" on failure, empty when
 	 *  everything is current. */
@@ -118,14 +126,16 @@ namespace SarkoShelter
 	TArray<FString> BuildHaulLines(const FSarkoLastRaid& LastRaid, const FSarkoItemCatalog& Catalog);
 
 	/**
-	 * One "<UA name>  x<qty>" line per stash row, in the server's order, with the
-	 * item id as the fallback label for an id the catalog does not know — an id on
-	 * screen is the visible symptom of items.json drifting from the backend, and
-	 * hiding the row instead would hide items the player actually owns.
+	 * The stash, sorted by category then name (spec §2). The catalog is passed in
+	 * rather than fetched, so this stays pure and testable under -nullrhi.
 	 *
-	 * A fetched-but-empty stash yields exactly one line, "СХОВОК ПОРОЖНІЙ".
+	 * Every row survives, including one whose id the catalog does not know: an id
+	 * on screen is the visible symptom of items.json drifting from the backend,
+	 * and hiding the row instead would hide an item the player actually owns.
+	 * Only a row with nothing in it is dropped — it would draw as an empty cell
+	 * that is not an empty slot, a hole in the grid the player cannot fill.
 	 */
-	TArray<FString> BuildStashLines(const FSarkoProfile& Profile, const FSarkoItemCatalog& Catalog);
+	TArray<FSarkoItemStack> BuildStashStacks(const FSarkoProfile& Profile, const FSarkoItemCatalog& Catalog);
 
 	/**
 	 * The garage block. Pure: a profile in, strings and one bool out.
