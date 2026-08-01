@@ -1008,6 +1008,7 @@ bool FSarkoItemSizesMatchTheDesignTable::RunTest(const FString& Parameters)
 		{ TEXT("copper_wire"),  1, 1 },
 		{ TEXT("duct_tape"),    1, 1 },
 		{ TEXT("canned_food"),  1, 1 },
+		{ TEXT("water_bottle"), 1, 1 },
 		{ TEXT("vodka"),        1, 1 },
 		{ TEXT("cigarettes"),   1, 1 },
 		{ TEXT("toolbox"),      2, 1 },

@@ -300,4 +300,11 @@ private:
 
 	FReply HandleTakeSlot(int32 SlotIndex);
 	FReply HandleTakeAll();
+
+	/** True when this carry cell holds something the player can USE (spec §4).
+	 *  The only cells in the player's own grid that are hit-testable at all. */
+	bool IsConsumableCarryCell(int32 SlotIndex) const;
+
+	/** A tap on your own consumable: eat, drink, or drink the other thing. */
+	FReply HandleConsumeSlot(int32 SlotIndex);
 };

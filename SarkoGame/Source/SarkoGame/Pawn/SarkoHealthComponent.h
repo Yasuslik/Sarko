@@ -59,6 +59,18 @@ public:
 	void ApplyDamage(float Amount, AActor* DamageInstigator);
 
 	/**
+	 * Server only. Adds health, clamped at MaxHealth, and refuses everything
+	 * ApplyDamage refuses: a dead pawn, a settled raid, a non-positive amount.
+	 *
+	 * Health had no way back up at all until the survival stage — it only ever
+	 * went down, which under four-shot lethality meant a newcomer who took two
+	 * hits in minute two carried them for thirteen more minutes. Both callers are
+	 * server-side: USarkoSurvivalComponent's out-of-combat regeneration, and
+	 * vodka.
+	 */
+	void Heal(float Amount);
+
+	/**
 	 * Server only, and only before the pawn has taken a hit: sets the pool this
 	 * archetype fights with (SarkoAI::GetBotArchetypes). Distinct from
 	 * ResetForTest below, which is a test seam and says so — this one is a

@@ -26,7 +26,24 @@ enum class ESarkoItemCategory : uint8
 	 * cargo, this is what carries the cargo". Appended last on purpose: this is a
 	 * uint8 UENUM and inserting in the middle renumbers every value above it.
 	 */
-	Gear
+	Gear,
+
+	/**
+	 * Something you USE, in the raid, by tapping it in your own grid.
+	 *
+	 * Its own category and not `med` or `valuable`, which is the question spec §4
+	 * asks and this is the answer. `med` is what a wound needs and is answered
+	 * with the medkit; `valuable` is what the stash wants and is answered by
+	 * carrying it home. Food and water are neither: they are the only items in
+	 * the game whose value is spent where you stand, and the panel has to say so
+	 * — the tappable cells in the player's own grid are exactly this category
+	 * and nothing else (SSarkoInventoryPanel::DecorateCarryCell), so "which of my
+	 * things can I use" is a colour rather than a memory test.
+	 *
+	 * Appended last, for the reason Gear's comment gives: this is a uint8 UENUM
+	 * and inserting in the middle renumbers every value above it.
+	 */
+	Consumable
 };
 
 /**

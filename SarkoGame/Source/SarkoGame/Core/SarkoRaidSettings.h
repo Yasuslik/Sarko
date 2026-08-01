@@ -252,6 +252,101 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "Backend")
 	float BackendTimeoutSeconds = 10.f;
 
+	/**
+	 * Hunger and thirst, per minute of raid time (spec §4).
+	 *
+	 * A fifteen-minute raid costs 37 % hunger and 50 % thirst, which is what
+	 * makes the meters something the player watches rather than scenery. Thirst
+	 * is the faster of the two on purpose: a survival game in which the only
+	 * drink is vodka has said something it did not mean.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Survival")
+	float FoodDrainPerMinute = 2.5f;
+
+	UPROPERTY(EditAnywhere, config, Category = "Survival")
+	float WaterDrainPerMinute = 3.3f;
+
+	/**
+	 * What a raid begins on. 55/45, NOT 100/100, and that is the whole design.
+	 *
+	 * The character walked to the sector; starting full would mean neither meter
+	 * ever crosses its threshold inside fifteen minutes and the mechanic never
+	 * reads at all. At 45, thirst crosses 30 % about four and a half minutes in —
+	 * on a first playthrough that lands near the gas station, right after the
+	 * route has handed the player a drink at the техдвор.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Survival")
+	float FoodStartPercent = 55.f;
+
+	UPROPERTY(EditAnywhere, config, Category = "Survival")
+	float WaterStartPercent = 45.f;
+
+	/**
+	 * The threshold, inclusive, at which a meter starts costing something.
+	 *
+	 * Never lethal (owner decision): the entire penalty is out-of-combat health
+	 * regeneration — one meter low halves it, both low stop it. That is legible,
+	 * recoverable, and it cannot kill a player who is out of food fifty seconds
+	 * from the extraction.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Survival")
+	float SurvivalLowPercent = 30.f;
+
+	/**
+	 * Out-of-combat health regeneration, introduced with hunger and thirst
+	 * because it is the thing they gate — health has only ever gone down.
+	 *
+	 * 1.5 hp/s is a full recovery in 66 seconds, which is a real fraction of a
+	 * fifteen-minute raid and about the length of the walk home: healing up costs
+	 * you the walk rather than being free. It also cannot be felt in a fight —
+	 * a scav at 28 damage every 1.3 s is 21.5 hp/s, fourteen times this — so the
+	 * medkit stays the in-combat answer, which is exactly the point.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Survival")
+	float HealthRegenPerSecond = 1.5f;
+
+	/**
+	 * How long after the last damage taken OR dealt regeneration may start.
+	 *
+	 * Eight seconds is longer than a scav's whole engagement, so nothing about
+	 * this is ever felt mid-fight; it is what turns "I got shot" into a cost that
+	 * is paid by walking somewhere quiet.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Survival")
+	float HealthRegenDelaySeconds = 8.f;
+
+	/** How often the survival meters tick. Four times a second: they move by
+	 *  hundredths of a percent and have nothing to say at 60 Hz. */
+	UPROPERTY(EditAnywhere, config, Category = "Survival")
+	float SurvivalTickIntervalSeconds = 0.25f;
+
+	/** A bottle of water. Half a meter in one 1x1 cell — worth carrying, not
+	 *  worth carrying five of. */
+	UPROPERTY(EditAnywhere, config, Category = "Survival")
+	float WaterBottleRestoresWater = 50.f;
+
+	/** A can. Slightly less than the bottle gives of water, because hunger drains
+	 *  slower and one can should not cover a whole raid. */
+	UPROPERTY(EditAnywhere, config, Category = "Survival")
+	float CannedFoodRestoresFood = 45.f;
+
+	/**
+	 * Vodka: a small heal with a cost, which is the traditional shape and the
+	 * honest one.
+	 *
+	 * It is the only heal in the game that is not a medkit, and it is worse than
+	 * one in every way that matters — 15 hp against a medkit's full answer, and
+	 * it takes 15 points of water with it, because alcohol is a diuretic and
+	 * because a drink that helped your thirst would make the water bottle
+	 * pointless. Drinking your way out of a firefight is therefore a decision
+	 * with a bill attached, and the bill arrives on the walk home.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Survival")
+	float VodkaHeals = 15.f;
+
+	UPROPERTY(EditAnywhere, config, Category = "Survival")
+	float VodkaCostsWater = 15.f;
+
 	UPROPERTY(EditAnywhere, config, Category = "AI")
 	float EnemyHearingRadiusUU = 2500.f;
 

@@ -14,6 +14,7 @@
 #include "Map/SarkoMapDefinition.h"
 #include "Misc/ScopeExit.h"
 #include "Pawn/SarkoCharacter.h"
+#include "Pawn/SarkoSurvival.h"
 #include "UI/SarkoInventoryPanel.h"
 #include "UI/SarkoInventoryStyle.h"
 #include "UI/SarkoUiScale.h"
@@ -65,6 +66,34 @@ namespace
 	constexpr float HealthBarWidthPt = 150.f;
 	constexpr float HealthBarHeightPt = 11.f;
 	constexpr float HealthBarTopPt = 16.f;
+
+	/**
+	 * Hunger and thirst, stacked directly under the health bar (spec §4).
+	 *
+	 * Same column, same width, HALF the height, because they move by a percent
+	 * every twenty seconds and only need to be glanceable — where health is the
+	 * thing you check mid-fight. Not the bottom (both corners are thumbs) and not
+	 * the centre (the clock is there, with three caption slots beneath it).
+	 */
+	constexpr float SurvivalBarHeightPt = 5.f;
+	constexpr float SurvivalBarGapPt = 3.f;
+
+	/**
+	 * Wheat for food, cyan for water — the two hues left over once the seven
+	 * inventory categories have theirs (SarkoUI::CategoryColour: weapon 6 deg,
+	 * ammo 41, gear 78, med 168, vehicle 210, valuable 275, consumable 340).
+	 * Wheat is desaturated well clear of ammo's brass and cyan sits between med's
+	 * teal and vehicle's blue at a luminance neither reaches, so a bar can never
+	 * be mistaken for a cell. Both are far brighter than the map's olive ground,
+	 * and each sits on the same dark plate the health bar uses, so neither
+	 * depends on what is underneath it.
+	 */
+	const FLinearColor FoodBarColour(0.680f, 0.360f, 0.100f);   // #D8A25A
+	const FLinearColor WaterBarColour(0.075f, 0.545f, 0.795f);  // #4FC3E8
+
+	/** A meter at or below the penalty threshold pulses, with the reload button's
+	 *  existing curve — one animation vocabulary for "this needs attention". */
+	constexpr float SurvivalLowMinAlpha = 0.35f;
 
 	/** The loot channel's progress bar, under the prompt it belongs to. */
 	constexpr float LootBarWidthPt = 170.f;
@@ -353,6 +382,8 @@ void ASarkoHUD::DrawHealth()
 	// Green through red, so falling health is readable without reading a number.
 	const FLinearColor Fill = FMath::Lerp(FLinearColor(0.85f, 0.15f, 0.1f), FLinearColor(0.3f, 0.85f, 0.25f), Fraction);
 	DrawRect(Fill, BarX, BarY, BarWidth * Fraction, BarHeight);
+
+	DrawSurvival(BarX, BarY + BarHeight, BarWidth);
 
 	if (!Health->IsDead())
 	{
@@ -687,6 +718,50 @@ const FString& ASarkoHUD::ZoneNameFor(int32 ZoneIndex)
 	}
 
 	return CachedZoneNames.IsValidIndex(ZoneIndex) ? CachedZoneNames[ZoneIndex] : Generic;
+}
+
+void ASarkoHUD::DrawSurvival(float BarX, float HealthBarBottomY, float BarWidth)
+{
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	const USarkoSurvivalComponent* Survival = Pawn ? Pawn->SurvivalComponent : nullptr;
+	if (!Survival)
+	{
+		return;
+	}
+
+	const float Height = Px(SurvivalBarHeightPt);
+	const float Gap = Px(SurvivalBarGapPt);
+	const float Border = Px(2.f);
+	const float Pulse = SarkoUI::ReloadPulseAlpha(GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f);
+
+	// Two rows under the health bar, in the order they were introduced in and in
+	// the order they run out in: food first because it is the slower one, so the
+	// bar that moves is always the bottom one.
+	const struct { float Fraction; bool bLow; FLinearColor Colour; } Rows[] = {
+		{ Survival->GetFoodPercent() / SarkoSurvival::MeterMax, Survival->IsFoodLow(), FoodBarColour },
+		{ Survival->GetWaterPercent() / SarkoSurvival::MeterMax, Survival->IsWaterLow(), WaterBarColour },
+	};
+
+	float Y = HealthBarBottomY + Gap;
+	for (const auto& Row : Rows)
+	{
+		// The same dark plate the health bar sits on, so the bar's own colour is
+		// never asked to fight the olive ground directly.
+		DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f),
+			BarX - Border, Y - Border, BarWidth + Border * 2.f, Height + Border * 2.f);
+
+		FLinearColor Fill = Row.Colour;
+		if (Row.bLow)
+		{
+			// Pulsed rather than recoloured: red would say "you are dying", and
+			// hunger and thirst are never lethal in this slice. Bounded away from
+			// zero for the reason the reload button's pulse is — a bar that
+			// vanishes on the trough reads as absent, not as urgent.
+			Fill.A = FMath::Max(SurvivalLowMinAlpha, Pulse);
+		}
+		DrawRect(Fill, BarX, Y, BarWidth * FMath::Clamp(Row.Fraction, 0.f, 1.f), Height);
+		Y += Height + Gap;
+	}
 }
 
 void ASarkoHUD::DrawExtraction()

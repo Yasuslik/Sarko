@@ -80,11 +80,13 @@ namespace SarkoUI
 	 * outline — the load-bearing signal, because an outline reads at 44 points
 	 * where a fill does not.
 	 *
-	 * Seven values, six hues and one deliberate neutral: weapon 6 deg, ammo 41,
-	 * gear 78, med 168, vehicle part 210, valuable 275, and junk with no hue at
-	 * all. Junk being the only grey is information, not laziness. The minimum gap
-	 * is 35 degrees (red to brass), which survives the small-swatch, low-
-	 * luminance, glare-on-a-phone case that kills 15-degree neighbours.
+	 * Eight values, seven hues and one deliberate neutral: weapon 6 deg, ammo 41,
+	 * gear 78, med 168, vehicle part 210, valuable 275, consumable 340, and junk
+	 * with no hue at all. Junk being the only grey is information, not laziness.
+	 * The minimum gap is 26 degrees (consumable rose to weapon red) and every
+	 * other neighbour is 35 or wider; the two closest differ by more than
+	 * luminance alone, which is what survives the small-swatch, low-luminance,
+	 * glare-on-a-phone case that kills 15-degree neighbours.
 	 */
 	FLinearColor CategoryColour(ESarkoItemCategory Category);
 
@@ -166,7 +168,19 @@ struct FSarkoInventoryStyles
 	static TSharedRef<const FSarkoInventoryStyles> Get();
 
 	/** Indexed by ESarkoItemCategory; sized past the enum so a future value cannot overrun. */
-	FButtonStyle CellByCategory[8];
+	FButtonStyle CellByCategory[10];
+
+	/**
+	 * A cell-shaped button that draws NOTHING, for a tappable carry cell.
+	 *
+	 * The cell under it is already drawn by SarkoUI::BuildStackCell in its own
+	 * category colours, so a consumable's tap target must add hit-testing and no
+	 * pixels — anything else would make the same item look like two different
+	 * things depending on which grid it is sitting in. Pressed is the one visible
+	 * state, and only because a 44-point cell entirely under a thumb needs to
+	 * confirm the press somehow.
+	 */
+	FButtonStyle InvisibleTap;
 	FButtonStyle EmptyCell;
 	FButtonStyle TakeAllRow;
 	FSlateBrush PanelBrush;

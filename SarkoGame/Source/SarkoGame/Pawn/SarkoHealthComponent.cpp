@@ -3,6 +3,7 @@
 #include "Core/SarkoRaidGameState.h"
 #include "Engine/World.h"
 #include "Net/UnrealNetwork.h"
+#include "Pawn/SarkoSurvival.h"
 
 bool SarkoCombat::IsFoe(ESarkoTeam OwnerTeam, ESarkoTeam CandidateTeam)
 {
@@ -86,6 +87,16 @@ void USarkoHealthComponent::ApplyDamage(float Amount, AActor* DamageInstigator)
 	}
 
 	Health = FMath::Max(0.f, Health - Amount);
+
+	// Regeneration is gated on this (SarkoSurvival::RegenPerSecond): a pawn that
+	// was shot a moment ago is in combat, whatever else is true. Set before the
+	// survival check below, so even a killing blow marks the moment.
+	if (USarkoSurvivalComponent* Survival = GetOwner()
+			? GetOwner()->FindComponentByClass<USarkoSurvivalComponent>() : nullptr)
+	{
+		Survival->NoteCombat();
+	}
+
 	if (Health > 0.f)
 	{
 		return;
@@ -95,4 +106,28 @@ void USarkoHealthComponent::ApplyDamage(float Amount, AActor* DamageInstigator)
 	// cannot re-enter and fire death twice.
 	bDead = true;
 	OnDied.Broadcast(DamageInstigator);
+}
+
+void USarkoHealthComponent::Heal(float Amount)
+{
+	// The mirror image of ApplyDamage's guards, in the same order and for the
+	// same reasons. A settled raid heals nobody: the outcome is decided, and a
+	// pawn that is about to be listed as KIA must not quietly come back.
+	if (IsRaidFinishedNow())
+	{
+		return;
+	}
+	if (Amount <= 0.f || bDead)
+	{
+		return;
+	}
+	if (const AActor* Owner = GetOwner(); Owner && !Owner->HasAuthority())
+	{
+		return;
+	}
+
+	// Capped at the pool, never above it: both callers (out-of-combat
+	// regeneration and vodka) run repeatedly and would otherwise walk health past
+	// full, which the HUD's bar would draw as an overfull rectangle.
+	Health = FMath::Min(MaxHealth, Health + Amount);
 }

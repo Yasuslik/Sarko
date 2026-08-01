@@ -1,5 +1,5 @@
 {
-  "_readme": "Item ids are the wire contract with sarko-api (stash_items.item_id). Never rename an id that a player's stash may already hold. bike_frame / wheel_small / chain are copied verbatim from sarko-api/internal/domain/garage.go's bicycle recipe. Task 2 mirrors this list into internal/domain/loot.go, and a Go test reads this file to catch drift. size is [width, height] in whole cells and is REQUIRED; the table is spec 2026-08-05 §1.1 and Sarko.Loot.ItemSizesMatchTheDesignTable holds both halves of it.",
+  "_readme": "Item ids are the wire contract with sarko-api (stash_items.item_id). Never rename an id that a player's stash may already hold. bike_frame / wheel_small / chain are copied verbatim from sarko-api/internal/domain/garage.go's bicycle recipe. Task 2 mirrors this list into internal/domain/loot.go, and a Go test reads this file to catch drift. `consumable` is the category you can TAP in your own grid to use (spec §4); canned_food and vodka moved into it from `valuable`, and water_bottle is new. size is [width, height] in whole cells and is REQUIRED; the table is spec 2026-08-05 §1.1 and Sarko.Loot.ItemSizesMatchTheDesignTable holds both halves of it.",
   "items": [
     { "id": "pistol",       "name": "Пістолет ПМ",          "stackSize": 1,  "size": [2, 1], "category": "weapon" },
     { "id": "ammo_9mm",     "name": "Патрони 9×18",         "stackSize": 60, "size": [1, 1], "category": "ammo" },
@@ -9,8 +9,9 @@
     { "id": "scrap_metal",  "name": "Металолом",            "stackSize": 10, "size": [1, 1], "category": "junk" },
     { "id": "copper_wire",  "name": "Мідний дріт",          "stackSize": 10, "size": [1, 1], "category": "junk" },
     { "id": "duct_tape",    "name": "Армований скотч",      "stackSize": 5,  "size": [1, 1], "category": "junk" },
-    { "id": "canned_food",  "name": "Консерви",             "stackSize": 5,  "size": [1, 1], "category": "valuable" },
-    { "id": "vodka",        "name": "Горілка",              "stackSize": 3,  "size": [1, 1], "category": "valuable" },
+    { "id": "canned_food",  "name": "Консерви",             "stackSize": 5,  "size": [1, 1], "category": "consumable" },
+    { "id": "water_bottle", "name": "Пляшка води",          "stackSize": 3,  "size": [1, 1], "category": "consumable" },
+    { "id": "vodka",        "name": "Горілка",              "stackSize": 3,  "size": [1, 1], "category": "consumable" },
     { "id": "cigarettes",   "name": "Цигарки",              "stackSize": 5,  "size": [1, 1], "category": "valuable" },
     { "id": "toolbox",      "name": "Ящик з інструментами", "stackSize": 1,  "size": [2, 1], "category": "valuable" },
     { "id": "bike_frame",   "name": "Рама велосипеда",      "stackSize": 1,  "size": [3, 2], "category": "vehicle_part" },

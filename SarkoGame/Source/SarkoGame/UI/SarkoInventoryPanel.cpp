@@ -8,6 +8,7 @@
 #include "Loot/SarkoLootContainer.h"
 #include "Loot/SarkoLootTable.h"
 #include "Pawn/SarkoCharacter.h"
+#include "Pawn/SarkoSurvival.h"
 #include "Styling/CoreStyle.h"
 #include "UI/SarkoCellWidgets.h"
 #include "UI/SarkoInventoryStyle.h"
@@ -550,15 +551,37 @@ TSharedRef<SWidget> SSarkoInventoryPanel::DecorateCarryCell(int32 SlotIndex, TSh
 	// the transfer flash and the grow-into-place scale on whichever cell just
 	// received.
 	//
-	// Deliberately NOT a button, and everything below is SelfHitTestInvisible.
-	// Putting an item back is out of scope for this slice, and a hit-testable
-	// carry grid would eat taps in the half of the screen the panel now lives in.
+	// Everything here is SelfHitTestInvisible EXCEPT a consumable, which is the
+	// one carry cell with a verb (spec §4: using food and water is a tap on the
+	// item in your own grid). Putting an item back is still out of scope, and a
+	// wholly hit-testable carry grid would eat taps in the half of the screen the
+	// panel lives in — so the exception is exactly one category wide, and the
+	// category is what the player already reads as a colour.
+	//
+	// The tap wrapper draws nothing (FSarkoInventoryStyles::InvisibleTap): the
+	// cell underneath is already drawn in its category's colours, and a
+	// consumable that looked different in the bag than in the crate would be two
+	// items as far as a player is concerned.
+	const bool bConsumable = IsConsumableCarryCell(SlotIndex);
+
+	TSharedRef<SWidget> Interactive = Cell;
+	if (bConsumable)
+	{
+		Interactive = SNew(SButton)
+			.ButtonStyle(&Styles->InvisibleTap)
+			.ContentPadding(FMargin(0.f))
+			.OnClicked(FOnClicked::CreateSP(this, &SSarkoInventoryPanel::HandleConsumeSlot, SlotIndex))
+			[
+				Cell
+			];
+	}
+
 	TSharedRef<SOverlay> Wrapped = SNew(SOverlay)
-		.Visibility(EVisibility::SelfHitTestInvisible)
+		.Visibility(bConsumable ? EVisibility::Visible : EVisibility::SelfHitTestInvisible)
 
 		+ SOverlay::Slot()
 		[
-			Cell
+			Interactive
 		]
 
 		// The transfer flash: a white rim over the receiving cell, fading into the
@@ -766,6 +789,36 @@ FReply SSarkoInventoryPanel::HandleTakeSlot(int32 SlotIndex)
 		// server-side against the server's copy — this index is a request, not
 		// an authority.
 		P->RequestTakeItem(P->GetOpenContainerIndex(), SlotIndex);
+	}
+	return FReply::Handled();
+}
+
+bool SSarkoInventoryPanel::IsConsumableCarryCell(int32 SlotIndex) const
+{
+	const ASarkoCharacter* P = Pawn.Get();
+	if (!P || !P->BackpackComponent)
+	{
+		return false;
+	}
+	const TArray<FSarkoItemStack>& Bag = P->BackpackComponent->GetSlots();
+	if (!Bag.IsValidIndex(SlotIndex) || Bag[SlotIndex].Quantity <= 0)
+	{
+		return false;
+	}
+	// The CATEGORY decides what is tappable, and the effect table decides what
+	// the tap does — so a consumable the server would refuse is never given a
+	// button in the first place, and the panel and the RPC cannot disagree.
+	SarkoSurvival::FConsumeEffect Unused;
+	return SarkoSurvival::ConsumableEffectFor(Bag[SlotIndex].Item, Unused);
+}
+
+FReply SSarkoInventoryPanel::HandleConsumeSlot(int32 SlotIndex)
+{
+	if (ASarkoCharacter* P = Pawn.Get())
+	{
+		// The index is a request. The server re-checks it against its own copy of
+		// the cells, exactly as HandleTakeSlot's is re-checked.
+		P->RequestConsumeItem(SlotIndex);
 	}
 	return FReply::Handled();
 }

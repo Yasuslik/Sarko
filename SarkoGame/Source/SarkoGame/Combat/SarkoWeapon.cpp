@@ -5,6 +5,7 @@
 #include "EngineUtils.h"
 #include "Net/UnrealNetwork.h"
 #include "Pawn/SarkoHealthComponent.h"
+#include "Pawn/SarkoSurvival.h"
 #include "TimerManager.h"
 
 FVector SarkoCombat::ApplyAimAssist(FVector Origin, FVector Direction, float ConeHalfAngleDeg, const TArray<FVector>& CandidateTargets)
@@ -228,6 +229,16 @@ void USarkoWeaponComponent::ServerFire(FVector Origin, FVector Direction)
 		if (USarkoHealthComponent* Health = HitActor->FindComponentByClass<USarkoHealthComponent>())
 		{
 			Health->ApplyDamage(DamageOverride > 0.f ? DamageOverride : Settings.WeaponDamage, Owner);
+
+			// The SHOOTER is in combat too, and that is the half a "since I was
+			// last hit" timer would miss: a player winning a firefight would
+			// otherwise regenerate through it while the bot is still shooting back
+			// and missing. The component lookup is on a connecting shot only —
+			// a few times a fight, never per tick.
+			if (USarkoSurvivalComponent* Survival = Owner->FindComponentByClass<USarkoSurvivalComponent>())
+			{
+				Survival->NoteCombat();
+			}
 		}
 	}
 }

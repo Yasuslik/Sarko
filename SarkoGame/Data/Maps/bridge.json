@@ -844,9 +844,9 @@
       "fixedItems": [ { "item": "bandage", "qty": 2 } ] },
     { "id": "bridge_loot_l18", "pos": [-14800, -3800, 35], "tier": "common",
       "fixedItems": [ { "item": "ammo_9mm", "qty": 6 } ] },
-    { "note": "THE MEDKIT, and the reason it is here: spec §6.5 teaches healing BEFORE the first bot, and the first bot stands on the АЗС forecourt 2900 uu south of this техдвор. A common container may hold базовая медицина (ТЗ §30), so the tier does not have to move for the beat to land.",
+    { "note": "THE CONSUMABLES CLASSROOM. It was the medkit crate and it still is — spec §6.5 teaches healing BEFORE the first bot, and the first bot stands on the АЗС forecourt 2900 uu south of this техдвор — but since spec §4 it also teaches the other two verbs. Heal, drink, eat, in one safe stop, with thirst about to cross its 30% threshold: a raid starts at water 45 and drains 3.3/min, so a player who reaches this crate on the authored route is within a minute of their first penalty and can spend the bottle on it. The bandage moved out to make room; L13 and the rail crates still carry medical. A common container may hold базовая медицина (ТЗ §30), so the tier does not have to move for any of it to land.",
       "id": "bridge_loot_l19", "pos": [-13300, -4600, 35], "tier": "common",
-      "fixedItems": [ { "item": "medkit", "qty": 1 }, { "item": "bandage", "qty": 1 } ] },
+      "fixedItems": [ { "item": "medkit", "qty": 1 }, { "item": "water_bottle", "qty": 1 }, { "item": "canned_food", "qty": 1 } ] },
 
     { "note": "THE GAS STATION (L20-L25) — buildings hold loot. L20 is the зал, inside the walkable bridge_gas_station: a container you have to walk into a building for is the whole point of the building, and twenty rounds is a reload before the forecourt.",
       "id": "bridge_loot_l20", "pos": [-13300, -8800, 35], "tier": "common",
@@ -859,7 +859,7 @@
       "fixedItems": [ { "item": "canned_food", "qty": 1 } ] },
     { "note": "L23, стойка, the sector's only med container. Shifted 50 west of §29's (-12500,-8400) so it stands 120 uu off the east wall's inner face rather than 70 — ТЗ §29 wants 80.",
       "id": "bridge_loot_l23", "pos": [-12550, -8400, 35], "tier": "med",
-      "fixedItems": [ { "item": "medkit", "qty": 1 }, { "item": "painkillers", "qty": 1 } ] },
+      "fixedItems": [ { "item": "medkit", "qty": 1 }, { "item": "bandage", "qty": 1 } ] },
     { "note": "L24, фургон — beside the trailer Task 4 authors at (-15000,-7950).",
       "id": "bridge_loot_l24", "pos": [-15000, -7600, 35], "tier": "good",
       "fixedItems": [ { "item": "canned_food", "qty": 1 } ] },
@@ -871,7 +871,7 @@
       "id": "bridge_loot_l26", "pos": [-15800, -16600, 35], "tier": "good",
       "fixedItems": [ { "item": "ammo_9mm", "qty": 8 } ] },
     { "id": "bridge_loot_l27", "pos": [-11200, -17500, 35], "tier": "good",
-      "fixedItems": [ { "item": "canned_food", "qty": 2 } ] },
+      "fixedItems": [ { "item": "canned_food", "qty": 1 } ] },
     { "note": "L28, inside the диспетчерская (Task 4).",
       "id": "bridge_loot_l28", "pos": [-12600, -16900, 35], "tier": "common",
       "fixedItems": [ { "item": "bandage", "qty": 2 } ] },
@@ -886,7 +886,7 @@
       "fixedItems": [ { "item": "pistol", "qty": 1 }, { "item": "ammo_9mm", "qty": 16 } ] },
     { "note": "The second, beside the вагон at the depot's east end — the furthest point from E1, which is what makes carrying it home a decision. Whatever the player takes from here they carry 37000 uu back to E1 past four bots, which is the lesson the whole map exists to teach.",
       "id": "bridge_loot_rail_mil_02", "pos": [-10700, -17500, 35], "tier": "military",
-      "fixedItems": [ { "item": "medkit", "qty": 1 }, { "item": "painkillers", "qty": 2 }, { "item": "ammo_9mm", "qty": 8 } ] }
+      "fixedItems": [ { "item": "medkit", "qty": 1 }, { "item": "duct_tape", "qty": 1 }, { "item": "ammo_9mm", "qty": 8 } ] }
   ],
 
   "playerSpawns": [

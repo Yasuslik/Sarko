@@ -17,6 +17,11 @@ FLinearColor SarkoUI::CategoryColour(ESarkoItemCategory Category)
 	case ESarkoItemCategory::Med:         return FLinearColor(0.050f, 0.521f, 0.352f); // #3FBFA0
 	case ESarkoItemCategory::VehiclePart: return FLinearColor(0.076f, 0.275f, 0.672f); // #4E8FD6
 	case ESarkoItemCategory::Valuable:    return FLinearColor(0.397f, 0.165f, 0.687f); // #A971D8
+	// Rose, at hue ~340 — the one wide gap left in the wheel, between valuable's
+	// violet at 275 and weapon's red at 6. It has to be tellable from BOTH at 44
+	// points across, and it is the only warm colour on the panel that is not also
+	// a warning: the things you eat and drink.
+	case ESarkoItemCategory::Consumable:  return FLinearColor(0.644f, 0.138f, 0.262f); // #D2688C
 	case ESarkoItemCategory::Junk:
 	default:                              return FLinearColor(0.195f, 0.212f, 0.238f); // #7A7F86
 	}
@@ -188,6 +193,7 @@ FSarkoInventoryStyles::FSarkoInventoryStyles()
 		ESarkoItemCategory::Weapon, ESarkoItemCategory::Ammo, ESarkoItemCategory::Med,
 		ESarkoItemCategory::Junk, ESarkoItemCategory::Valuable,
 		ESarkoItemCategory::VehiclePart, ESarkoItemCategory::Gear,
+		ESarkoItemCategory::Consumable,
 	};
 	for (int32 Index = 0; Index < UE_ARRAY_COUNT(CellByCategory); ++Index)
 	{
@@ -205,6 +211,20 @@ FSarkoInventoryStyles::FSarkoInventoryStyles()
 	// the plate. The thinner stroke is the difference a player reads first,
 	// before any colour registers.
 	EmptyCell = MakeCellStyle(SarkoUI::EmptyCellFill, SarkoUI::EmptyCellOutline, SarkoUI::EmptyCellOutlinePt);
+
+	// Hit-testing without pixels: the consumable cell it wraps is already drawn.
+	// Only Pressed shows, and faintly, because the cell it covers is entirely
+	// under a thumb at the moment it matters.
+	InvisibleTap.SetNormal(MakeRoundedBrush(FLinearColor::Transparent, SarkoUI::CellRadiusPt,
+		FLinearColor::Transparent, 0.f));
+	InvisibleTap.SetHovered(MakeRoundedBrush(FLinearColor(1.f, 1.f, 1.f, 0.06f), SarkoUI::CellRadiusPt,
+		FLinearColor::Transparent, 0.f));
+	InvisibleTap.SetPressed(MakeRoundedBrush(FLinearColor(1.f, 1.f, 1.f, 0.16f), SarkoUI::CellRadiusPt,
+		FLinearColor::Transparent, 0.f));
+	InvisibleTap.SetDisabled(MakeRoundedBrush(FLinearColor::Transparent, SarkoUI::CellRadiusPt,
+		FLinearColor::Transparent, 0.f));
+	InvisibleTap.SetNormalPadding(FMargin(0.f));
+	InvisibleTap.SetPressedPadding(FMargin(0.f));
 
 	// The take-all row is the panel's one loud control, so it carries the same
 	// amber the HUD uses for "your bag is the problem" — at a tenth strength in

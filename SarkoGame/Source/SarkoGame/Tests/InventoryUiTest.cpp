@@ -25,6 +25,7 @@ bool FSarkoCategoryColoursAreDistinctAndVisible::RunTest(const FString& Paramete
 		ESarkoItemCategory::Weapon, ESarkoItemCategory::Ammo, ESarkoItemCategory::Med,
 		ESarkoItemCategory::Junk, ESarkoItemCategory::Valuable,
 		ESarkoItemCategory::VehiclePart, ESarkoItemCategory::Gear,
+		ESarkoItemCategory::Consumable,
 	};
 
 	// 1. Every category is a different colour. A duplicate would silently merge

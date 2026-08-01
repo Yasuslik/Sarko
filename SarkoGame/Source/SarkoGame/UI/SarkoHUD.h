@@ -96,6 +96,15 @@ private:
 	void DrawAimCone();
 	void DrawTopBar();
 	void DrawHealth();
+
+	/**
+	 * Hunger and thirst: two 150 x 5 pt bars stacked under the health bar.
+	 *
+	 * Takes the health bar's own geometry rather than recomputing it, so the
+	 * three bars cannot drift into a ragged column when one of the numbers above
+	 * moves. Drawn from DrawHealth for the same reason.
+	 */
+	void DrawSurvival(float BarX, float HealthBarBottomY, float BarWidth);
 	void DrawAmmo();
 	void DrawBackpack();
 
