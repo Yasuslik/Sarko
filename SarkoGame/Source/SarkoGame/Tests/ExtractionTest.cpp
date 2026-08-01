@@ -458,7 +458,7 @@ bool FSarkoLosingOutcomesLoseTheHaul::RunTest(const FString& Parameters)
 	for (const ESarkoOutcome Outcome : { ESarkoOutcome::MIA, ESarkoOutcome::Died, ESarkoOutcome::Extracted })
 	{
 		USarkoBackpackComponent* Backpack = NewObject<USarkoBackpackComponent>();
-		Backpack->SetSlotsForTest(Haul);
+		Backpack->SetSlots(Haul);
 		TestEqual(TEXT("the fixture haul is in the backpack to begin with"), Backpack->GetUsedSlots(), 2);
 
 		if (SarkoRaid::OutcomeLosesHaul(Outcome))
@@ -603,6 +603,53 @@ bool FSarkoClientLayoutTriggersOnSessionReadyNotOnSeed::RunTest(const FString& P
 		SarkoRaid::ShouldSpawnClientLayout(false, true));
 	TestFalse(TEXT("an already-built layout is never rebuilt"),
 		SarkoRaid::ShouldSpawnClientLayout(/*bLayoutBuilt*/ true, true));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoDeathLosesThePocketsAndTheBag,
+	"Sarko.Extract.DeathLosesThePocketsAndTheBag",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoDeathLosesThePocketsAndTheBag::RunTest(const FString& Parameters)
+{
+	// Spec §5: "everything carried is lost, per the game's core rule; only what
+	// is in the shelter stash is safe." Pockets are NOT a safe pocket, and the
+	// worn bag is not gear you keep — both go. This is the explicit decision the
+	// spec asked to be made explicit, and it is the only place it is enforced.
+	USarkoBackpackComponent* Backpack = NewObject<USarkoBackpackComponent>();
+	Backpack->SetSlots({ FSarkoItemStack{ TEXT("medkit"), 2 } });
+	Backpack->EquipBackpack(SarkoLoot::BackpackItemId);
+	TestTrue(TEXT("the bag is on before death"), Backpack->IsWearingBackpack());
+
+	Backpack->ClearOnDeath();
+
+	TestEqual(TEXT("pockets are emptied"), Backpack->GetSlots().Num(), 0);
+	TestFalse(TEXT("the worn bag is lost too"), Backpack->IsWearingBackpack());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoHaulCarriesTheWornBagHome,
+	"Sarko.Extract.HaulCarriesTheWornBagHome",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoHaulCarriesTheWornBagHome::RunTest(const FString& Parameters)
+{
+	// A bag you extracted with is loot: it is submitted as one stack and lands
+	// in the stash. Without this it would be the one thing a player carries out
+	// of a raid and is never credited for, which reads as the game eating it —
+	// the exact complaint this whole plan exists to end.
+	USarkoBackpackComponent* Backpack = NewObject<USarkoBackpackComponent>();
+	Backpack->SetSlots({ FSarkoItemStack{ TEXT("medkit"), 2 } });
+
+	TestEqual(TEXT("no bag worn, no extra stack"), Backpack->GetHaulForSubmission().Num(), 1);
+
+	Backpack->EquipBackpack(SarkoLoot::BackpackItemId);
+	const TArray<FSarkoItemStack> Haul = Backpack->GetHaulForSubmission();
+	TestEqual(TEXT("the worn bag is appended as its own stack"), Haul.Num(), 2);
+	TestTrue(TEXT("and it is one backpack"),
+		Haul.Last().Item == SarkoLoot::BackpackItemId && Haul.Last().Quantity == 1);
 	return true;
 }
 

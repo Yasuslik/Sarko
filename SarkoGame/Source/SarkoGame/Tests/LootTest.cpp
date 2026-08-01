@@ -793,4 +793,47 @@ bool FSarkoNormalModeIgnoresAuthoredFixedItems::RunTest(const FString& Parameter
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoCapacityIsPocketsPlusAWornBackpack,
+	"Sarko.Loot.CapacityIsPocketsPlusAWornBackpack",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoCapacityIsPocketsPlusAWornBackpack::RunTest(const FString& Parameters)
+{
+	// Spec §2.3: four pocket cells, +8 for a found backpack, twelve total. The
+	// twelve is deliberately today's number — the equipped case is the old
+	// constant, so nothing about a full haul's plausibility changes at the
+	// backend, and only the *start* of a raid got harder.
+	TestEqual(TEXT("pockets alone"), SarkoLoot::CapacityFor(false, 4, 8), 4);
+	TestEqual(TEXT("pockets plus a worn bag"), SarkoLoot::CapacityFor(true, 4, 8), 12);
+	// Hostile config, not hostile input, but the arithmetic must not go negative:
+	// a capacity below zero makes AddToBackpack's `Slots.Num() < SlotLimit` loop
+	// condition trivially false in one place and trivially true in another.
+	TestEqual(TEXT("negative settings floor at zero"), SarkoLoot::CapacityFor(true, -4, -8), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoCatalogHasABackpackAndAGearCategory,
+	"Sarko.Loot.CatalogHasABackpackAndAGearCategory",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoCatalogHasABackpackAndAGearCategory::RunTest(const FString& Parameters)
+{
+	// Over the REAL file, not a literal: the backpack id is the wire contract
+	// with sarko-api's ItemStackSizes, and a fixture would pass while the
+	// shipped catalog was missing it.
+	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+	const FSarkoItemDef* Bag = Catalog.Find(SarkoLoot::BackpackItemId);
+	if (!Bag)
+	{
+		AddError(TEXT("Data/Items/items.json has no 'backpack' item, so no raid can ever grant capacity"));
+		return false;
+	}
+	TestEqual(TEXT("a backpack does not stack"), Bag->StackSize, 1);
+	TestTrue(TEXT("a bag is gear, not junk — the palette must not lie about it"),
+		Bag->Category == ESarkoItemCategory::Gear);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

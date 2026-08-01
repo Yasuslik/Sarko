@@ -105,14 +105,22 @@ public:
 	float MinFireIntervalSeconds = 0.15f;
 
 	/**
-	 * In-raid backpack size in slots (spec §4.4). Items stack within a slot by
-	 * their catalog stackSize, so this is a decision about how many *kinds* of
-	 * thing a raid can bring home — the greed dial. The backend's
-	 * domain.MaxRaidStacks mirrors it as a plausibility cap, so raising it here
-	 * without raising it there makes full hauls get rejected at result time.
+	 * Pocket cells, carried always (container-inventory spec §2.3). Four is small
+	 * on purpose: it is the number that makes finding a backpack matter, and it is
+	 * the number a player has for the first minute of every raid.
 	 */
 	UPROPERTY(EditAnywhere, config, Category = "Loot")
-	int32 BackpackSlots = 12;
+	int32 BasePocketCells = 4;
+
+	/**
+	 * What a worn backpack adds. 4 + 8 = 12, which is exactly the old fixed
+	 * BackpackSlots — so the backend's plausibility cap on a full haul does not
+	 * move, and only the *start* of a raid got harder. Raising this without
+	 * raising sarko-api's domain.MaxRaidStacks makes full hauls get rejected at
+	 * result time, fifteen minutes after the mistake.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Loot")
+	int32 BackpackBonusCells = 8;
 
 	/** How close the pawn must be to open a container. Enforced on the server. */
 	UPROPERTY(EditAnywhere, config, Category = "Loot")

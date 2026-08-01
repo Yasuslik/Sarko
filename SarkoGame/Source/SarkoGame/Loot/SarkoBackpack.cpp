@@ -3,6 +3,15 @@
 #include "Core/SarkoRaidSettings.h"
 #include "Net/UnrealNetwork.h"
 
+const FName SarkoLoot::BackpackItemId(TEXT("backpack"));
+
+int32 SarkoLoot::CapacityFor(bool bBackpackWorn, int32 BaseCells, int32 BonusCells)
+{
+	const int32 Base = FMath::Max(0, BaseCells);
+	const int32 Bonus = bBackpackWorn ? FMath::Max(0, BonusCells) : 0;
+	return Base + Bonus;
+}
+
 int32 SarkoLoot::AddToBackpack(TArray<FSarkoItemStack>& Slots, const FSarkoItemCatalog& Catalog,
 	int32 SlotLimit, FName Item, int32 Quantity)
 {
@@ -63,11 +72,35 @@ void USarkoBackpackComponent::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	// Owner-only: a haul on the wire is a target list for everyone else.
 	DOREPLIFETIME_CONDITION(USarkoBackpackComponent, Slots, COND_OwnerOnly);
+	// Registered, or it silently never replicates and the owning client's panel
+	// draws four cells for a pawn the server thinks has twelve.
+	DOREPLIFETIME_CONDITION(USarkoBackpackComponent, EquippedBackpack, COND_OwnerOnly);
 }
 
 int32 USarkoBackpackComponent::GetSlotLimit() const
 {
-	return FMath::Max(1, GetDefault<USarkoRaidSettings>()->BackpackSlots);
+	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+	return SarkoLoot::CapacityFor(IsWearingBackpack(), Settings.BasePocketCells, Settings.BackpackBonusCells);
+}
+
+void USarkoBackpackComponent::EquipBackpack(FName Item)
+{
+	if (const AActor* Owner = GetOwner(); Owner && !Owner->HasAuthority())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoBackpack: EquipBackpack called without authority; ignored"));
+		return;
+	}
+	EquippedBackpack = Item;
+}
+
+TArray<FSarkoItemStack> USarkoBackpackComponent::GetHaulForSubmission() const
+{
+	TArray<FSarkoItemStack> Haul = Slots;
+	if (IsWearingBackpack())
+	{
+		Haul.Add(FSarkoItemStack{ EquippedBackpack, 1 });
+	}
+	return Haul;
 }
 
 int32 USarkoBackpackComponent::AddItem(FName Item, int32 Quantity)
@@ -100,4 +133,8 @@ void USarkoBackpackComponent::ClearOnDeath()
 	// Empty, not "marked lost": the server submits the raid result from this
 	// array, so the only way loot cannot be credited is for it not to be here.
 	Slots.Reset();
+	// The bag goes with the pockets. Spec §5's default, made explicit: everything
+	// carried is lost, and a bag that survived death would be the one piece of
+	// gear the core rule did not apply to.
+	EquippedBackpack = NAME_None;
 }

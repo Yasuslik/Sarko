@@ -25,6 +25,20 @@ namespace SarkoLoot
 	 */
 	int32 AddToBackpack(TArray<FSarkoItemStack>& Slots, const FSarkoItemCatalog& Catalog,
 		int32 SlotLimit, FName Item, int32 Quantity);
+
+	/** The one gear id that grants capacity. Named once, because it is compared
+	 *  against on the take path and must never be a loose literal. */
+	extern const FName BackpackItemId;
+
+	/**
+	 * How many cells a pawn has. Pure, so the single number the whole economy
+	 * turns on is unit tested with no world and no settings object.
+	 *
+	 * Clamped at zero: a negative capacity makes AddToBackpack's
+	 * `Slots.Num() < SlotLimit` loop guard behave inconsistently across the two
+	 * places capacity is read, which is a haul that half-fits.
+	 */
+	int32 CapacityFor(bool bBackpackWorn, int32 BaseCells, int32 BonusCells);
 }
 
 /**
@@ -52,8 +66,21 @@ public:
 
 	int32 GetUsedSlots() const { return Slots.Num(); }
 
-	/** Reads USarkoRaidSettings::BackpackSlots. */
+	/** SarkoLoot::CapacityFor over USarkoRaidSettings' two cell dials. */
 	int32 GetSlotLimit() const;
+
+	bool IsWearingBackpack() const { return EquippedBackpack != NAME_None; }
+
+	/** Server only. Wearing, not carrying: the bag does not occupy a cell — spec
+	 *  §2.3's 4 + 8 = 12 only works if it does not. */
+	void EquipBackpack(FName Item);
+
+	/**
+	 * What gets submitted to /v1/raid/result: the cells, plus the worn bag as
+	 * one stack if there is one. A bag you extracted with is loot, and the one
+	 * thing a player could otherwise carry out and never be credited for.
+	 */
+	TArray<FSarkoItemStack> GetHaulForSubmission() const;
 
 	/**
 	 * Server only. Returns the quantity that did not fit, which the caller
@@ -64,8 +91,14 @@ public:
 	/** Server only. Everything carried is lost. */
 	void ClearOnDeath();
 
-	/** Test seam: sets a known state without a world or a replication cycle. */
-	void SetSlotsForTest(const TArray<FSarkoItemStack>& NewSlots) { Slots = NewSlots; }
+	/**
+	 * Server only in practice. A test seam — it sets a known state without a
+	 * world or a replication cycle — and, since the container panel arrived, also
+	 * the server's write-back path after SarkoLoot::TransferOne has moved units
+	 * into a local copy of the cells. Named SetSlots rather than SetSlotsForTest
+	 * because a name that says "for test" on a production path is a lie.
+	 */
+	void SetSlots(const TArray<FSarkoItemStack>& NewSlots) { Slots = NewSlots; }
 
 private:
 	/**
@@ -75,4 +108,12 @@ private:
 	 */
 	UPROPERTY(Replicated)
 	TArray<FSarkoItemStack> Slots;
+
+	/**
+	 * The worn backpack's item id, or NAME_None. COND_OwnerOnly for the same
+	 * reason Slots is: how much another player can carry is part of how much
+	 * they are worth killing.
+	 */
+	UPROPERTY(Replicated)
+	FName EquippedBackpack;
 };

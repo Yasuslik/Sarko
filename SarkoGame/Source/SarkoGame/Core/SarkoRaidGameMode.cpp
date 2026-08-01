@@ -653,7 +653,10 @@ void ASarkoRaidGameMode::FinishRaid(ESarkoRaidOutcome NewOutcome)
 				const ASarkoCharacter* Pawn = It->IsValid() ? Cast<ASarkoCharacter>((*It)->GetPawn()) : nullptr;
 				if (Pawn && Pawn->BackpackComponent)
 				{
-					Haul = Pawn->BackpackComponent->GetSlots();
+					// Not GetSlots(): a worn backpack is not in the cells, and
+					// submitting the cells alone would silently drop the one item
+					// the player most obviously carried out.
+					Haul = Pawn->BackpackComponent->GetHaulForSubmission();
 					break;
 				}
 			}

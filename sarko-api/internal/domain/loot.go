@@ -39,6 +39,11 @@ var ItemStackSizes = map[string]int{
 	"bike_frame":  1,
 	"wheel_small": 2,
 	"chain":       1,
+	// Worn equipment. A backpack is submitted as a stack of one when the player
+	// extracts wearing it, so the id has to exist here or the whole haul is
+	// rejected at result time — which is how the client's catalog and this map
+	// are kept honest by loot_test.go's drift alarm.
+	"backpack": 1,
 }
 
 // KnownItemIDs is the set of legitimate item ids. It is derived from
@@ -54,16 +59,18 @@ func knownItemIDs() map[string]struct{} {
 	return ids
 }
 
-// MaxRaidStacks is the in-raid backpack size (spec §4.4): twelve slots, so a
-// result claiming thirteen distinct item stacks describes a raid that could not
+// MaxRaidStacks is the most item stacks one raid can deliver: twelve carried
+// cells (4 pockets + 8 from a worn backpack, container-inventory spec §2.3) plus
+// the worn backpack itself, which rides home as a thirteenth stack without ever
+// occupying a cell. A result claiming fourteen describes a raid that could not
 // have happened.
-const MaxRaidStacks = 12
+const MaxRaidStacks = 13
 
 // MaxRaidUnits is the most units of one item a raid can physically produce:
-// every slot of the backpack filled with that item's stack. It is 720 for
-// ammo_9mm (12 × 60) but only 12 for bike_frame (12 × 1), which is the whole
-// point — a flat 720 would have let one forged result deliver 720 bicycle
-// frames, i.e. complete the bicycle recipe about 720 times over.
+// every slot of the backpack filled with that item's stack. It is 780 for
+// ammo_9mm (13 × 60) but only 13 for bike_frame (13 × 1), which is the whole
+// point — a flat 780 would have let one forged result deliver 780 bicycle
+// frames, i.e. complete the bicycle recipe about 780 times over.
 //
 // Unknown ids yield 0; callers reject those before they ever ask for a cap.
 func MaxRaidUnits(itemID string) int {
@@ -88,9 +95,9 @@ func StarterKit() []ItemStack {
 // its geometry: every id must exist, every quantity must be positive, the
 // merged haul must fit MaxRaidStacks slots, and one item is capped at
 // MaxRaidStacks × its stackSize — the slots-times-stack-size product, not a
-// flat number. That distinction is the difference between 720 rounds of 9×18
-// (a plausible full backpack of ammo) and 720 bicycle frames (which do not
-// stack, so twelve is every frame twelve slots can hold).
+// flat number. That distinction is the difference between 780 rounds of 9×18
+// (a plausible full backpack of ammo) and 780 bicycle frames (which do not
+// stack, so thirteen is every frame thirteen stacks can hold).
 //
 // The quantity check is repeated here rather than left to ValidateStacks:
 // nothing pins the order the two are called in, and without it a forged result
