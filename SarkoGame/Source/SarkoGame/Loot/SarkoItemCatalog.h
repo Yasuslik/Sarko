@@ -18,7 +18,15 @@ enum class ESarkoItemCategory : uint8
 	Med,
 	Junk,
 	Valuable,
-	VehiclePart
+	VehiclePart,
+	/**
+	 * Worn equipment. Today that is exactly one thing — the backpack — and it is
+	 * its own category rather than `junk` because the panel paints a cell by its
+	 * category and this is the one item whose colour has to say "this is not
+	 * cargo, this is what carries the cargo". Appended last on purpose: this is a
+	 * uint8 UENUM and inserting in the middle renumbers every value above it.
+	 */
+	Gear
 };
 
 /**

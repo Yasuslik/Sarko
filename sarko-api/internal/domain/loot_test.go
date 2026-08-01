@@ -46,15 +46,15 @@ func TestValidateRaidItemsCapsStacksAndQuantities(t *testing.T) {
 	for _, id := range []string{
 		"pistol", "ammo_9mm", "medkit", "bandage", "painkillers", "scrap_metal",
 		"copper_wire", "duct_tape", "canned_food", "vodka", "cigarettes",
-		"toolbox", "chain",
+		"toolbox", "chain", "backpack",
 	} {
 		tooMany = append(tooMany, domain.ItemStack{ItemID: id, Quantity: 1})
 	}
 	if len(tooMany) <= domain.MaxRaidStacks {
 		t.Fatalf("fixture must exceed the cap: %d stacks vs cap %d", len(tooMany), domain.MaxRaidStacks)
 	}
-	// The backpack holds 12 slots (spec §4.4), so 13 distinct stacks could not
-	// have been carried out no matter how the raid went.
+	// The backpack holds 12 carried cells plus the worn bag itself, so 14
+	// distinct stacks could not have been carried out no matter how the raid went.
 	if err := domain.ValidateRaidItems(tooMany); err == nil {
 		t.Errorf("%d distinct stacks was accepted, cap is %d", len(tooMany), domain.MaxRaidStacks)
 	}
@@ -66,8 +66,8 @@ func TestValidateRaidItemsCapsStacksAndQuantities(t *testing.T) {
 		t.Errorf("quantity %d was accepted, cap is %d", overCap, domain.MaxRaidUnits("scrap_metal"))
 	}
 
-	// The generous end still passes: 12 slots of the largest stack (ammo, 60)
-	// is 720 units, and a legitimate ammo haul must not be rejected.
+	// The generous end still passes: 13 stacks of the largest stack (ammo, 60)
+	// is 780 units, and a legitimate ammo haul must not be rejected.
 	if err := domain.ValidateRaidItems([]domain.ItemStack{
 		{ItemID: "ammo_9mm", Quantity: domain.MaxRaidUnits("ammo_9mm")},
 	}); err != nil {
@@ -76,22 +76,22 @@ func TestValidateRaidItemsCapsStacksAndQuantities(t *testing.T) {
 }
 
 // TestValidateRaidItemsCapsPerItemByStackSize pins the fix for a cap that was
-// flat: 720 units of anything used to pass, so a forged extraction could claim
-// 720 bike_frames — items that do not stack, of which twelve slots hold twelve
-// — and complete the bicycle recipe hundreds of times from one raid. The cap is
-// now the backpack's geometry: slots × that item's stackSize.
+// flat: 780 units of anything used to pass, so a forged extraction could claim
+// 780 bike_frames — items that do not stack, of which thirteen stacks hold
+// thirteen — and complete the bicycle recipe hundreds of times from one raid.
+// The cap is now the backpack's geometry: stacks × that item's stackSize.
 func TestValidateRaidItemsCapsPerItemByStackSize(t *testing.T) {
 	tests := []struct {
 		name     string
 		stack    domain.ItemStack
 		accepted bool
 	}{
-		// bike_frame has stackSize 1, so twelve slots hold exactly twelve.
-		{"thirteen unstackable frames", domain.ItemStack{ItemID: "bike_frame", Quantity: 13}, false},
-		{"a full backpack of frames", domain.ItemStack{ItemID: "bike_frame", Quantity: 12}, true},
-		// ammo_9mm stacks 60, so the same twelve slots hold 720 rounds.
-		{"a full backpack of ammo", domain.ItemStack{ItemID: "ammo_9mm", Quantity: 720}, true},
-		{"one round past a full backpack", domain.ItemStack{ItemID: "ammo_9mm", Quantity: 721}, false},
+		// bike_frame has stackSize 1, so thirteen stacks hold exactly thirteen.
+		{"fourteen unstackable frames", domain.ItemStack{ItemID: "bike_frame", Quantity: 14}, false},
+		{"a full backpack of frames", domain.ItemStack{ItemID: "bike_frame", Quantity: 13}, true},
+		// ammo_9mm stacks 60, so the same thirteen stacks hold 780 rounds.
+		{"a full backpack of ammo", domain.ItemStack{ItemID: "ammo_9mm", Quantity: 780}, true},
+		{"one round past a full backpack", domain.ItemStack{ItemID: "ammo_9mm", Quantity: 781}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,7 +111,7 @@ func TestValidateRaidItemsCapsPerItemByStackSize(t *testing.T) {
 // alone. Both handlers happen to run ValidateStacks first, which is what caught
 // negatives before — but nothing pins that order, and a negative entry is how a
 // caller would hide an over-cap stack: 1_000_000 and -999_300 of the same id
-// merge to 700, which is under ammo's 720 cap, while the million is what the
+// merge to 700, which is under ammo's 780 cap, while the million is what the
 // arithmetic downstream would have to survive.
 func TestValidateRaidItemsRejectsNonPositiveQuantitiesOnItsOwn(t *testing.T) {
 	err := domain.ValidateRaidItems([]domain.ItemStack{
@@ -130,7 +130,7 @@ func TestValidateRaidItemsAcceptsSplitEntriesThatMergeUnderTheCap(t *testing.T) 
 	// endpoints_test.go already relies on this: 50 separate one-unit entries of
 	// the same id merge to a single stack, which is one stack, not fifty. The id
 	// is scrap_metal because 50 units must also stay under its per-item cap
-	// (12 slots × a stack of 10 = 120).
+	// (13 stacks × a stack of 10 = 130).
 	stacks := make([]domain.ItemStack, 50)
 	for i := range stacks {
 		stacks[i] = domain.ItemStack{ItemID: "scrap_metal", Quantity: 1}

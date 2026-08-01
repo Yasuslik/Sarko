@@ -25,7 +25,7 @@ namespace SarkoLoot
 	 * prompt flickering for no reason.
 	 */
 	bool CanInteract(const FVector& PawnLocation, const FVector& ContainerLocation,
-		float RadiusUU, bool bPawnAlive, bool bAlreadyLooted);
+		float RadiusUU, bool bPawnAlive, bool bContainerEmptied);
 }
 
 /**
@@ -63,10 +63,11 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "Loot")
 	FName Tier;
 
-	/** Reads the replicated bit off the game state — never a local guess. */
-	bool IsLooted() const;
+	/** Reads the replicated state off the game state — never a local guess. */
+	bool IsEmptied() const;
 
-	/** Recolours the lid to match IsLooted(). Called at spawn and whenever the replicated state changes. */
+	/** Recolours the lid to match the game state's ESarkoContainerState. Called at
+	 *  spawn and whenever the replicated state changes. */
 	void RefreshVisualState();
 
 	void SetupFromSpot(int32 InIndex, FName InTier);

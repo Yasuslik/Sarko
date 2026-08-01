@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/UserInterfaceSettings.h"
 
 /**
  * The one factor that turns this game's point-authored UI into pixels.
@@ -63,5 +64,44 @@ namespace SarkoUI
 			FMath::Min(static_cast<float>(ViewportSize.X) / DesignWidthPt,
 				static_cast<float>(ViewportSize.Y) / DesignHeightPt),
 			0.5f, 6.f);
+	}
+
+	/**
+	 * What SGameLayerManager's own DPI scaler is already multiplying the viewport
+	 * overlay by, for a viewport of this size.
+	 *
+	 * Exposed rather than folded into OverlayPointScale so a test can assert that
+	 * the two cancel, and so the number is inspectable when a phone's layout
+	 * looks a size too big.
+	 */
+	inline float GameLayerDpiScale(FVector2D ViewportSize)
+	{
+		const FIntPoint Size(FMath::Max(1, FMath::RoundToInt(ViewportSize.X)),
+			FMath::Max(1, FMath::RoundToInt(ViewportSize.Y)));
+		return FMath::Max(KINDA_SMALL_NUMBER, GetDefault<UUserInterfaceSettings>()->GetDPIScaleBasedOnSize(Size));
+	}
+
+	/**
+	 * The DPI scale a widget added to the VIEWPORT OVERLAY must use, so that a
+	 * size written in points measures that many points on the glass.
+	 *
+	 * SGameLayerManager wraps the whole overlay in an SDPIScaler of its own
+	 * (Engine/Private/Slate/SGameLayerManager.cpp:113). A widget's own scaler
+	 * therefore compounds with it: with the engine's default
+	 * UIScaleRule=ShortestSide and UIScaleCurve (BaseEngine.ini: 1080 -> 1.0,
+	 * 8640 -> 8.0), a 2556x1179 landscape phone gets 1.092, so an unadjusted
+	 * widget renders ~9% larger than it claims.
+	 *
+	 * That matters here and not for the shelter because the inventory panel is
+	 * drawn OVER the in-raid HUD and has to agree with it, and the HUD's canvas
+	 * is 1:1 with pixels (see the file header) — it never meets the layer
+	 * manager at all. The shelter keeps PointScaleForViewport and is therefore
+	 * ~9% over its stated size today: a known, separate deviation, validated by
+	 * screenshot at that size, and not something to change without taking
+	 * another one.
+	 */
+	inline float OverlayPointScale(FVector2D ViewportSize)
+	{
+		return PointScaleForViewport(ViewportSize) / GameLayerDpiScale(ViewportSize);
 	}
 }

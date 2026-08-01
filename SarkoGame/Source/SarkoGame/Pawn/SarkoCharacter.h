@@ -4,6 +4,9 @@
 #include "GameFramework/Character.h"
 #include "Net/Core/PushModel/PushModel.h"
 #include "Pawn/SarkoHealthComponent.h"
+// FSarkoItemStack by value, not forward-declared: it is the payload of the
+// client RPC below, and UHT needs the complete USTRUCT to generate its NetSerialize.
+#include "Loot/SarkoItemCatalog.h"
 
 #include "SarkoCharacter.generated.h"
 
@@ -31,6 +34,17 @@ namespace SarkoAim
 	 */
 	float MoveIntentScale(FVector2D Stick, float DeadZone);
 }
+
+/** Why a take did nothing. Sent to exactly one client so the panel can say which. */
+UENUM()
+enum class ESarkoTakeRefusal : uint8
+{
+	NoSpace,
+	TooFar,
+	NotOpen,
+	Gone,
+	RaidOver
+};
 
 /** The player pawn. Top-down camera, server-authoritative aim. */
 UCLASS()
@@ -88,6 +102,24 @@ public:
 
 	/** Seconds the channel has been running, or 0. Used by the HUD for the progress bar. */
 	float GetLootChannelElapsed() const;
+
+	/** Client intent: take one container slot. Every field is validated server-side. */
+	void RequestTakeItem(int32 ContainerIndex, int32 SlotIndex);
+	void RequestTakeAll(int32 ContainerIndex);
+	void RequestCloseContainer();
+
+	/** INDEX_NONE when no panel should be up. The client's own mirror, filled by RPC. */
+	int32 GetOpenContainerIndex() const { return LocalOpenContainerIndex; }
+	const TArray<FSarkoItemStack>& GetOpenContainerSlots() const { return LocalOpenContainerSlots; }
+
+	/** Fires on the owning client whenever the open container's contents change,
+	 *  including the first time they arrive. The panel subscribes to this. */
+	DECLARE_MULTICAST_DELEGATE(FSarkoContainerViewChanged);
+	FSarkoContainerViewChanged OnContainerViewChanged;
+
+	/** Fires on the owning client when a take was refused, with the reason. */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FSarkoTakeRefused, int32 /*SlotIndex*/, ESarkoTakeRefusal);
+	FSarkoTakeRefused OnTakeRefused;
 
 	/** Server only: pushes the dwell state the owning client's HUD draws. */
 	void SetExtractProgress(int32 ZoneIndex, float DwellSeconds);
@@ -183,8 +215,64 @@ private:
 	UFUNCTION(Client, Reliable)
 	void ClientLootRejected(int32 ContainerIndex);
 
-	/** Server: completes the channel, rolls and transfers. Called from Tick. */
+	UFUNCTION(Server, Reliable) void ServerTakeItem(int32 ContainerIndex, int32 SlotIndex);
+	UFUNCTION(Server, Reliable) void ServerTakeAll(int32 ContainerIndex);
+	UFUNCTION(Server, Reliable) void ServerCloseContainer();
+
+	/**
+	 * The one channel through which container contents reach a client, and only
+	 * for a container that client has successfully opened (spec §3). A client RPC
+	 * rather than replicated state because the container has no net identity — it
+	 * is spawned locally on every machine from the map file — and because the
+	 * fact is per-client, per-moment, per-container, which is exactly an RPC's
+	 * shape. Reliable: a dropped update leaves the panel lying about a crate.
+	 */
+	UFUNCTION(Client, Reliable) void ClientContainerContents(int32 ContainerIndex, const TArray<FSarkoItemStack>& Slots);
+	UFUNCTION(Client, Reliable) void ClientContainerClosed(int32 ContainerIndex);
+	UFUNCTION(Client, Reliable) void ClientTransferRefused(int32 ContainerIndex, int32 SlotIndex, ESarkoTakeRefusal Reason);
+
+	/** Server: the channel is complete, so the container opens. Called from Tick. */
 	void TickLootChannel();
+
+	/**
+	 * Server. Rolls the container if this is its first open, remembers that this
+	 * pawn has it open, and pushes the contents to the owning client.
+	 *
+	 * Shared by the completed channel and by ServerBeginLoot's instant re-open,
+	 * so "what opening does" exists once rather than twice.
+	 */
+	void OpenContainerFor(int32 ContainerIndex);
+
+	/**
+	 * Server. Moves one container slot into this pawn's cells, or equips it if it
+	 * is the first backpack. Returns false when nothing moved, which is the only
+	 * thing a refusal means.
+	 *
+	 * Bag is the caller's working copy of the cells; the caller writes it back
+	 * once. Both take paths go through here, so the "a bag is worn, not carried"
+	 * rule cannot hold on one of them and not the other.
+	 */
+	bool TakeSlotInto(TArray<FSarkoItemStack>& Inventory, int32 SlotIndex, TArray<FSarkoItemStack>& Bag);
+
+	/**
+	 * Server. Drains a container into this pawn until nothing more fits.
+	 *
+	 * Assumes the §3 validation chain has already run once — it does not re-run
+	 * it per item, because that would be four validations and four RPCs for one
+	 * button press.
+	 */
+	void TakeAllFrom(int32 ContainerIndex);
+
+	/**
+	 * Server. Settles a container after a transfer: marks it emptied **only if it
+	 * is actually empty**, then pushes the new contents to the owning client.
+	 *
+	 * The `SetContainerState(Emptied)` inside this function is the ONLY place in
+	 * the project a container is marked emptied by a take. That is the
+	 * vanishing-loot fix: the code this replaces marked unconditionally at
+	 * channel completion, so whatever did not fit was destroyed with the crate.
+	 */
+	void FinishTransfer(int32 ContainerIndex, const TArray<FSarkoItemStack>& Inventory);
 
 	/**
 	 * True once the game state carries a real outcome. Every server RPC on this
@@ -205,4 +293,12 @@ private:
 	/** The client's own copy, so the bar moves without waiting for a round trip. */
 	int32 LocalChannelIndex = INDEX_NONE;
 	float LocalChannelStartSeconds = 0.f;
+
+	/** Server truth: which container this pawn has open, or INDEX_NONE. */
+	int32 OpenContainerIndex = INDEX_NONE;
+
+	/** The client's mirror, and the panel's only data source. Never a guess: it is
+	 *  written by ClientContainerContents and by nothing else. */
+	int32 LocalOpenContainerIndex = INDEX_NONE;
+	TArray<FSarkoItemStack> LocalOpenContainerSlots;
 };

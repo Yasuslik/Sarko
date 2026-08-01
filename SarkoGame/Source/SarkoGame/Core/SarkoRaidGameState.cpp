@@ -135,14 +135,23 @@ void ASarkoRaidGameState::SizeLootState(int32 ContainerCount)
 	}
 }
 
-bool ASarkoRaidGameState::IsContainerLooted(int32 ContainerIndex) const
+ESarkoContainerState ASarkoRaidGameState::GetContainerState(int32 ContainerIndex) const
 {
-	// Out of range reads as "not looted" rather than asserting: on a client the
-	// array can legitimately arrive a frame after the containers spawn.
-	return LootedContainers.IsValidIndex(ContainerIndex) && LootedContainers[ContainerIndex] != 0;
+	// Out of range reads as Closed rather than asserting: on a client the array
+	// can legitimately arrive a frame after the containers spawn.
+	if (!LootedContainers.IsValidIndex(ContainerIndex))
+	{
+		return ESarkoContainerState::Closed;
+	}
+	const uint8 Byte = LootedContainers[ContainerIndex];
+	// Clamped rather than blindly cast: this array is replicated, and a byte
+	// outside the enum would otherwise turn into a state nothing switches on.
+	return Byte <= static_cast<uint8>(ESarkoContainerState::Emptied)
+		? static_cast<ESarkoContainerState>(Byte)
+		: ESarkoContainerState::Emptied;
 }
 
-void ASarkoRaidGameState::MarkContainerLooted(int32 ContainerIndex)
+void ASarkoRaidGameState::SetContainerState(int32 ContainerIndex, ESarkoContainerState State)
 {
 	if (!HasAuthority())
 	{
@@ -156,7 +165,7 @@ void ASarkoRaidGameState::MarkContainerLooted(int32 ContainerIndex)
 			ContainerIndex, LootedContainers.Num());
 		return;
 	}
-	LootedContainers[ContainerIndex] = 1;
+	LootedContainers[ContainerIndex] = static_cast<uint8>(State);
 
 	// The server never receives its own OnRep, so it refreshes explicitly.
 	OnRep_LootedContainers();

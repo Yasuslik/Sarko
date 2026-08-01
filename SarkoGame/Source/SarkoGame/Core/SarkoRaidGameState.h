@@ -17,6 +17,24 @@ struct FSarkoMapDefinition;
 class ASarkoLootContainer;
 class ASarkoPropField;
 
+/**
+ * What has happened to one container. Replicated as one byte per index in
+ * ASarkoRaidGameState::LootedContainers.
+ *
+ * Three values and not two because "opened" and "emptied" stopped being the
+ * same event: a container whose contents did not fit is opened, still holds
+ * something, and is still worth coming back to. Collapsing them is precisely
+ * the bug this replaces — the old single bit meant "looted", was set whether or
+ * not the haul fitted, and took the remainder with it.
+ */
+UENUM()
+enum class ESarkoContainerState : uint8
+{
+	Closed = 0,
+	Opened = 1,
+	Emptied = 2
+};
+
 /** How a raid ended. Replicated to everyone: the HUD's final screen reads it. */
 UENUM()
 enum class ESarkoRaidOutcome : uint8
@@ -249,8 +267,8 @@ public:
 	bool IsLootable() const { return bSessionReady && !IsRaidFinished(); }
 
 	/**
-	 * One byte per container index: 1 means emptied. This is the only loot state
-	 * on the wire.
+	 * One byte per container index, holding an ESarkoContainerState. This is the
+	 * only loot state on the wire.
 	 *
 	 * Spec §4.3 asks for a replicated `bLooted` on the container. A container is
 	 * spawned locally on every machine from the map file — like every cover
@@ -268,11 +286,22 @@ public:
 	/** Server only: sizes the array to the map's container count. Idempotent. */
 	void SizeLootState(int32 ContainerCount);
 
-	/** False for an out-of-range index — a client-supplied index is never trusted to be in range. */
-	bool IsContainerLooted(int32 ContainerIndex) const;
+	/** Closed for an out-of-range index — a client-supplied index is never trusted to be in range. */
+	ESarkoContainerState GetContainerState(int32 ContainerIndex) const;
+
+	bool IsContainerOpened(int32 ContainerIndex) const
+	{
+		return GetContainerState(ContainerIndex) != ESarkoContainerState::Closed;
+	}
+
+	/** The gate CanInteract reads. An opened-but-not-empty crate is still openable. */
+	bool IsContainerEmptied(int32 ContainerIndex) const
+	{
+		return GetContainerState(ContainerIndex) == ESarkoContainerState::Emptied;
+	}
 
 	/** Server only. Bounds-checked; logs and does nothing for a bad index. */
-	void MarkContainerLooted(int32 ContainerIndex);
+	void SetContainerState(int32 ContainerIndex, ESarkoContainerState State);
 
 	/** Containers register at BeginPlay so a replicated change can recolour them without anything ticking. */
 	void RegisterContainer(ASarkoLootContainer* Container);

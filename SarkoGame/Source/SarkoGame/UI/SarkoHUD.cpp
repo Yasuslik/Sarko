@@ -14,6 +14,7 @@
 #include "Map/SarkoMapDefinition.h"
 #include "Misc/ScopeExit.h"
 #include "Pawn/SarkoCharacter.h"
+#include "UI/SarkoInventoryPanel.h"
 #include "UI/SarkoUiScale.h"
 
 namespace
@@ -450,13 +451,38 @@ void ASarkoHUD::DrawInteract()
 	// The button is always drawn, so the player learns where it is before they
 	// need it; it dims when there is nothing in reach.
 	//
-	// The rect comes from SarkoInput and is *not* scaled here: it is already
-	// derived from the safe frame's shorter axis with a floor, which makes it
-	// 52 pt on a 14 Pro and 52 pt on a 720p phone — past the 44 pt tap-target
-	// minimum on both. Scaling it again here would make the drawn button a
-	// different rectangle from the one ASarkoPlayerController::UpdateSticks
-	// hit-tests, which is the one thing about this button that must never happen.
-	const FBox2D Rect = SarkoInput::InteractButtonRect(Safe);
+	// The rect comes from SarkoUI::InteractButtonRectFor and is *not* scaled
+	// here: it is already derived from the safe frame's shorter axis with a
+	// floor, which makes it 52 pt on a 14 Pro and 52 pt on a 720p phone — past
+	// the 44 pt tap-target minimum on both. Scaling it again here would make the
+	// drawn button a different rectangle from the one
+	// ASarkoPlayerController::UpdateSticks hit-tests, which is the one thing
+	// about this button that must never happen — and that is also why the
+	// shifted-beside-the-panel case is one shared function rather than a branch
+	// here and a matching branch there.
+	const ASarkoCharacter* OwningPawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	const FBox2D Rect = SarkoUI::InteractButtonRectFor(OwningPawn, Safe, PointScale);
+
+	// A container panel is up: this control is the CLOSE button now. Drawn with
+	// an X made of two lines rather than a glyph — no font, no asset, and no
+	// chance of a missing character box on a device. The prompt and the channel
+	// bar are skipped outright: neither means anything while a panel is open,
+	// and the prompt would sit under the clock saying "search" about a crate the
+	// player is already inside.
+	if (OwningPawn && OwningPawn->GetOpenContainerIndex() != INDEX_NONE)
+	{
+		DrawRect(FLinearColor(0.95f, 0.8f, 0.25f, 0.55f),
+			Rect.Min.X, Rect.Min.Y, Rect.GetSize().X, Rect.GetSize().Y);
+
+		const float Inset = Rect.GetSize().X * 0.3f;
+		const float Thickness = FMath::Max(2.f, Px(2.5f));
+		DrawLine(Rect.Min.X + Inset, Rect.Min.Y + Inset, Rect.Max.X - Inset, Rect.Max.Y - Inset,
+			FLinearColor::White, Thickness);
+		DrawLine(Rect.Max.X - Inset, Rect.Min.Y + Inset, Rect.Min.X + Inset, Rect.Max.Y - Inset,
+			FLinearColor::White, Thickness);
+		return;
+	}
+
 	const ASarkoLootContainer* Target = PC->GetInteractTarget();
 	const FLinearColor ButtonColour = Target
 		? FLinearColor(0.95f, 0.8f, 0.25f, 0.55f)

@@ -15,6 +15,7 @@
     { "id": "toolbox",      "name": "Ящик з інструментами", "stackSize": 1,  "category": "valuable" },
     { "id": "bike_frame",   "name": "Рама велосипеда",      "stackSize": 1,  "category": "vehicle_part" },
     { "id": "wheel_small",  "name": "Мале колесо",          "stackSize": 2,  "category": "vehicle_part" },
-    { "id": "chain",        "name": "Ланцюг",               "stackSize": 1,  "category": "vehicle_part" }
+    { "id": "chain",        "name": "Ланцюг",               "stackSize": 1,  "category": "vehicle_part" },
+    { "id": "backpack",     "name": "Рюкзак",               "stackSize": 1,  "category": "gear" }
   ]
 }
