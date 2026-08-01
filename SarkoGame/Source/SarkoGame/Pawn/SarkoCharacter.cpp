@@ -2,6 +2,7 @@
 
 #include "Pawn/SarkoBody.h"
 #include "Pawn/SarkoCharacterAnim.h"
+#include "Pawn/SarkoSurvival.h"
 
 #include "Camera/CameraComponent.h"
 #include "Combat/SarkoWeapon.h"
@@ -75,6 +76,10 @@ ASarkoCharacter::ASarkoCharacter()
 	HealthComponent = CreateDefaultSubobject<USarkoHealthComponent>(TEXT("Health"));
 	WeaponComponent = CreateDefaultSubobject<USarkoWeaponComponent>(TEXT("Weapon"));
 	BackpackComponent = CreateDefaultSubobject<USarkoBackpackComponent>(TEXT("Backpack"));
+	// After the health component it reads and the backpack it spends from, so
+	// both exist by the time its own BeginPlay runs (components begin in
+	// creation order).
+	SurvivalComponent = CreateDefaultSubobject<USarkoSurvivalComponent>(TEXT("Survival"));
 
 	// Created last on purpose: it finds the health and weapon components by
 	// class in BeginPlay, and component BeginPlay runs in creation order, so
@@ -628,6 +633,81 @@ void ASarkoCharacter::RequestTakeItem(int32 ContainerIndex, int32 SlotIndex)
 	{
 		ServerTakeItem(ContainerIndex, SlotIndex);
 	}
+}
+
+void ASarkoCharacter::RequestConsumeItem(int32 SlotIndex)
+{
+	if (IsRaidFinishedNow())
+	{
+		return;
+	}
+	if (HasAuthority())
+	{
+		ServerConsumeItem_Implementation(SlotIndex);
+	}
+	else
+	{
+		ServerConsumeItem(SlotIndex);
+	}
+}
+
+void ASarkoCharacter::ServerConsumeItem_Implementation(int32 SlotIndex)
+{
+	// The same shape as ServerTakeItem's §3 chain, minus the container half:
+	// raid live and not settled -> pawn alive -> the pawn has cells -> the cell
+	// holds a consumable. There is no distance to re-measure, because the item is
+	// already in the player's own hands; everything else is re-derived from the
+	// server's copy and nothing is taken from the client but the index.
+	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
+	if (!RaidState || !RaidState->IsLootable())
+	{
+		return;
+	}
+	if (!HealthComponent || HealthComponent->IsDead())
+	{
+		return;
+	}
+	if (!BackpackComponent || !SurvivalComponent)
+	{
+		return;
+	}
+
+	// A working copy, written back once, exactly as the take path does — so the
+	// cells and the meters move together or not at all.
+	TArray<FSarkoItemStack> Bag = BackpackComponent->GetSlots();
+	if (!SurvivalComponent->ConsumeFromBag(Bag, SlotIndex))
+	{
+		// Silently: an out-of-range or non-consumable index is either a stale
+		// panel or a hostile client, and neither deserves an answer that tells
+		// them what IS in that cell.
+		return;
+	}
+	BackpackComponent->SetSlots(Bag);
+
+	UE_LOG(LogTemp, Display,
+		TEXT("SarkoCharacter: consumed from cell %d — food %.0f%%, water %.0f%%, health %.0f"),
+		SlotIndex, SurvivalComponent->GetFoodExact(), SurvivalComponent->GetWaterExact(),
+		HealthComponent->GetHealth());
+
+	if (IsLocallyControlled())
+	{
+		// Standalone/listen server: there is no RPC to travel, so the panel's
+		// delegate is broadcast here. The controller still defers the rebuild.
+		OnContainerViewChanged.Broadcast();
+	}
+	else
+	{
+		ClientConsumeApplied();
+	}
+}
+
+void ASarkoCharacter::ClientConsumeApplied_Implementation()
+{
+	// Deferred by the controller (HandleContainerViewChanged), which is the whole
+	// point of routing through this delegate: this can land inside
+	// SButton::ExecuteOnClick on a listen server, and rebuilding the grid there
+	// destroys the button mid-click.
+	OnContainerViewChanged.Broadcast();
 }
 
 void ASarkoCharacter::RequestTakeAll(int32 ContainerIndex)

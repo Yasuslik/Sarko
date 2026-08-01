@@ -96,6 +96,15 @@ private:
 	void DrawAimCone();
 	void DrawTopBar();
 	void DrawHealth();
+
+	/**
+	 * Hunger and thirst: two 150 x 5 pt bars stacked under the health bar.
+	 *
+	 * Takes the health bar's own geometry rather than recomputing it, so the
+	 * three bars cannot drift into a ragged column when one of the numbers above
+	 * moves. Drawn from DrawHealth for the same reason.
+	 */
+	void DrawSurvival(float BarX, float HealthBarBottomY, float BarWidth);
 	void DrawAmmo();
 	void DrawBackpack();
 
@@ -130,6 +139,23 @@ private:
 	 */
 	TArray<FString> CachedZoneNames;
 	bool bZoneNamesCached = false;
+
+	/**
+	 * Each zone's `opensAfterSeconds`, read from the same file at the same time
+	 * and for the same reason as the names above: it never changes, every machine
+	 * already has it, and re-reading a map definition on a tick path is exactly
+	 * the per-frame allocation this project forbids. Parallel to CachedZoneNames
+	 * by index.
+	 *
+	 * Presentation only. The server gates the dwell itself
+	 * (ASarkoRaidGameMode::ExtractTick); this is what lets the HUD say WHY
+	 * nothing is happening.
+	 */
+	TArray<float> CachedZoneOpensAfter;
+
+	/** The raid's full length, so elapsed time can be derived from the replicated
+	 *  RemainingSeconds. Same map-then-settings fallback the game mode uses. */
+	float CachedRaidDuration = 0.f;
 
 	/** The zone's name for the HUD, or a generic label when the file cannot supply one. */
 	const FString& ZoneNameFor(int32 ZoneIndex);

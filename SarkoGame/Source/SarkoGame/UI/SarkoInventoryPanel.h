@@ -179,6 +179,18 @@ public:
 	 * it would fail to link.
 	 */
 	bool SimulateTapContainerCell(int32 SlotIndex);
+
+	/**
+	 * Test/debug-only: fires a CARRY cell's own OnClicked, and only for a cell
+	 * that genuinely has one — i.e. a consumable the player could have tapped.
+	 *
+	 * The mirror of SimulateTapContainerCell on the other half of the panel, and
+	 * for the same reason: a headless run has no fingers, and pressing a Slate
+	 * button for real needs hit-testing against live geometry. Returns false for
+	 * every non-consumable cell, so nothing can be "used" that the player was
+	 * never offered.
+	 */
+	bool SimulateTapCarryCell(int32 SlotIndex);
 #endif
 
 private:
@@ -213,6 +225,10 @@ private:
 
 	/** One entry per container cell, so a headless run can press one. */
 	TArray<TSharedPtr<SButton>> ContainerButtons;
+
+	/** The same, for the consumable cells of the player's own grid. Sparse: only
+	 *  a consumable stack has a button at all. Keyed by carry stack index. */
+	TMap<int32, TSharedPtr<SButton>> CarryButtons;
 
 	/** The bag as it was the last time Refresh ran, so the NEXT Refresh can tell
 	 *  which cell received — that is what the transfer animation plays on. */
@@ -300,4 +316,11 @@ private:
 
 	FReply HandleTakeSlot(int32 SlotIndex);
 	FReply HandleTakeAll();
+
+	/** True when this carry cell holds something the player can USE (spec §4).
+	 *  The only cells in the player's own grid that are hit-testable at all. */
+	bool IsConsumableCarryCell(int32 SlotIndex) const;
+
+	/** A tap on your own consumable: eat, drink, or drink the other thing. */
+	FReply HandleConsumeSlot(int32 SlotIndex);
 };

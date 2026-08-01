@@ -182,6 +182,38 @@ bool FSarkoZoneLookupIsPlanarAndBounded::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoAZoneCanOpenLate,
+	"Sarko.Extract.AZoneCanOpenLate",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoAZoneCanOpenLate::RunTest(const FString& Parameters)
+{
+	// The gate behind the second extraction. It is a server rule
+	// (ASarkoRaidGameMode::ExtractTick) and the HUD reads the same function to
+	// draw a shut zone as inert, so getting the boundary wrong shows up as a
+	// player standing on a live pad being told it is closed, or worse.
+	TestTrue(TEXT("a zone with no opensAfterSeconds is open on the first frame"),
+		SarkoExtract::IsZoneOpen(0.f, 0.f));
+	TestFalse(TEXT("a 600 s zone is shut at second zero"), SarkoExtract::IsZoneOpen(600.f, 0.f));
+	TestFalse(TEXT("...and one second before it opens"), SarkoExtract::IsZoneOpen(600.f, 599.f));
+	TestTrue(TEXT("the boundary belongs to OPEN — 'opens at 10:00' must not refuse at 10:00"),
+		SarkoExtract::IsZoneOpen(600.f, 600.f));
+	TestTrue(TEXT("and it stays open for the rest of the raid"),
+		SarkoExtract::IsZoneOpen(600.f, 899.f));
+
+	// What the HUD counts down on.
+	TestEqual(TEXT("ten minutes to wait at second zero"),
+		SarkoExtract::SecondsUntilOpen(600.f, 0.f), 600.f, 0.001f);
+	TestEqual(TEXT("ninety seconds left at 8:30"),
+		SarkoExtract::SecondsUntilOpen(600.f, 510.f), 90.f, 0.001f);
+	TestEqual(TEXT("nothing to wait for once it is open — never a negative countdown"),
+		SarkoExtract::SecondsUntilOpen(600.f, 700.f), 0.f, 0.001f);
+	TestEqual(TEXT("an always-open zone has no wait at all"),
+		SarkoExtract::SecondsUntilOpen(0.f, 0.f), 0.f, 0.001f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FSarkoBridgeExtractionsAreReachableAndDistinct,
 	"Sarko.Extract.BridgeExtractionsAreReachableAndDistinct",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

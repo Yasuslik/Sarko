@@ -829,28 +829,28 @@
   ],
 
   "containers": [
-    { "note": "SPAWN CAMP (ТЗ §29 L01-L03) — the three junk containers, and the tutorial's first lesson: a container opens, and this one holds scrap. fixedItems is only consulted while the profile says tutorial_completed is false; afterwards it is dead data and every container rolls. §29 has L13/L18/L25/L30 as junk too, but the owner's Bridge_West split is 3 junk, so junk is exactly the spawn camp: the first container the player ever opens teaches the interaction and holds nothing worth dying for. It also holds the tutorial's only backpack: pockets are 2x2 and the authored haul is twelve cells, so the bag is the fix handed over one crate before the player could hit the wall. The backpack is FIRST in the list because ЗАБРАТИ ВСЕ drains slot 0 repeatedly, and a 2x1 taken first would leave the bag stranded behind a full pocket row.",
+    { "note": "SPAWN CAMP (ТЗ §29 L01-L03) — the three junk containers, and the tutorial's first lesson: a container opens, and this one holds scrap. fixedItems is only consulted while the profile says tutorial_completed is false; afterwards it is dead data and every container rolls. §29 has L13/L18/L25/L30 as junk too, but the owner's Bridge_West split is 3 junk, so junk is exactly the spawn camp: the first container the player ever opens teaches the interaction and holds nothing worth dying for. It also holds a backpack — and so do L02 and L03, all three of them, FIRST in each list. Pockets are 2x2 and the authored haul is twelve cells, so a player who never opens the bag crate fills up at the gas station and every later lesson lands in a container they cannot empty. L01 is 447 uu from spawn_01 but 2802 uu from spawn_03, and one of the four spawns is chosen at random, so with the bag in one crate the whole raid silently broke on a coin flip. Taking a second bag is harmless: EquipBackpack keeps the first and the duplicate simply occupies a cell like anything else. FIRST in each list because ЗАБРАТИ ВСЕ drains slot 0 repeatedly, and a 2x1 taken first would leave the bag stranded behind a full pocket row.",
       "id": "bridge_loot_l01", "pos": [-17800, 17100, 35], "tier": "junk",
       "fixedItems": [ { "item": "backpack", "qty": 1 }, { "item": "scrap_metal", "qty": 2 } ] },
     { "note": "L02 'дерево'. There is no tree kind and cannot be one (a canopy hides the player from a top-down camera), so this stands beside a treeline clump — see the flag list.",
       "id": "bridge_loot_l02", "pos": [-16400, 18100, 35], "tier": "junk",
-      "fixedItems": [ { "item": "copper_wire", "qty": 2 } ] },
+      "fixedItems": [ { "item": "backpack", "qty": 1 }, { "item": "copper_wire", "qty": 2 } ] },
     { "note": "L03 'остов', shifted +100,+100 from §29's (-15100,+16600) so it stands 153 uu clear of the wreck's face rather than 53 — ТЗ §29 wants 120 uu free in front of a container.",
       "id": "bridge_loot_l03", "pos": [-15000, 16700, 35], "tier": "junk",
-      "fixedItems": [ { "item": "duct_tape", "qty": 1 } ] },
+      "fixedItems": [ { "item": "backpack", "qty": 1 }, { "item": "duct_tape", "qty": 1 } ] },
 
     { "note": "THE PIPE CROSSING (L13, L18, L19) — the route starts paying. Re-tiered junk -> common per the owner's split. L13 is the north approach, L18 the pipe base.",
       "id": "bridge_loot_l13", "pos": [-14200, 3300, 35], "tier": "common",
       "fixedItems": [ { "item": "bandage", "qty": 2 } ] },
     { "id": "bridge_loot_l18", "pos": [-14800, -3800, 35], "tier": "common",
-      "fixedItems": [ { "item": "ammo_9mm", "qty": 8 } ] },
-    { "note": "THE MEDKIT, and the reason it is here: spec §6.5 teaches healing BEFORE the first bot, and the first bot stands on the АЗС forecourt 2900 uu south of this техдвор. A common container may hold базовая медицина (ТЗ §30), so the tier does not have to move for the beat to land.",
+      "fixedItems": [ { "item": "ammo_9mm", "qty": 6 } ] },
+    { "note": "THE CONSUMABLES CLASSROOM. It was the medkit crate and it still is — spec §6.5 teaches healing BEFORE the first bot, and the first bot stands on the АЗС forecourt 2900 uu south of this техдвор — but since spec §4 it also teaches the other two verbs. Heal, drink, eat, in one safe stop, with thirst about to cross its 30% threshold: a raid starts at water 45 and drains 3.3/min, so a player who reaches this crate on the authored route is within a minute of their first penalty and can spend the bottle on it. The bandage moved out to make room; L13 and the rail crates still carry medical. A common container may hold базовая медицина (ТЗ §30), so the tier does not have to move for any of it to land.",
       "id": "bridge_loot_l19", "pos": [-13300, -4600, 35], "tier": "common",
-      "fixedItems": [ { "item": "medkit", "qty": 1 }, { "item": "bandage", "qty": 1 } ] },
+      "fixedItems": [ { "item": "medkit", "qty": 1 }, { "item": "water_bottle", "qty": 1 }, { "item": "canned_food", "qty": 1 } ] },
 
     { "note": "THE GAS STATION (L20-L25) — buildings hold loot. L20 is the зал, inside the walkable bridge_gas_station: a container you have to walk into a building for is the whole point of the building, and twenty rounds is a reload before the forecourt.",
       "id": "bridge_loot_l20", "pos": [-13300, -8800, 35], "tier": "common",
-      "fixedItems": [ { "item": "ammo_9mm", "qty": 10 } ] },
+      "fixedItems": [ { "item": "ammo_9mm", "qty": 8 } ] },
     { "note": "L21, подсобка — the west room, 285 uu clear of both interior walls. THE FIRST VALUABLE: a toolbox, the first thing in the raid worth carrying home rather than using, which is the whole extraction loop in one object.",
       "id": "bridge_loot_l21", "pos": [-14100, -9100, 35], "tier": "good",
       "fixedItems": [ { "item": "toolbox", "qty": 1 }, { "item": "canned_food", "qty": 1 } ] },
@@ -859,7 +859,7 @@
       "fixedItems": [ { "item": "canned_food", "qty": 1 } ] },
     { "note": "L23, стойка, the sector's only med container. Shifted 50 west of §29's (-12500,-8400) so it stands 120 uu off the east wall's inner face rather than 70 — ТЗ §29 wants 80.",
       "id": "bridge_loot_l23", "pos": [-12550, -8400, 35], "tier": "med",
-      "fixedItems": [ { "item": "medkit", "qty": 1 }, { "item": "painkillers", "qty": 1 } ] },
+      "fixedItems": [ { "item": "medkit", "qty": 1 }, { "item": "bandage", "qty": 1 } ] },
     { "note": "L24, фургон — beside the trailer Task 4 authors at (-15000,-7950).",
       "id": "bridge_loot_l24", "pos": [-15000, -7600, 35], "tier": "good",
       "fixedItems": [ { "item": "canned_food", "qty": 1 } ] },
@@ -869,9 +869,9 @@
 
     { "note": "THE RAIL DEPOT (L26-L30) — deeper is richer, and the only place with military. L26 is the разгрузка pad, north of the warehouse.",
       "id": "bridge_loot_l26", "pos": [-15800, -16600, 35], "tier": "good",
-      "fixedItems": [ { "item": "ammo_9mm", "qty": 12 } ] },
+      "fixedItems": [ { "item": "ammo_9mm", "qty": 8 } ] },
     { "id": "bridge_loot_l27", "pos": [-11200, -17500, 35], "tier": "good",
-      "fixedItems": [ { "item": "canned_food", "qty": 2 } ] },
+      "fixedItems": [ { "item": "canned_food", "qty": 1 } ] },
     { "note": "L28, inside the диспетчерская (Task 4).",
       "id": "bridge_loot_l28", "pos": [-12600, -16900, 35], "tier": "common",
       "fixedItems": [ { "item": "bandage", "qty": 2 } ] },
@@ -883,10 +883,10 @@
       "fixedItems": [ { "item": "scrap_metal", "qty": 2 } ] },
     { "note": "THE MILITARY BEAT — no ledger row. ТЗ §29 puts no military west of the bridge (its four are the КПП and the промзона, all behind the closure), and the owner's Bridge_West split asks for two. They are here, at the deepest point of the route, and they retire when §29's four arrive with Stage D. This one is inside the warehouse's west room, past a doorway and a divider: a pistol and forty rounds, the richest single container in the sector.",
       "id": "bridge_loot_rail_mil_01", "pos": [-15600, -17600, 35], "tier": "military",
-      "fixedItems": [ { "item": "pistol", "qty": 1 }, { "item": "ammo_9mm", "qty": 20 } ] },
+      "fixedItems": [ { "item": "pistol", "qty": 1 }, { "item": "ammo_9mm", "qty": 16 } ] },
     { "note": "The second, beside the вагон at the depot's east end — the furthest point from E1, which is what makes carrying it home a decision. Whatever the player takes from here they carry 37000 uu back to E1 past four bots, which is the lesson the whole map exists to teach.",
       "id": "bridge_loot_rail_mil_02", "pos": [-10700, -17500, 35], "tier": "military",
-      "fixedItems": [ { "item": "medkit", "qty": 1 }, { "item": "painkillers", "qty": 2 }, { "item": "ammo_9mm", "qty": 10 } ] }
+      "fixedItems": [ { "item": "medkit", "qty": 1 }, { "item": "duct_tape", "qty": 1 }, { "item": "ammo_9mm", "qty": 8 } ] }
   ],
 
   "playerSpawns": [
@@ -962,6 +962,9 @@
     { "note": "E2 (ТЗ §12), the main exit after the bridge. Behind the closure until Stage D; kept in data because §12 lists three and because Sarko.Extract.BridgeExtractionsAreReachableAndDistinct checks they never overlap.",
       "id": "bridge_extract_north_highway", "pos": [-1000, 19500, 0], "radiusUU": 500, "name": "Шоссе на север" },
     { "note": "E3 (ТЗ §12), after the ford. Behind the closure until Stage D.",
-      "id": "bridge_extract_east_cordon", "pos": [14500, 19500, 0], "radiusUU": 500, "name": "Восточный кордон" }
+      "id": "bridge_extract_east_cordon", "pos": [14500, 19500, 0], "radiusUU": 500, "name": "Восточный кордон" },
+    { "note": "THE SECOND REACHABLE EXIT, and the fix for the worst moment in the build: 37,310 uu of pure backtracking from the rail depot to E1, ninety-three seconds of held stick across ground the player has already crossed, carrying everything they own, with nothing able to happen. This sits 13,360 uu from mil_02 (30 s) against E1's 25,578 (58 s) — and, crucially, on the SOUTH side of the ravine, so taking it skips the pipe crossing and the whole northern half of the walk. opensAfterSeconds 600 is what makes it a decision instead of a shortcut: for the first ten minutes it is an inert circle on the ground, and it opens for exactly the last five — which is the window a player who has looted the depot is walking home in anyway. West edge (x <= -17000) like every other extraction, on open ground west of the station yard: the nearest prop is a crate 1005 uu away and the pad is 500. Named for E3's кордон because that is what it is — a checkpoint that opens late.",
+      "id": "bridge_extract_west_cordon", "pos": [-17500, -6000, 0], "radiusUU": 500,
+      "opensAfterSeconds": 600, "name": "Западный кордон" }
   ]
 }

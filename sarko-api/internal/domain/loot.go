@@ -43,9 +43,14 @@ var ItemDefs = map[string]ItemDef{
 	"copper_wire": {StackSize: 10, Width: 1, Height: 1},
 	"duct_tape":   {StackSize: 5, Width: 1, Height: 1},
 	"canned_food": {StackSize: 5, Width: 1, Height: 1},
-	"vodka":       {StackSize: 3, Width: 1, Height: 1},
-	"cigarettes":  {StackSize: 5, Width: 1, Height: 1},
-	"toolbox":     {StackSize: 1, Width: 2, Height: 1},
+	// Drunk in the raid rather than carried home, but it is still a legal thing
+	// to extract with — and an id absent from this map is a whole haul rejected
+	// at result time. loot_test.go's drift alarm is a t.Fatalf precisely so that
+	// a client-side catalog row without a mirror here fails here and not there.
+	"water_bottle": {StackSize: 3, Width: 1, Height: 1},
+	"vodka":        {StackSize: 3, Width: 1, Height: 1},
+	"cigarettes":   {StackSize: 5, Width: 1, Height: 1},
+	"toolbox":      {StackSize: 1, Width: 2, Height: 1},
 	// Vehicle parts. These three are the bicycle recipe in garage.go; the later
 	// tiers' parts (engine_small, fuel_tank, engine_large, wheel_medium,
 	// wheel_large, gearbox, battery, turbine, rotor_blade, avionics) are

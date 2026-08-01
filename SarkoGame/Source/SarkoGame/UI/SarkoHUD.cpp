@@ -14,6 +14,7 @@
 #include "Map/SarkoMapDefinition.h"
 #include "Misc/ScopeExit.h"
 #include "Pawn/SarkoCharacter.h"
+#include "Pawn/SarkoSurvival.h"
 #include "UI/SarkoInventoryPanel.h"
 #include "UI/SarkoInventoryStyle.h"
 #include "UI/SarkoUiScale.h"
@@ -65,6 +66,34 @@ namespace
 	constexpr float HealthBarWidthPt = 150.f;
 	constexpr float HealthBarHeightPt = 11.f;
 	constexpr float HealthBarTopPt = 16.f;
+
+	/**
+	 * Hunger and thirst, stacked directly under the health bar (spec §4).
+	 *
+	 * Same column, same width, HALF the height, because they move by a percent
+	 * every twenty seconds and only need to be glanceable — where health is the
+	 * thing you check mid-fight. Not the bottom (both corners are thumbs) and not
+	 * the centre (the clock is there, with three caption slots beneath it).
+	 */
+	constexpr float SurvivalBarHeightPt = 5.f;
+	constexpr float SurvivalBarGapPt = 3.f;
+
+	/**
+	 * Wheat for food, cyan for water — the two hues left over once the seven
+	 * inventory categories have theirs (SarkoUI::CategoryColour: weapon 6 deg,
+	 * ammo 41, gear 78, med 168, vehicle 210, valuable 275, consumable 340).
+	 * Wheat is desaturated well clear of ammo's brass and cyan sits between med's
+	 * teal and vehicle's blue at a luminance neither reaches, so a bar can never
+	 * be mistaken for a cell. Both are far brighter than the map's olive ground,
+	 * and each sits on the same dark plate the health bar uses, so neither
+	 * depends on what is underneath it.
+	 */
+	const FLinearColor FoodBarColour(0.680f, 0.360f, 0.100f);   // #D8A25A
+	const FLinearColor WaterBarColour(0.075f, 0.545f, 0.795f);  // #4FC3E8
+
+	/** A meter at or below the penalty threshold pulses, with the reload button's
+	 *  existing curve — one animation vocabulary for "this needs attention". */
+	constexpr float SurvivalLowMinAlpha = 0.35f;
 
 	/** The loot channel's progress bar, under the prompt it belongs to. */
 	constexpr float LootBarWidthPt = 170.f;
@@ -353,6 +382,8 @@ void ASarkoHUD::DrawHealth()
 	// Green through red, so falling health is readable without reading a number.
 	const FLinearColor Fill = FMath::Lerp(FLinearColor(0.85f, 0.15f, 0.1f), FLinearColor(0.3f, 0.85f, 0.25f), Fraction);
 	DrawRect(Fill, BarX, BarY, BarWidth * Fraction, BarHeight);
+
+	DrawSurvival(BarX, BarY + BarHeight, BarWidth);
 
 	if (!Health->IsDead())
 	{
@@ -675,10 +706,17 @@ const FString& ASarkoHUD::ZoneNameFor(int32 ZoneIndex)
 		if (SarkoMap::LoadDefinitionFromDisk(GetDefault<USarkoRaidSettings>()->MapId.ToString(), Definition, Error))
 		{
 			CachedZoneNames.Reserve(Definition.Extractions.Num());
+			CachedZoneOpensAfter.Reserve(Definition.Extractions.Num());
 			for (const FSarkoExtractionSpot& Spot : Definition.Extractions)
 			{
 				CachedZoneNames.Add(Spot.Name.IsEmpty() ? Generic : Spot.Name);
+				CachedZoneOpensAfter.Add(Spot.OpensAfterSeconds);
 			}
+			// The same fallback the game mode uses (MapClockSeconds), so the two
+			// cannot disagree about what "ten minutes in" means.
+			CachedRaidDuration = Definition.RaidDurationSeconds > 0.f
+				? Definition.RaidDurationSeconds
+				: GetDefault<USarkoRaidSettings>()->RaidDurationSeconds;
 		}
 		else
 		{
@@ -689,6 +727,50 @@ const FString& ASarkoHUD::ZoneNameFor(int32 ZoneIndex)
 	return CachedZoneNames.IsValidIndex(ZoneIndex) ? CachedZoneNames[ZoneIndex] : Generic;
 }
 
+void ASarkoHUD::DrawSurvival(float BarX, float HealthBarBottomY, float BarWidth)
+{
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	const USarkoSurvivalComponent* Survival = Pawn ? Pawn->SurvivalComponent : nullptr;
+	if (!Survival)
+	{
+		return;
+	}
+
+	const float Height = Px(SurvivalBarHeightPt);
+	const float Gap = Px(SurvivalBarGapPt);
+	const float Border = Px(2.f);
+	const float Pulse = SarkoUI::ReloadPulseAlpha(GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f);
+
+	// Two rows under the health bar, in the order they were introduced in and in
+	// the order they run out in: food first because it is the slower one, so the
+	// bar that moves is always the bottom one.
+	const struct { float Fraction; bool bLow; FLinearColor Colour; } Rows[] = {
+		{ Survival->GetFoodPercent() / SarkoSurvival::MeterMax, Survival->IsFoodLow(), FoodBarColour },
+		{ Survival->GetWaterPercent() / SarkoSurvival::MeterMax, Survival->IsWaterLow(), WaterBarColour },
+	};
+
+	float Y = HealthBarBottomY + Gap;
+	for (const auto& Row : Rows)
+	{
+		// The same dark plate the health bar sits on, so the bar's own colour is
+		// never asked to fight the olive ground directly.
+		DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f),
+			BarX - Border, Y - Border, BarWidth + Border * 2.f, Height + Border * 2.f);
+
+		FLinearColor Fill = Row.Colour;
+		if (Row.bLow)
+		{
+			// Pulsed rather than recoloured: red would say "you are dying", and
+			// hunger and thirst are never lethal in this slice. Bounded away from
+			// zero for the reason the reload button's pulse is — a bar that
+			// vanishes on the trough reads as absent, not as urgent.
+			Fill.A = FMath::Max(SurvivalLowMinAlpha, Pulse);
+		}
+		DrawRect(Fill, BarX, Y, BarWidth * FMath::Clamp(Row.Fraction, 0.f, 1.f), Height);
+		Y += Height + Gap;
+	}
+}
+
 void ASarkoHUD::DrawExtraction()
 {
 	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
@@ -697,19 +779,49 @@ void ASarkoHUD::DrawExtraction()
 		return;
 	}
 
-	const float Required = FMath::Max(0.1f, GetDefault<USarkoRaidSettings>()->ExtractDwellSeconds);
-	const float Left = FMath::Max(0.f, Required - Pawn->ExtractDwellSeconds);
-	const FString Text = FString::Printf(TEXT("%s — %.1f"), *ZoneNameFor(Pawn->ExtractZoneIndex), Left);
+	// Names the zone first, which also fills the caches the closed check below
+	// reads. One disk read per HUD, never per frame.
+	const FString& Name = ZoneNameFor(Pawn->ExtractZoneIndex);
+
+	// A zone that has not opened yet is INERT: no dwell is accruing on the server
+	// (ASarkoRaidGameMode::ExtractTick gates it), so drawing a countdown that
+	// never moves would be the HUD lying about the one thing it exists to say.
+	// It says how long the wait is instead. The clock is the same one the server
+	// measures against, re-derived here from the map file and the replicated
+	// RemainingSeconds — presentation, never authority.
+	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
+	const float OpensAfter = CachedZoneOpensAfter.IsValidIndex(Pawn->ExtractZoneIndex)
+		? CachedZoneOpensAfter[Pawn->ExtractZoneIndex] : 0.f;
+	const float Elapsed = RaidState ? FMath::Max(0.f, CachedRaidDuration - RaidState->RemainingSeconds) : 0.f;
+
+	FString Text;
+	FLinearColor Plate(0.f, 0.25f, 0.05f, 0.55f);
+	FLinearColor Ink(0.55f, 1.f, 0.6f);
+	if (!SarkoExtract::IsZoneOpen(OpensAfter, Elapsed))
+	{
+		const int32 Wait = FMath::CeilToInt(SarkoExtract::SecondsUntilOpen(OpensAfter, Elapsed));
+		Text = FString::Printf(TEXT("%s — ЗАЧИНЕНО ЩЕ %d:%02d"), *Name, Wait / 60, Wait % 60);
+		// Grey rather than green, because green is the colour of a dwell that is
+		// running and nothing is running here.
+		Plate = FLinearColor(0.f, 0.f, 0.f, 0.55f);
+		Ink = FLinearColor(0.72f, 0.72f, 0.70f);
+	}
+	else
+	{
+		const float Required = FMath::Max(0.1f, GetDefault<USarkoRaidSettings>()->ExtractDwellSeconds);
+		const float Left = FMath::Max(0.f, Required - Pawn->ExtractDwellSeconds);
+		Text = FString::Printf(TEXT("%s — %.1f"), *Name, Left);
+	}
 
 	// Top-centre, below the clock and the loot prompt's slot: everything
 	// informational lives along the top (spec §9), and never a bottom corner.
 	const FVector2D Size = MeasurePt(Text, ExtractPt);
 	const float X = Safe.GetCenter().X - Size.X * 0.5f;
 	const float Y = Safe.Min.Y + Px(ExtractTopPt);
-	DrawRect(FLinearColor(0.f, 0.25f, 0.05f, 0.55f),
+	DrawRect(Plate,
 		X - Px(PlatePadXPt * 1.4f), Y - Px(PlatePadYPt * 1.5f),
 		Size.X + Px(PlatePadXPt * 2.8f), Size.Y + Px(PlatePadYPt * 3.f));
-	DrawTextPt(Text, FLinearColor(0.55f, 1.f, 0.6f), X, Y, ExtractPt);
+	DrawTextPt(Text, Ink, X, Y, ExtractPt);
 }
 
 void ASarkoHUD::DrawOutcomeSummary()

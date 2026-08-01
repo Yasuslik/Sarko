@@ -304,4 +304,14 @@ private:
 	 * raid goes live an entry frame for every pawn.
 	 */
 	TMap<TWeakObjectPtr<class ASarkoCharacter>, SarkoExtract::FSarkoDwell> Dwells;
+
+	/**
+	 * Which closed extraction zones have already said so in the log.
+	 *
+	 * ExtractTick runs every frame and a player can stand on a shut pad for
+	 * minutes, so the refusal is announced ONCE per zone per raid rather than per
+	 * tick. Cleared by ActivateRaid alongside Dwells, so a second raid in one
+	 * process says it again.
+	 */
+	TSet<int32> AnnouncedClosedZones;
 };

@@ -5,6 +5,7 @@
 #include "EngineUtils.h"
 #include "Net/UnrealNetwork.h"
 #include "Pawn/SarkoHealthComponent.h"
+#include "Pawn/SarkoSurvival.h"
 #include "TimerManager.h"
 
 FVector SarkoCombat::ApplyAimAssist(FVector Origin, FVector Direction, float ConeHalfAngleDeg, const TArray<FVector>& CandidateTargets)
@@ -73,6 +74,16 @@ FVector SarkoCombat::NormalizeFireDirection(FVector Direction)
 	return Normalized / Size;
 }
 
+int32 SarkoCombat::StartingRounds(int32 Configured, int32 MagazineSize)
+{
+	const int32 Capacity = FMath::Max(0, MagazineSize);
+	if (Configured < 0)
+	{
+		return Capacity;
+	}
+	return FMath::Clamp(Configured, 0, Capacity);
+}
+
 USarkoWeaponComponent::USarkoWeaponComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
@@ -89,13 +100,16 @@ void USarkoWeaponComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 void USarkoWeaponComponent::BeginPlay()
 {
 	Super::BeginPlay();
-	AmmoInMagazine = GetDefault<USarkoRaidSettings>()->MagazineSize;
+	AmmoInMagazine = SarkoCombat::StartingRounds(
+		GetDefault<USarkoRaidSettings>()->StartingMagazineRounds,
+		GetDefault<USarkoRaidSettings>()->MagazineSize);
 }
 
 void USarkoWeaponComponent::ResetForTest(int32 Rounds)
 {
 	AmmoInMagazine = Rounds;
 	bReloading = false;
+	bDryClickReported = false;
 }
 
 void USarkoWeaponComponent::ServerFire(FVector Origin, FVector Direction)
@@ -109,12 +123,29 @@ void USarkoWeaponComponent::ServerFire(FVector Origin, FVector Direction)
 
 	if (!CanFire())
 	{
-		// A fire request that lands while the magazine is empty (or a reload
-		// is already running) is the only signal a human tester gets that
-		// something needs to happen — there is no separate reload button on a
-		// two-thumbstick touch layout. StartReload() itself no-ops if a reload
-		// is already in flight, so this is safe to call every time.
-		StartReload();
+		// THE DRY CLICK, and the deliberate absence of anything else.
+		//
+		// This branch used to call StartReload(): a trigger pull on an empty
+		// magazine reloaded the weapon for you. Owner decision (spec §3): reload
+		// is manual only, so an empty magazine plus a trigger pull is a dry click
+		// and nothing more, until the player presses the reload button. The
+		// button's empty-state pulse (SarkoUI::ESarkoReloadState::Empty, drawn by
+		// ASarkoHUD::DrawReload) is the primary signal now, and the tutorial
+		// teaches it by starting the raid on a partial magazine
+		// (USarkoRaidSettings::StartingMagazineRounds) so the pulse appears at the
+		// spawn camp with nothing on the map that can hurt anyone yet.
+		//
+		// Logged once per dry spell rather than per request: the aim stick sends a
+		// fire request every MinFireIntervalSeconds while it is held, which would
+		// be about seven identical lines a second for as long as the thumb stays
+		// down. bDryClickReported clears on the next round loaded, so the next
+		// empty magazine speaks again. Sound replaces this line when there is any.
+		if (AmmoInMagazine <= 0 && !bReloading && !bDryClickReported)
+		{
+			bDryClickReported = true;
+			UE_LOG(LogTemp, Display,
+				TEXT("SarkoWeapon: dry click — the magazine is empty and reload is manual (press reload)"));
+		}
 		return;
 	}
 
@@ -145,13 +176,9 @@ void USarkoWeaponComponent::ServerFire(FVector Origin, FVector Direction)
 
 	LastFireTimeSeconds = Now;
 	--AmmoInMagazine;
-	if (AmmoInMagazine == 0)
-	{
-		// The magazine just ran dry from this very shot: start the reload
-		// immediately instead of waiting for the next fire attempt, so the
-		// weapon is already coming back online while the player notices.
-		StartReload();
-	}
+	// The second removed auto-reload (spec §3). The shot that empties the
+	// magazine used to start a reload of its own; now it just empties the
+	// magazine, and the next trigger pull is the dry click above.
 
 	// Collect plausible targets, then let the pure helper decide the nudge.
 	// Restricted to foes: without this, candidates are every living pawn but
@@ -202,6 +229,16 @@ void USarkoWeaponComponent::ServerFire(FVector Origin, FVector Direction)
 		if (USarkoHealthComponent* Health = HitActor->FindComponentByClass<USarkoHealthComponent>())
 		{
 			Health->ApplyDamage(DamageOverride > 0.f ? DamageOverride : Settings.WeaponDamage, Owner);
+
+			// The SHOOTER is in combat too, and that is the half a "since I was
+			// last hit" timer would miss: a player winning a firefight would
+			// otherwise regenerate through it while the bot is still shooting back
+			// and missing. The component lookup is on a connecting shot only —
+			// a few times a fight, never per tick.
+			if (USarkoSurvivalComponent* Survival = Owner->FindComponentByClass<USarkoSurvivalComponent>())
+			{
+				Survival->NoteCombat();
+			}
 		}
 	}
 }
@@ -231,4 +268,6 @@ void USarkoWeaponComponent::FinishReload()
 {
 	AmmoInMagazine = GetDefault<USarkoRaidSettings>()->MagazineSize;
 	bReloading = false;
+	// The next empty magazine gets its own line. See ServerFire's dry click.
+	bDryClickReported = false;
 }

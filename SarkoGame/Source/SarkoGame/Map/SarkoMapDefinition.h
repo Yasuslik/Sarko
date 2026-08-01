@@ -89,6 +89,23 @@ struct FSarkoExtractionSpot
 
 	UPROPERTY()
 	FString Name;
+
+	/**
+	 * Seconds of raid clock before this zone will accept a dwell. Zero (the
+	 * default, and every zone that omits it) means open from the first frame.
+	 *
+	 * Optional on purpose: three of the four zones on the shipped map are simply
+	 * open, and a required field would have made every one of them say so. What
+	 * it buys is a zone whose existence is a DECISION rather than a shortcut —
+	 * the west cordon opens for the last five minutes of a fifteen-minute raid,
+	 * which is exactly the window a player walking home from the depot is in.
+	 *
+	 * Enforced on the server (ASarkoRaidGameMode::ExtractTick, through
+	 * SarkoExtract::IsZoneOpen). The HUD reads the same number out of the same
+	 * file to draw the zone as inert, which is presentation and never authority.
+	 */
+	UPROPERTY()
+	float OpensAfterSeconds = 0.f;
 };
 
 /** A bot spawn, tagged with the risk zone it belongs to. */

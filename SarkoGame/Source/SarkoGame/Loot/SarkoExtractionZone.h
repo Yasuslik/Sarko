@@ -87,6 +87,25 @@ namespace SarkoExtract
 	 * when it decides anything.
 	 */
 	int32 FindZoneContaining(const FVector& PawnLocation, const TArray<FSarkoExtractionSpot>& Zones);
+
+	/**
+	 * Whether a zone will accept a dwell at this point in the raid. Pure.
+	 *
+	 * A zone with no `opensAfterSeconds` (zero, the default) is open from the
+	 * first frame, which is what every extraction on every map was until the
+	 * west cordon. The boundary belongs to OPEN: at exactly OpensAfterSeconds the
+	 * zone is live, because "opens at 10:00" that refuses at 10:00 is a bug
+	 * report.
+	 *
+	 * Elapsed is raid-clock seconds since activation, derived on the server from
+	 * the clock it started (duration minus RemainingSeconds) and never from
+	 * anything a client sends.
+	 */
+	bool IsZoneOpen(float OpensAfterSeconds, float ElapsedSeconds);
+
+	/** Seconds left before IsZoneOpen turns true, or zero once it has. Pure, and
+	 *  what the HUD counts down on a closed zone. */
+	float SecondsUntilOpen(float OpensAfterSeconds, float ElapsedSeconds);
 }
 
 /**

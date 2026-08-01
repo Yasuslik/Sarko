@@ -60,6 +60,18 @@ int32 SarkoExtract::FindZoneContaining(const FVector& PawnLocation, const TArray
 	return INDEX_NONE;
 }
 
+bool SarkoExtract::IsZoneOpen(float OpensAfterSeconds, float ElapsedSeconds)
+{
+	// The boundary belongs to open. Also true for the ordinary case: zero is the
+	// default and every elapsed time is >= it, including the very first frame.
+	return ElapsedSeconds >= OpensAfterSeconds;
+}
+
+float SarkoExtract::SecondsUntilOpen(float OpensAfterSeconds, float ElapsedSeconds)
+{
+	return FMath::Max(0.f, OpensAfterSeconds - ElapsedSeconds);
+}
+
 namespace
 {
 	/** Extraction green, per the ТЗ §14 palette. Flat and unmistakable from above. */

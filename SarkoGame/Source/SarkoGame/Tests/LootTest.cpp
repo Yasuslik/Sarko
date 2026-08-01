@@ -1008,6 +1008,7 @@ bool FSarkoItemSizesMatchTheDesignTable::RunTest(const FString& Parameters)
 		{ TEXT("copper_wire"),  1, 1 },
 		{ TEXT("duct_tape"),    1, 1 },
 		{ TEXT("canned_food"),  1, 1 },
+		{ TEXT("water_bottle"), 1, 1 },
 		{ TEXT("vodka"),        1, 1 },
 		{ TEXT("cigarettes"),   1, 1 },
 		{ TEXT("toolbox"),      2, 1 },
@@ -1224,17 +1225,40 @@ bool FSarkoTutorialGrantsABagBeforeItNeedsOne::RunTest(const FString& Parameters
 			[](const FSarkoItemStack& Stack) { return Stack.Item == SarkoLoot::BackpackItemId; });
 	};
 
-	TestTrue(TEXT("the spawn crate carries a backpack"), HasBag(Definition.Containers[0]));
-	TestTrue(TEXT("and it is FIRST in the list, so ЗАБРАТИ ВСЕ equips it before it takes anything else"),
-		Definition.Containers[0].FixedItems.Num() > 0
-			&& Definition.Containers[0].FixedItems[0].Item == SarkoLoot::BackpackItemId);
+	// ALL THREE SPAWN-CAMP CRATES, not just the first, since the map-comfort pass.
+	// L01 is 447 uu from spawn_01 and 2802 uu from spawn_03, and one of the four
+	// spawns is chosen at random — so with the bag in one crate the entire rest of
+	// the tutorial broke silently on a coin flip: the player fills up around the
+	// gas station and every later lesson lands in a container they cannot empty.
+	// Taking a second bag is harmless (ASarkoCharacter::TakeSlotInto equips the
+	// first and treats the rest as ordinary 2x2 loot, refused when there is no
+	// room and left in the crate).
+	static const TCHAR* SpawnCamp[] = {
+		TEXT("bridge_loot_l01"), TEXT("bridge_loot_l02"), TEXT("bridge_loot_l03"),
+	};
+	for (const TCHAR* Id : SpawnCamp)
+	{
+		const FSarkoLootContainerSpot* Crate = Definition.Containers.FindByPredicate(
+			[Id](const FSarkoLootContainerSpot& Spot) { return Spot.Id == Id; });
+		if (!TestNotNull(*FString::Printf(TEXT("%s exists"), Id), Crate))
+		{
+			continue;
+		}
+		TestTrue(*FString::Printf(TEXT("%s carries a backpack, whichever spawn the player drew"), Id),
+			HasBag(*Crate));
+		TestTrue(*FString::Printf(
+				TEXT("%s lists it FIRST, so ЗАБРАТИ ВСЕ equips it before it takes anything else"), Id),
+			Crate->FixedItems.Num() > 0 && Crate->FixedItems[0].Item == SarkoLoot::BackpackItemId);
+	}
 
 	int32 BagCrates = 0;
 	for (const FSarkoLootContainerSpot& Spot : Definition.Containers)
 	{
 		BagCrates += HasBag(Spot) ? 1 : 0;
 	}
-	TestEqual(TEXT("and only that one, or the lesson is 'bags are everywhere'"), BagCrates, 1);
+	// The spawn camp and nowhere else, or the lesson becomes "bags are everywhere"
+	// and the 2x2 pocket grid stops being a constraint anybody feels.
+	TestEqual(TEXT("exactly the three spawn-camp crates carry a bag"), BagCrates, 3);
 	return true;
 }
 

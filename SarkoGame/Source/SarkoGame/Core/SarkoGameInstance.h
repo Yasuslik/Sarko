@@ -42,6 +42,56 @@ struct FSarkoLastRaid
 };
 
 /**
+ * A raid result that has not been accepted by sarko-api yet.
+ *
+ * Everything /v1/raid/result needs and nothing else. The session TOKEN is in
+ * here, which is why this file lives under Saved/ on the player's own device and
+ * is deleted the moment the result lands: it is single-use, the server keeps
+ * only its hash, and without it the haul cannot be claimed at all.
+ */
+USTRUCT()
+struct FSarkoPendingResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FString SessionId;
+
+	UPROPERTY()
+	FString SessionToken;
+
+	/** The WIRE outcome ("extracted"/"died"/"mia"), already converted, so a
+	 *  resubmission a launch later does not depend on an enum's numbering. */
+	UPROPERTY()
+	FString Outcome;
+
+	UPROPERTY()
+	TArray<FSarkoItemStack> Items;
+
+	bool IsValid() const { return !SessionId.IsEmpty() && !SessionToken.IsEmpty() && !Outcome.IsEmpty(); }
+};
+
+namespace SarkoResult
+{
+	/**
+	 * How long to wait before attempt N (0-based). Pure.
+	 *
+	 * Exponential from Base, capped at Max: 2, 4, 8, 16, 32, 60, 60… A fixed
+	 * delay would hammer a server that is down, and no delay at all is what the
+	 * old single attempt effectively was.
+	 */
+	float RetryDelaySeconds(int32 Attempt, float BaseSeconds, float MaxSeconds);
+
+	/** The unsent result as JSON, and back. Pure — no disk — so the round trip is
+	 *  tested without a filesystem, and so the shape is one function's business. */
+	FString SerialisePending(const FSarkoPendingResult& Pending);
+	bool ParsePending(const FString& Json, FSarkoPendingResult& Out, FString& OutError);
+
+	/** Saved/SarkoPendingResult.json, absolute. */
+	FString PendingResultPath();
+}
+
+/**
  * The one object that survives a level travel.
  *
  * Registered through GameInstanceClass in DefaultEngine.ini (UGameMapsSettings
@@ -76,6 +126,34 @@ class USarkoGameInstance : public UGameInstance
 	GENERATED_BODY()
 
 public:
+	/**
+	 * Picks up an unsent result left by a previous launch, and starts trying.
+	 *
+	 * A raid result is the only thing this game produces that cannot be recreated:
+	 * the session token is one-time, the haul is gone from the world, and the
+	 * session expires on the server and closes as `died`. So it is written to disk
+	 * BEFORE the first attempt and only deleted once the server has taken it — an
+	 * iOS suspension, a crash or a dead network during the request costs nothing
+	 * but a delay.
+	 */
+	virtual void Init() override;
+	virtual void Shutdown() override;
+
+	/**
+	 * Submits a raid result, and keeps trying.
+	 *
+	 * Called by ASarkoRaidGameMode::FinishRaid instead of talking to the client
+	 * directly, because a raid ends seconds before the world is travelled away
+	 * and a retry schedule cannot live in a dying game mode. Nothing waits on
+	 * this: the return to the shelter is started independently and is never held
+	 * hostage to the network.
+	 */
+	void SubmitRaidResultWithRetry(const FSarkoRaidSession& Session, const FString& WireOutcome,
+		const TArray<FSarkoItemStack>& Items);
+
+	/** True while a result is on disk waiting to be accepted. */
+	bool HasPendingResult() const { return Pending.IsValid(); }
+
 	/**
 	 * The shared backend client, created on first use.
 	 *
@@ -120,4 +198,35 @@ public:
 
 private:
 	TSharedPtr<class FSarkoBackendClient> Backend;
+
+	/** The unsent result, mirrored on disk. Empty session id means none. */
+	UPROPERTY()
+	FSarkoPendingResult Pending;
+
+	/** How many times this launch has tried. Reset when a new result is queued;
+	 *  it is the input to the backoff and the bound on the loop. */
+	int32 PendingAttempt = 0;
+
+	/** Guard against two schedules running at once — a resume at Init and a fresh
+	 *  raid result arriving would otherwise both hold a timer. */
+	bool bPendingInFlight = false;
+
+	FTimerHandle PendingRetryTimer;
+
+	/** Writes Pending to Saved/, or removes the file when Pending is empty. */
+	void PersistPending();
+
+	/** One attempt: authenticate if needed, then POST. Reschedules itself on
+	 *  failure until MaxPendingAttempts, and stops — the file survives, and the
+	 *  next launch picks it up from Init. */
+	void AttemptPendingSubmission();
+
+	/**
+	 * Retries per launch. Six attempts is 2+4+8+16+32+60 = about two minutes of
+	 * trying, which covers every transient this has been seen to hit; beyond that
+	 * the network is not transiently down and the disk copy is the answer.
+	 */
+	static constexpr int32 MaxPendingAttempts = 6;
+	static constexpr float PendingRetryBaseSeconds = 2.f;
+	static constexpr float PendingRetryMaxSeconds = 60.f;
 };

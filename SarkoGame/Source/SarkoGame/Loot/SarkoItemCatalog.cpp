@@ -24,6 +24,7 @@ namespace
 			{ TEXT("valuable"),     ESarkoItemCategory::Valuable },
 			{ TEXT("vehicle_part"), ESarkoItemCategory::VehiclePart },
 			{ TEXT("gear"),         ESarkoItemCategory::Gear },
+			{ TEXT("consumable"),   ESarkoItemCategory::Consumable },
 		};
 		if (const ESarkoItemCategory* Found = Names.Find(Text))
 		{
@@ -120,7 +121,7 @@ bool SarkoLoot::ParseItemCatalog(const FString& Json, FSarkoItemCatalog& OutCata
 		if (!(*Object)->TryGetStringField(TEXT("category"), CategoryText) || !ParseCategory(CategoryText, Def.Category))
 		{
 			OutError = FString::Printf(
-				TEXT("item '%s': 'category' must be weapon, ammo, med, junk, valuable, vehicle_part or gear"), *Id);
+				TEXT("item '%s': 'category' must be weapon, ammo, med, junk, valuable, vehicle_part, gear or consumable"), *Id);
 			return false;
 		}
 

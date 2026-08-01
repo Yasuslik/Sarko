@@ -87,8 +87,9 @@ public:
 	 *
 	 * Spec §4.3 — reloading is a decision with a cost and the player must be able
 	 * to make it BEFORE the magazine runs out; auto-reload-when-empty is the thing
-	 * that gets you killed. The auto-reload safety net is untouched; this simply
-	 * wins if it is pressed first, because StartReload no-ops on the second caller.
+	 * that gets you killed. Since spec §3 this is the ONLY way a magazine is ever
+	 * refilled: both auto-reload sites in USarkoWeaponComponent are gone, and a
+	 * trigger pull on an empty magazine is a dry click.
 	 *
 	 * Validated server-side like every other request on this pawn.
 	 */
@@ -100,6 +101,20 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Health")
 	TObjectPtr<USarkoHealthComponent> HealthComponent;
+
+	/** Hunger, thirst, and the out-of-combat regeneration they gate. Replicated
+	 *  owner-only by the component itself. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Survival")
+	TObjectPtr<class USarkoSurvivalComponent> SurvivalComponent;
+
+	/**
+	 * Client intent: use the consumable in cell SlotIndex of my own grid.
+	 *
+	 * A tap on the player's own cell in the inventory panel, which is the only
+	 * verb the carry grid has ever had. Validated server-side like everything
+	 * else on this pawn — the index is a request, not an authority.
+	 */
+	void RequestConsumeItem(int32 SlotIndex);
 
 	/** Drives the mesh's pose from health, the weapon and this pawn's own velocity. Purely cosmetic. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Visuals")
@@ -239,6 +254,30 @@ private:
 	 */
 	UFUNCTION(Client, Reliable)
 	void ClientLootRejected(int32 ContainerIndex);
+
+	/**
+	 * Server RPC. Reliable: a dropped consume is a player pressing a bottle of
+	 * water and staying thirsty.
+	 *
+	 * SlotIndex is hostile input and the server bounds-checks it against its OWN
+	 * copy of this pawn's cells, then re-checks the whole chain — alive, raid
+	 * live, the cell holds something, and that something is consumable — before
+	 * anything is spent. Nothing about the item id crosses the wire, because the
+	 * server already knows what is in that cell and the client's opinion of it is
+	 * worth nothing.
+	 */
+	UFUNCTION(Server, Reliable) void ServerConsumeItem(int32 SlotIndex);
+
+	/**
+	 * The consume landed, so the owning client's panel must redraw its own grid.
+	 *
+	 * A client RPC rather than an OnRep on the backpack: the cells replicate as a
+	 * plain TArray with no notify, and adding one would fire on every take as
+	 * well, duplicating the container path's refresh. This broadcasts the panel's
+	 * existing change delegate, which the controller defers to the next tick — the
+	 * ExecuteOnClick discipline that a mid-click rebuild would violate.
+	 */
+	UFUNCTION(Client, Reliable) void ClientConsumeApplied();
 
 	UFUNCTION(Server, Reliable) void ServerTakeItem(int32 ContainerIndex, int32 SlotIndex);
 	UFUNCTION(Server, Reliable) void ServerTakeAll(int32 ContainerIndex);
