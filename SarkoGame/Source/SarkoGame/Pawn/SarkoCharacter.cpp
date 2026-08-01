@@ -744,6 +744,43 @@ FVector ASarkoCharacter::GetMuzzleLocation() const
 	return GetActorLocation() + FVector(0.f, 0.f, 40.f) + FVector(AimDirection) * 60.f;
 }
 
+void ASarkoCharacter::RequestReload()
+{
+	if (!WeaponComponent || (HealthComponent && HealthComponent->IsDead()) || IsRaidFinishedNow())
+	{
+		return;
+	}
+	// Nothing to do, and refused rather than started: a reload at a full magazine
+	// would cost ReloadSeconds of a weapon that cannot shoot, which is a worse
+	// outcome than the press doing nothing.
+	if (WeaponComponent->IsReloading()
+		|| WeaponComponent->GetAmmoInMagazine() >= GetDefault<USarkoRaidSettings>()->MagazineSize)
+	{
+		return;
+	}
+
+	if (HasAuthority())
+	{
+		WeaponComponent->StartReload();
+		return;
+	}
+	ServerRequestReload();
+}
+
+void ASarkoCharacter::ServerRequestReload_Implementation()
+{
+	// Re-checked on the server for the same reason ServerRequestFire re-checks
+	// death and the raid's outcome: the client's copy can be stale during the
+	// round trip, and a modified client can skip the check entirely.
+	if (!WeaponComponent || (HealthComponent && HealthComponent->IsDead()) || IsRaidFinishedNow())
+	{
+		return;
+	}
+	// StartReload already no-ops while a reload is in flight and already refuses
+	// without authority, so this is safe to call unconditionally from here.
+	WeaponComponent->StartReload();
+}
+
 void ASarkoCharacter::RequestFire()
 {
 	if (HealthComponent && HealthComponent->IsDead())

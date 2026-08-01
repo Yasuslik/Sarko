@@ -15,6 +15,7 @@
 #include "Misc/ScopeExit.h"
 #include "Pawn/SarkoCharacter.h"
 #include "UI/SarkoInventoryPanel.h"
+#include "UI/SarkoInventoryStyle.h"
 #include "UI/SarkoUiScale.h"
 
 namespace
@@ -39,7 +40,10 @@ namespace
 	constexpr float DiedPt = 40.f;
 	constexpr float OutcomeTitlePt = 46.f;
 	constexpr float ReturningPt = 17.f;
-	constexpr float InteractLabelPt = 26.f;
+	/** The interact button's label at 12 pt: ОБШУКАТИ is 8 Cyrillic capitals,
+	 *  ~67 pt wide inside a 96 pt button. The reload count is 20 pt, centred. */
+	constexpr float InteractLabelPt = 12.f;
+	constexpr float ReloadLabelPt = 20.f;
 
 	/** In from the safe frame's side edges, and down from its top. */
 	constexpr float SideInsetPt = 16.f;
@@ -79,6 +83,11 @@ namespace
 	/** The drop shadow every readout gets. The HUD is drawn over an arbitrary
 	 *  world, and white-on-white is the one failure that no size fixes. */
 	const FLinearColor TextShadow(0.f, 0.f, 0.f, 0.75f);
+
+	/** The backing under the two thumb-column buttons, for the same reason: a
+	 *  translucent tint alone disappears against pale ground, and a control the
+	 *  player cannot find is worse than one they do not like the look of. */
+	const FLinearColor ThumbButtonPlate(0.f, 0.f, 0.f, 0.45f);
 }
 
 void ASarkoHUD::DrawHUD()
@@ -134,8 +143,8 @@ void ASarkoHUD::DrawHUD()
 			ViewportSize.X, ViewportSize.Y, PointScale,
 			ViewportSize.X / PointScale, ViewportSize.Y / PointScale,
 			Digits.Y, Digits.Y / PointScale,
-			SarkoInput::InteractButtonRect(Safe).GetSize().X,
-			SarkoInput::InteractButtonRect(Safe).GetSize().X / PointScale);
+			SarkoInput::InteractButtonRect(Safe, PointScale).GetSize().X,
+			SarkoInput::InteractButtonRect(Safe, PointScale).GetSize().X / PointScale);
 
 		MeasuredAtScale = NewScale;
 	}
@@ -148,6 +157,7 @@ void ASarkoHUD::DrawHUD()
 	DrawAmmo();
 	DrawBackpack();
 	DrawInteract();
+	DrawReload();
 	DrawExtraction();
 	// Last, so the final screen is over everything else rather than under it.
 	DrawOutcomeSummary();
@@ -158,6 +168,8 @@ void ASarkoHUD::InvalidateMeasurements()
 	CachedClockSeconds = -1;
 	CachedReloadingWidth = -1.f;
 	CachedInteractLabelWidth = -1.f;
+	CachedInteractLabel.Reset();
+	CachedReloadLabel.Reset();
 	bPromptCached = false;
 }
 
@@ -468,48 +480,56 @@ void ASarkoHUD::DrawInteract()
 	// deliberately not deleted with them: a stale comment about the branch is how
 	// the branch comes back.
 	const ASarkoCharacter* OwningPawn = Cast<ASarkoCharacter>(GetOwningPawn());
-	const FBox2D Rect = SarkoInput::InteractButtonRect(Safe);
+	const FBox2D Rect = SarkoInput::InteractButtonRect(Safe, PointScale);
 
-	// A container panel is up: this control is the CLOSE button now. Drawn with
-	// an X made of two lines rather than a glyph — no font, no asset, and no
-	// chance of a missing character box on a device. The prompt and the channel
-	// bar are skipped outright: neither means anything while a panel is open,
-	// and the prompt would sit under the clock saying "search" about a crate the
-	// player is already inside.
-	if (OwningPawn && OwningPawn->GetOpenContainerIndex() != INDEX_NONE)
-	{
-		DrawRect(FLinearColor(0.95f, 0.8f, 0.25f, 0.55f),
-			Rect.Min.X, Rect.Min.Y, Rect.GetSize().X, Rect.GetSize().Y);
-
-		const float Inset = Rect.GetSize().X * 0.3f;
-		const float Thickness = FMath::Max(2.f, Px(2.5f));
-		DrawLine(Rect.Min.X + Inset, Rect.Min.Y + Inset, Rect.Max.X - Inset, Rect.Max.Y - Inset,
-			FLinearColor::White, Thickness);
-		DrawLine(Rect.Max.X - Inset, Rect.Min.Y + Inset, Rect.Min.X + Inset, Rect.Max.Y - Inset,
-			FLinearColor::White, Thickness);
-		return;
-	}
-
+	// The label says what the button will DO (spec §4.4). A generic glyph in a
+	// game with two actions is a guess, and the button is always drawn — dim and
+	// BLANK when there is nothing in reach — so the player learns where it is
+	// before they need it and the empty state is honest about there being
+	// nothing to do.
 	const ASarkoLootContainer* Target = PC->GetInteractTarget();
-	const FLinearColor ButtonColour = Target
-		? FLinearColor(0.95f, 0.8f, 0.25f, 0.55f)
-		: FLinearColor(1.f, 1.f, 1.f, 0.15f);
+	const bool bPanelOpen = OwningPawn && OwningPawn->GetOpenContainerIndex() != INDEX_NONE;
+	const SarkoUI::EInteractAction Action = bPanelOpen
+		? SarkoUI::EInteractAction::Close
+		: (Target ? SarkoUI::EInteractAction::Search : SarkoUI::EInteractAction::None);
+
+	// A dark plate under the tint, exactly as every readout on this HUD has one:
+	// the button is drawn over an arbitrary world, and a 0.15-alpha white plate on
+	// pale ground is a control the player cannot find. See TextShadow's comment —
+	// white-on-white is the one failure that no size fixes.
+	DrawRect(ThumbButtonPlate, Rect.Min.X, Rect.Min.Y, Rect.GetSize().X, Rect.GetSize().Y);
+	const FLinearColor ButtonColour = (Action == SarkoUI::EInteractAction::None)
+		? FLinearColor(1.f, 1.f, 1.f, 0.15f)
+		: FLinearColor(0.95f, 0.8f, 0.25f, 0.55f);
 	DrawRect(ButtonColour, Rect.Min.X, Rect.Min.Y, Rect.GetSize().X, Rect.GetSize().Y);
 
-	// One character, but an FString construction and a GetTextSize all the same,
-	// and both were paid every frame for a label that cannot change. Hoisted like
-	// CachedReloadingWidth; the string itself is a static so DrawText below is not
-	// rebuilding it either.
-	static const FString InteractLabel(TEXT("E"));
-	if (CachedInteractLabelWidth < 0.f)
+	const FString Label = SarkoUI::InteractLabelFor(Action);
+	if (!Label.IsEmpty())
 	{
-		const FVector2D LabelSize = MeasurePt(InteractLabel, InteractLabelPt);
-		CachedInteractLabelWidth = LabelSize.X;
-		CachedInteractLabelHeight = LabelSize.Y;
+		// Keyed on the STRING, not on the action: two actions can share a width
+		// and none can share a string. Measured on a change rather than per frame,
+		// because DrawHUD is a tick path.
+		if (Label != CachedInteractLabel || CachedInteractLabelWidth < 0.f)
+		{
+			CachedInteractLabel = Label;
+			const FVector2D LabelSize = MeasurePt(Label, InteractLabelPt);
+			CachedInteractLabelWidth = LabelSize.X;
+			CachedInteractLabelHeight = LabelSize.Y;
+		}
+		DrawTextPt(CachedInteractLabel, FLinearColor::White,
+			Rect.GetCenter().X - CachedInteractLabelWidth * 0.5f,
+			Rect.GetCenter().Y - CachedInteractLabelHeight * 0.5f,
+			InteractLabelPt);
 	}
-	DrawTextPt(InteractLabel, FLinearColor::White,
-		Rect.GetCenter().X - CachedInteractLabelWidth * 0.5f, Rect.GetCenter().Y - CachedInteractLabelHeight * 0.5f,
-		InteractLabelPt);
+
+	// A container panel is up: this control is the CLOSE button now, and the
+	// prompt and the channel bar are skipped outright — neither means anything
+	// while a panel is open, and the prompt would sit under the clock saying
+	// "search" about a crate the player is already inside.
+	if (bPanelOpen)
+	{
+		return;
+	}
 
 	if (!Target)
 	{
@@ -565,6 +585,78 @@ void ASarkoHUD::DrawInteract()
 	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.5f),
 		BarX - Border, BarY - Border, BarWidth + Border * 2.f, BarHeight + Border * 2.f);
 	DrawRect(FLinearColor(0.95f, 0.8f, 0.25f, 0.9f), BarX, BarY, BarWidth * Fraction, BarHeight);
+}
+
+void ASarkoHUD::DrawReload()
+{
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	if (!Pawn || !Pawn->WeaponComponent)
+	{
+		return;
+	}
+
+	// Always drawn, in a rect that takes no game state: the interact button
+	// appearing above it cannot shift it, because both are computed from the safe
+	// frame alone. A control that moves is a control you mis-press (spec §5).
+	const FBox2D Rect = SarkoInput::ReloadButtonRect(Safe, PointScale);
+
+	const USarkoWeaponComponent* Weapon = Pawn->WeaponComponent;
+	const int32 Magazine = GetDefault<USarkoRaidSettings>()->MagazineSize;
+	const SarkoUI::ESarkoReloadState State =
+		SarkoUI::ReloadStateFor(Weapon->GetAmmoInMagazine(), Magazine, Weapon->IsReloading());
+
+	// Spec §4.3: "the magazine count lives on it, it goes amber below a third, and
+	// it pulses when empty. The player should never have to look at two places to
+	// know they need to reload."
+	FLinearColor Fill;
+	FLinearColor Ink;
+	FString Label;
+	switch (State)
+	{
+	case SarkoUI::ESarkoReloadState::Low:
+		Fill = FLinearColor(0.95f, 0.55f, 0.06f, 0.35f);
+		Ink = FLinearColor(1.f, 0.6f, 0.1f, 1.f);
+		Label = FString::FromInt(Weapon->GetAmmoInMagazine());
+		break;
+	case SarkoUI::ESarkoReloadState::Empty:
+		// The pulse is the one animated thing on this HUD, and it is bounded away
+		// from zero: a button that vanishes on the trough reads as absent, not as
+		// urgent.
+		Fill = FLinearColor(0.95f, 0.55f, 0.06f,
+			SarkoUI::ReloadPulseAlpha(GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f));
+		Ink = FLinearColor(1.f, 0.6f, 0.1f, 1.f);
+		Label = TEXT("0");
+		break;
+	case SarkoUI::ESarkoReloadState::Reloading:
+		Fill = FLinearColor(1.f, 1.f, 1.f, 0.10f);
+		Ink = FLinearColor(0.7f, 0.7f, 0.7f, 1.f);
+		Label = TEXT("…");
+		break;
+	default:
+		Fill = FLinearColor(1.f, 1.f, 1.f, 0.15f);
+		Ink = FLinearColor::White;
+		Label = FString::FromInt(Weapon->GetAmmoInMagazine());
+		break;
+	}
+
+	// Dark plate first, state tint over it: see DrawInteract for why.
+	DrawRect(ThumbButtonPlate, Rect.Min.X, Rect.Min.Y, Rect.GetSize().X, Rect.GetSize().Y);
+	DrawRect(Fill, Rect.Min.X, Rect.Min.Y, Rect.GetSize().X, Rect.GetSize().Y);
+
+	// Measured when the string changes — on a shot or a reload — rather than every
+	// frame. DrawHUD is a tick path and an uncached MeasurePt per frame is the
+	// allocation this HUD spent two commits removing.
+	if (Label != CachedReloadLabel)
+	{
+		CachedReloadLabel = Label;
+		const FVector2D Size = MeasurePt(Label, ReloadLabelPt);
+		CachedReloadLabelWidth = Size.X;
+		CachedReloadLabelHeight = Size.Y;
+	}
+	DrawTextPt(CachedReloadLabel, Ink,
+		Rect.GetCenter().X - CachedReloadLabelWidth * 0.5f,
+		Rect.GetCenter().Y - CachedReloadLabelHeight * 0.5f,
+		ReloadLabelPt);
 }
 
 const FString& ASarkoHUD::ZoneNameFor(int32 ZoneIndex)

@@ -105,6 +105,19 @@ public:
 	float MinFireIntervalSeconds = 0.15f;
 
 	/**
+	 * How far the aim thumb must be deflected before the weapon fires (spec §4.2:
+	 * "Hold the aim stick past the dead zone to fire").
+	 *
+	 * Higher than MoveStickDeadZone on purpose, and Sarko.Input.HoldTheAimStickToFire
+	 * asserts it: a movement dead zone only has to reject a resting thumb's drift,
+	 * but a FIRING one has to reject a deliberate small deflection — re-gripping,
+	 * or turning to face a noise — because a shot the player did not mean to take
+	 * gives away their position and empties a magazine they were saving.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Combat")
+	float AimFireDeadZone = 0.35f;
+
+	/**
 	 * The pocket grid, in cells (spec §1.2). 2x2 — always present, never lost
 	 * while alive. Two wide is the number that makes the rule: a 3-wide rifle
 	 * cannot enter it, so the best weapons are uncarryable without a bag, and

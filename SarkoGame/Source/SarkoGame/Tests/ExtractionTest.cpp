@@ -9,6 +9,7 @@
 #include "Loot/SarkoLootTable.h"
 #include "Map/SarkoMapDefinition.h"
 #include "Pawn/SarkoHealthComponent.h"
+#include "UI/SarkoUiScale.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -68,27 +69,32 @@ bool FSarkoInteractButtonAvoidsTheThumbs::RunTest(const FString& Parameters)
 	// the viewport and a fixed pixel offset would leave the screen on one of them.
 	for (const FVector2D Viewport : { FVector2D(2532.f, 1170.f), FVector2D(1280.f, 720.f) })
 	{
-		const FBox2D Rect = SarkoInput::InteractButtonRect(Viewport);
+		const FBox2D Safe = SarkoInput::SafeFrame(Viewport);
+		const float Scale = SarkoUI::PointScaleForViewport(Viewport);
+		const FBox2D Rect = SarkoInput::InteractButtonRect(Safe, Scale);
 
 		TestTrue(TEXT("the button is on screen"),
 			Rect.Min.X >= 0.f && Rect.Min.Y >= 0.f && Rect.Max.X <= Viewport.X && Rect.Max.Y <= Viewport.Y);
-		TestTrue(TEXT("the button is big enough for a thumb (>= 88 px)"),
-			Rect.GetSize().X >= 88.f && Rect.GetSize().Y >= 88.f);
+		// In POINTS now, not pixels: the rule this button has to satisfy is 44 pt,
+		// and the old ">= 88 px" was that rule guessed at one density.
+		TestTrue(TEXT("the button is big enough for a thumb (>= 44 pt)"),
+			Rect.GetSize().X / Scale >= 44.f && Rect.GetSize().Y / Scale >= 44.f);
 
-		// Spec §9: the bottom corners are covered by the thumbs that drive the
-		// sticks. A button there is a button that fights the controls.
-		const float BottomBandY = Viewport.Y * 0.75f;
-		const float LeftBandX = Viewport.X * 0.25f;
-		const float RightBandX = Viewport.X * 0.75f;
-		const bool bInBottomLeft = Rect.Min.Y > BottomBandY && Rect.Min.X < LeftBandX;
-		const bool bInBottomRight = Rect.Min.Y > BottomBandY && Rect.Max.X > RightBandX;
-		TestFalse(TEXT("the button is not in the bottom-left thumb zone"), bInBottomLeft);
-		TestFalse(TEXT("the button is not in the bottom-right thumb zone"), bInBottomRight);
+		// It sits in the right thumb's COLUMN now (spec §4.4: "in the right thumb's
+		// arc, above the reload button") rather than in the vertical centre band it
+		// used to float in. The rule it still has to keep is the one that matters:
+		// it must not sit where a thumb DRIVES a stick. The aim thumb's working
+		// anchor is the measure of that, and the assert is that the button is far
+		// enough from it that working the stick cannot brush the button.
+		const FVector2D Anchor = SarkoInput::RightThumbAnchor(Safe, Scale);
+		const float ToThumb = FMath::Sqrt(Rect.ComputeSquaredDistanceToPoint(Anchor)) / Scale;
+		TestTrue(*FString::Printf(TEXT("the button is %.0f pt clear of the aim thumb's post"), ToThumb),
+			ToThumb > 45.f);
 
-		// Reachable: a button pinned to the very top edge cannot be pressed
-		// without letting go of a stick, which is the whole problem it solves.
-		TestTrue(TEXT("the button sits in the vertical centre band, not against an edge"),
-			Rect.GetCenter().Y > Viewport.Y * 0.3f && Rect.GetCenter().Y < Viewport.Y * 0.7f);
+		// And nowhere near the LEFT thumb, which drives movement and now also has
+		// the container panel over it.
+		TestTrue(TEXT("the button is not in the bottom-left thumb zone"),
+			Rect.Min.X > Viewport.X * 0.5f);
 	}
 	return true;
 }

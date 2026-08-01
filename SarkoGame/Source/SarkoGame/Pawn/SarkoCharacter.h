@@ -77,8 +77,22 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Loot")
 	TObjectPtr<USarkoBackpackComponent> BackpackComponent;
 
-	/** Called by the controller the moment the aim thumb lifts. */
+	/** Called by the controller: on every throttled tick while the aim thumb is
+	 *  held past the fire dead zone, and once on release for a flick that never
+	 *  crossed it (spec §4.2). */
 	void RequestFire();
+
+	/**
+	 * Client intent: reload now, before the magazine is empty.
+	 *
+	 * Spec §4.3 — reloading is a decision with a cost and the player must be able
+	 * to make it BEFORE the magazine runs out; auto-reload-when-empty is the thing
+	 * that gets you killed. The auto-reload safety net is untouched; this simply
+	 * wins if it is pressed first, because StartReload no-ops on the second caller.
+	 *
+	 * Validated server-side like every other request on this pawn.
+	 */
+	void RequestReload();
 
 	/** Where this pawn is aiming, replicated so others see the facing. */
 	UPROPERTY(ReplicatedUsing = OnRep_AimDirection, BlueprintReadOnly, Category = "Combat")
@@ -182,6 +196,17 @@ private:
 	 */
 	UFUNCTION(Server, Reliable)
 	void ServerRequestFire(FVector Direction);
+
+	/**
+	 * Server RPC. Reliable: a dropped reload is a player standing in the open
+	 * pressing a button that does nothing.
+	 *
+	 * Carries no payload at all — there is exactly one weapon and nothing about
+	 * this request the server does not already know, so there is nothing here for
+	 * a hostile client to lie about.
+	 */
+	UFUNCTION(Server, Reliable)
+	void ServerRequestReload();
 
 	/**
 	 * Server RPC. Reliable: a dropped begin would leave a player holding the

@@ -178,9 +178,12 @@ bool FSarkoPanelSitsInTheLeftHalfClearOfTheAimThumb::RunTest(const FString& Para
 	for (const FVector2D Size : { FVector2D(2556.f, 1179.f), FVector2D(1560.f, 720.f), FVector2D(1280.f, 720.f) })
 	{
 		const FBox2D Frame = SarkoInput::SafeFrame(Size);
-		const FBox2D Plate = SarkoUI::InventoryPanelRect(Frame, SarkoUI::PointScaleForViewport(Size));
+		const float PointScale = SarkoUI::PointScaleForViewport(Size);
+		const FBox2D Plate = SarkoUI::InventoryPanelRect(Frame, PointScale);
 		TestFalse(*FString::Printf(TEXT("at %.0fx%.0f the panel does not touch the interact button"), Size.X, Size.Y),
-			Plate.Intersect(SarkoInput::InteractButtonRect(Frame)));
+			Plate.Intersect(SarkoInput::InteractButtonRect(Frame, PointScale)));
+		TestFalse(*FString::Printf(TEXT("at %.0fx%.0f it does not touch the reload button either"), Size.X, Size.Y),
+			Plate.Intersect(SarkoInput::ReloadButtonRect(Frame, PointScale)));
 	}
 	return true;
 }

@@ -36,17 +36,67 @@ namespace SarkoInput
 	FBox2D SafeFrame(FVector2D ViewportSize);
 
 	/**
-	 * Where the on-screen interact button lives, in viewport pixels.
+	 * The thumb column, in points on the 844x390 landscape canvas.
 	 *
-	 * Right-hand side, vertically centred: the bottom corners are covered by
-	 * the thumbs driving the sticks (spec §9), and the very top cannot be
-	 * reached without letting go of one. Computed from the frame rather than
-	 * fixed, so it stays on screen on a phone and in a small desktop window.
+	 * Sized in POINTS and not as a fraction of the frame, which is what the
+	 * interact rect used to be: a fraction is unfalsifiable against a rule written
+	 * in points (">= 44 pt"), and the old max(96 px, shorter axis * 0.14) gave 52
+	 * pt on a phone and 32 pt in a small window while looking like one number.
 	 */
-	FBox2D InteractButtonRect(FBox2D Frame);
+	constexpr float ThumbColumnRightInsetPt = 16.f;
+	constexpr float ReloadButtonSizePt = 56.f;
+	constexpr float InteractButtonWidthPt = 96.f;
+	constexpr float InteractButtonHeightPt = 48.f;
 
-	/** As above, on a screen with no cutouts: the frame is the whole viewport. */
-	FBox2D InteractButtonRect(FVector2D ViewportSize);
+	/** The reload button's bottom edge, above the safe frame's. 96 pt is the room
+	 *  a resting aim thumb and its ~45 pt of stick travel need underneath it. */
+	constexpr float ReloadButtonBottomPt = 96.f;
+
+	/** Between the two buttons. They must NEVER overlap (spec §5), and 12 pt is
+	 *  also enough that a thumb aiming at one cannot clip the other. */
+	constexpr float ThumbButtonGapPt = 12.f;
+
+	/**
+	 * The reload button: right thumb, above the aim stick, inside its arc.
+	 *
+	 * A dedicated button because reloading is a decision with a cost and the
+	 * player must be able to make it BEFORE the magazine runs out —
+	 * auto-reload-when-empty is the thing that gets you killed (spec §4.3).
+	 *
+	 * A pure function of the safe frame and the scale, and of NOTHING else. That
+	 * is what makes "the interact button appearing must not shift the reload
+	 * button" structural rather than a promise someone has to keep.
+	 */
+	FBox2D ReloadButtonRect(FBox2D Frame, float PointScale);
+
+	/**
+	 * The interact button: one 12 pt gap above the reload button, right-aligned to
+	 * the same edge, contextual in its LABEL but never in its position.
+	 *
+	 * It used to shift left when a container panel covered its usual place. The
+	 * panel is in the other half now (spec §4.5), so the shifted rect and the
+	 * function that chose between the two are both gone — and with them the class
+	 * of bug where the button is drawn in one place and pressed in another, which
+	 * the owner experiences as "the button doesn't work".
+	 *
+	 * ONE authority: ASarkoHUD::DrawInteract draws this rect and
+	 * ASarkoPlayerController::UpdateSticks hit-tests this rect. There is no second
+	 * overload and no game-state argument, so they cannot disagree.
+	 */
+	FBox2D InteractButtonRect(FBox2D Frame, float PointScale);
+
+	/**
+	 * Where the aim thumb rests while working its stick. Documentary and
+	 * test-facing: it is what Sarko.Input.ThumbControlsDoNotOverlap measures the
+	 * two rects against, so "inside the thumb's arc" is a number rather than a
+	 * claim.
+	 */
+	FVector2D RightThumbAnchor(FBox2D Frame, float PointScale);
+
+	/** Whether the aim thumb is deflected far enough to be firing. Pure, because
+	 *  it is the difference between a weapon that shoots when you meant to aim and
+	 *  one that does not. */
+	bool ShouldFireWhileHeld(FVector2D AimValue, float FireDeadZone);
 
 	/**
 	 * Whether the left thumb's stick must not be driven this frame.
@@ -216,6 +266,19 @@ public:
 	UFUNCTION(Exec)
 	void SarkoInventoryShot(float Delay);
 
+	/**
+	 * Debug only: sets the magazine to Rounds so the reload button's three states
+	 * can be photographed.
+	 *
+	 * A headless run cannot earn them: Ready is the boot state, Low needs
+	 * twenty-odd shots the run has no finger to fire, and Empty is a state
+	 * auto-reload leaves almost immediately by design. This writes the count
+	 * directly through the weapon's existing test seam and nothing else —
+	 * ASarkoPlayerController::SarkoDebugLoot is the precedent.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugAmmo(int32 Rounds);
+
 private:
 	void UpdateSticks();
 
@@ -316,6 +379,28 @@ private:
 	int32 MoveTouchIndex = INDEX_NONE;
 	int32 AimTouchIndex = INDEX_NONE;
 
-	/** True on the frame the aim thumb lifts — that is when the shot goes off. */
+	/** True on the frame the aim thumb lifts — that is when the flick's shot goes off. */
 	bool bAimReleasedThisFrame = false;
+
+	/** Which touch slot is holding the reload button, or INDEX_NONE. Claimed
+	 *  before stick classification, exactly as InteractTouchIndex is — without it
+	 *  a press on the button would also start an aim drag, and with hold-to-fire
+	 *  that means the reload button shoots. */
+	int32 ReloadTouchIndex = INDEX_NONE;
+
+	/** True once this hold of the aim stick has fired at least once. What makes a
+	 *  flick fire exactly once on release, and a hold not fire a bonus shot when
+	 *  the thumb finally lifts. Reset when the stick is next pressed. */
+	bool bAimFiredThisHold = false;
+
+	/**
+	 * World time of the last fire request this client SENT.
+	 *
+	 * RequestFire is a reliable server RPC. Holding the stick would otherwise send
+	 * one every frame — sixty reliable RPCs a second for a weapon that fires at
+	 * most every MinFireIntervalSeconds — and the server would drop fifty-three of
+	 * them after they had already cost the bandwidth. The server's own rate limit
+	 * stays exactly as it is: this throttle is politeness, not authority.
+	 */
+	float LastLocalFireSeconds = -1000.f;
 };
