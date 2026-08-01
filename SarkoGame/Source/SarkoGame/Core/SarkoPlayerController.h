@@ -11,13 +11,41 @@ namespace SarkoInput
 	bool IsLeftHalf(FVector2D ScreenPosition, FVector2D ViewportSize);
 
 	/**
+	 * The part of the viewport iOS does not cover with a notch, a Dynamic Island
+	 * or the home indicator, in viewport pixels.
+	 *
+	 * Landscape is the whole reason this exists. In portrait the unsafe strips run
+	 * along the top and the bottom, and nothing this HUD anchors to a *side* edge
+	 * is affected. Rotated, the island moves to the leading edge and iOS reports
+	 * the inset on **both** sides — 59 pt each on a 14 Pro, so that turning the
+	 * phone the other way up does not reflow the layout — plus 21 pt of home
+	 * indicator along the bottom. Every element this HUD pins 24 px in from a side
+	 * (the ammo count, the backpack count, the health bar, the interact button)
+	 * lands inside that strip once the game is landscape.
+	 *
+	 * The numbers come from where UCanvas::SafeZonePad* gets them —
+	 * FSlateApplicationBase::GetSafeZoneSize, which iOS fills from the window's
+	 * own safeAreaInsets, already multiplied by the content scale, i.e. in the
+	 * same pixels as the viewport. So this is the device's answer and not a
+	 * guessed constant, and it stays right on a device this code has never seen.
+	 *
+	 * On Mac, and in any headless run where Slate is not initialised, the insets
+	 * are zero and this returns the whole viewport — which is why nothing about
+	 * the desktop layout or the existing tests changes.
+	 */
+	FBox2D SafeFrame(FVector2D ViewportSize);
+
+	/**
 	 * Where the on-screen interact button lives, in viewport pixels.
 	 *
 	 * Right-hand side, vertically centred: the bottom corners are covered by
 	 * the thumbs driving the sticks (spec §9), and the very top cannot be
-	 * reached without letting go of one. Computed from the viewport rather than
+	 * reached without letting go of one. Computed from the frame rather than
 	 * fixed, so it stays on screen on a phone and in a small desktop window.
 	 */
+	FBox2D InteractButtonRect(FBox2D Frame);
+
+	/** As above, on a screen with no cutouts: the frame is the whole viewport. */
 	FBox2D InteractButtonRect(FVector2D ViewportSize);
 }
 

@@ -26,6 +26,9 @@ void ASarkoHUD::DrawHUD()
 		return;
 	}
 
+	// Once per frame, before anything is placed. See the member's comment.
+	Safe = SarkoInput::SafeFrame(FVector2D(Canvas->SizeX, Canvas->SizeY));
+
 	DrawStick(PC->GetMoveStick(), FLinearColor(1.f, 1.f, 1.f, 0.35f));
 	DrawStick(PC->GetAimStick(), FLinearColor(1.f, 0.85f, 0.2f, 0.45f));
 	DrawAimCone();
@@ -112,7 +115,8 @@ void ASarkoHUD::DrawTopBar()
 		GetTextSize(CachedClock, CachedClockWidth, ClockHeight, GEngine->GetLargeFont(), 1.f);
 	}
 
-	DrawText(CachedClock, FLinearColor::White, (Canvas->SizeX - CachedClockWidth) * 0.5f, 24.f, GEngine->GetLargeFont(), 1.f);
+	DrawText(CachedClock, FLinearColor::White, Safe.GetCenter().X - CachedClockWidth * 0.5f, Safe.Min.Y + 24.f,
+		GEngine->GetLargeFont(), 1.f);
 
 	// The player must be able to tell "the raid has not started yet" from "the
 	// crates are broken". Spec §4.6's loud degradation is a log line for the
@@ -125,7 +129,7 @@ void ASarkoHUD::DrawTopBar()
 		float Width = 0.f;
 		float Height = 0.f;
 		GetTextSize(Connecting, Width, Height, GEngine->GetLargeFont(), 1.f);
-		DrawText(Connecting, FLinearColor(1.f, 0.75f, 0.2f), (Canvas->SizeX - Width) * 0.5f, 56.f,
+		DrawText(Connecting, FLinearColor(1.f, 0.75f, 0.2f), Safe.GetCenter().X - Width * 0.5f, Safe.Min.Y + 56.f,
 			GEngine->GetLargeFont(), 1.f);
 	}
 }
@@ -150,8 +154,10 @@ void ASarkoHUD::DrawHealth()
 
 	constexpr float BarWidth = 260.f;
 	constexpr float BarHeight = 14.f;
-	const float BarX = Canvas->SizeX - BarWidth - 24.f;
-	constexpr float BarY = 28.f;
+	// Measured from the safe frame's right edge, not the canvas': in landscape
+	// that edge is 59 pt in from the glass on a notched phone.
+	const float BarX = Safe.Max.X - BarWidth - 24.f;
+	const float BarY = Safe.Min.Y + 28.f;
 
 	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f), BarX - 2.f, BarY - 2.f, BarWidth + 4.f, BarHeight + 4.f);
 
@@ -179,7 +185,8 @@ void ASarkoHUD::DrawHealth()
 	float TextHeight = 0.f;
 	GetTextSize(DeadText, TextWidth, TextHeight, GEngine->GetLargeFont(), 2.f);
 	DrawText(DeadText, FLinearColor(1.f, 0.2f, 0.15f),
-		(Canvas->SizeX - TextWidth) * 0.5f, Canvas->SizeY * 0.42f, GEngine->GetLargeFont(), 2.f);
+		Safe.GetCenter().X - TextWidth * 0.5f, Safe.Min.Y + Safe.GetSize().Y * 0.42f,
+		GEngine->GetLargeFont(), 2.f);
 }
 
 void ASarkoHUD::DrawAmmo()
@@ -210,7 +217,7 @@ void ASarkoHUD::DrawAmmo()
 
 	const FLinearColor Colour = bReloading ? FLinearColor(1.f, 0.6f, 0.1f, 1.f) : FLinearColor::White;
 
-	DrawText(CachedAmmoText, Colour, 24.f, 24.f, GEngine->GetLargeFont(), 1.f);
+	DrawText(CachedAmmoText, Colour, Safe.Min.X + 24.f, Safe.Min.Y + 24.f, GEngine->GetLargeFont(), 1.f);
 }
 
 void ASarkoHUD::DrawBackpack()
@@ -250,12 +257,12 @@ void ASarkoHUD::DrawBackpack()
 		float AmmoHeight = 0.f;
 		GetTextSize(TEXT("RELOADING"), CachedReloadingWidth, AmmoHeight, GEngine->GetLargeFont(), 1.f);
 	}
-	const float X = 24.f + CachedReloadingWidth + 24.f;
+	const float X = Safe.Min.X + 24.f + CachedReloadingWidth + 24.f;
 
 	// Amber when full, so "the crate had more in it" is legible at a glance
 	// rather than being discovered by counting.
 	const FLinearColor Colour = Used >= Limit ? FLinearColor(1.f, 0.6f, 0.1f, 1.f) : FLinearColor::White;
-	DrawText(CachedBackpackText, Colour, X, 24.f, GEngine->GetLargeFont(), 1.f);
+	DrawText(CachedBackpackText, Colour, X, Safe.Min.Y + 24.f, GEngine->GetLargeFont(), 1.f);
 }
 
 void ASarkoHUD::DrawInteract()
@@ -268,7 +275,7 @@ void ASarkoHUD::DrawInteract()
 
 	// The button is always drawn, so the player learns where it is before they
 	// need it; it dims when there is nothing in reach.
-	const FBox2D Rect = SarkoInput::InteractButtonRect(FVector2D(Canvas->SizeX, Canvas->SizeY));
+	const FBox2D Rect = SarkoInput::InteractButtonRect(Safe);
 	const ASarkoLootContainer* Target = PC->GetInteractTarget();
 	const FLinearColor ButtonColour = Target
 		? FLinearColor(0.95f, 0.8f, 0.25f, 0.55f)
@@ -308,8 +315,8 @@ void ASarkoHUD::DrawInteract()
 
 	const float PromptWidth = CachedPromptWidth;
 	const float PromptHeight = CachedPromptHeight;
-	const float PromptX = (Canvas->SizeX - PromptWidth) * 0.5f;
-	constexpr float PromptY = 76.f;
+	const float PromptX = Safe.GetCenter().X - PromptWidth * 0.5f;
+	const float PromptY = Safe.Min.Y + 76.f;
 	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f), PromptX - 10.f, PromptY - 4.f, PromptWidth + 20.f, PromptHeight + 8.f);
 	DrawText(CachedPrompt, FLinearColor::White, PromptX, PromptY, GEngine->GetLargeFont(), 1.f);
 
@@ -332,7 +339,7 @@ void ASarkoHUD::DrawInteract()
 
 	constexpr float BarWidth = 260.f;
 	constexpr float BarHeight = 12.f;
-	const float BarX = (Canvas->SizeX - BarWidth) * 0.5f;
+	const float BarX = Safe.GetCenter().X - BarWidth * 0.5f;
 	const float BarY = PromptY + PromptHeight + 10.f;
 	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.5f), BarX - 2.f, BarY - 2.f, BarWidth + 4.f, BarHeight + 4.f);
 	DrawRect(FLinearColor(0.95f, 0.8f, 0.25f, 0.9f), BarX, BarY, BarWidth * Fraction, BarHeight);
@@ -385,8 +392,8 @@ void ASarkoHUD::DrawExtraction()
 	float Width = 0.f;
 	float Height = 0.f;
 	GetTextSize(Text, Width, Height, GEngine->GetLargeFont(), 1.5f);
-	const float X = (Canvas->SizeX - Width) * 0.5f;
-	constexpr float Y = 130.f;
+	const float X = Safe.GetCenter().X - Width * 0.5f;
+	const float Y = Safe.Min.Y + 130.f;
 	DrawRect(FLinearColor(0.f, 0.25f, 0.05f, 0.55f), X - 14.f, Y - 6.f, Width + 28.f, Height + 12.f);
 	DrawText(Text, FLinearColor(0.55f, 1.f, 0.6f), X, Y, GEngine->GetLargeFont(), 1.5f);
 }
@@ -409,14 +416,16 @@ void ASarkoHUD::DrawOutcomeSummary()
 	}
 
 	// Dim the world so the summary is unmistakably a final screen rather than
-	// another HUD element.
+	// another HUD element. The whole canvas, deliberately: the dim is the only
+	// thing here that should reach under a notch, because a lit strip along the
+	// edge of a dimmed screen reads as a rendering fault.
 	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.55f), 0.f, 0.f, Canvas->SizeX, Canvas->SizeY);
 
 	float TitleWidth = 0.f;
 	float TitleHeight = 0.f;
 	GetTextSize(Title, TitleWidth, TitleHeight, GEngine->GetLargeFont(), 2.5f);
-	float Y = Canvas->SizeY * 0.22f;
-	DrawText(Title, Colour, (Canvas->SizeX - TitleWidth) * 0.5f, Y, GEngine->GetLargeFont(), 2.5f);
+	float Y = Safe.Min.Y + Safe.GetSize().Y * 0.22f;
+	DrawText(Title, Colour, Safe.GetCenter().X - TitleWidth * 0.5f, Y, GEngine->GetLargeFont(), 2.5f);
 	Y += TitleHeight + 24.f;
 
 	// The itemised haul used to be drawn here and now lives in the shelter (spec
@@ -441,6 +450,6 @@ void ASarkoHUD::DrawOutcomeSummary()
 	const FLinearColor ReturningColour = RaidState->bReturningToShelter
 		? FLinearColor(0.8f, 0.8f, 0.8f)
 		: FLinearColor(1.f, 0.65f, 0.2f);
-	DrawText(Returning, ReturningColour, (Canvas->SizeX - Width) * 0.5f, Y,
+	DrawText(Returning, ReturningColour, Safe.GetCenter().X - Width * 0.5f, Y,
 		GEngine->GetLargeFont(), 1.f);
 }
