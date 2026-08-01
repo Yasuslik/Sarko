@@ -405,8 +405,11 @@ void ASarkoHUD::DrawBackpack()
 	}
 
 	const USarkoBackpackComponent* Backpack = Pawn->BackpackComponent;
-	const int32 Used = Backpack->GetUsedSlots();
-	const int32 Limit = Backpack->GetSlotLimit();
+	// Cells, not stacks: with sizes a toolbox costs two, and a readout that said
+	// 1/12 for half a full pocket row would be lying about the only number the
+	// player uses to decide whether to keep looting.
+	const int32 Used = Backpack->GetUsedCells();
+	const int32 Limit = Backpack->GetCellCount();
 
 	// Rebuilt when a slot is taken or the limit changes — a few times a raid —
 	// rather than every frame. Both halves are the key because the limit comes from

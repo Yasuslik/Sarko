@@ -419,7 +419,7 @@ bool ASarkoCharacter::TakeSlotInto(TArray<FSarkoItemStack>& Inventory, int32 Slo
 	}
 
 	return SarkoLoot::TransferOne(Inventory, SlotIndex, Bag, SarkoLoot::GetItemCatalog(),
-		BackpackComponent ? BackpackComponent->GetSlotLimit() : 0) > 0;
+		BackpackComponent ? BackpackComponent->GetCarryPages() : TArray<FSarkoGridPage>()) > 0;
 }
 
 void ASarkoCharacter::TakeAllFrom(int32 ContainerIndex)

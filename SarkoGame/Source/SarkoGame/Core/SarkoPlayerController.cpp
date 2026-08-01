@@ -673,7 +673,7 @@ void ASarkoPlayerController::SarkoDebugLoot(int32 Count)
 	}
 	Pawn->BackpackComponent->SetSlots(Slots);
 	UE_LOG(LogTemp, Display, TEXT("SarkoDebugLoot: bag now %d/%d"),
-		Pawn->BackpackComponent->GetUsedSlots(), Pawn->BackpackComponent->GetSlotLimit());
+		Pawn->BackpackComponent->GetUsedCells(), Pawn->BackpackComponent->GetCellCount());
 #endif
 }
 

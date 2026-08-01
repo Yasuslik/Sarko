@@ -105,22 +105,23 @@ public:
 	float MinFireIntervalSeconds = 0.15f;
 
 	/**
-	 * Pocket cells, carried always (container-inventory spec §2.3). Four is small
-	 * on purpose: it is the number that makes finding a backpack matter, and it is
-	 * the number a player has for the first minute of every raid.
+	 * The pocket grid, in cells (spec §1.2). 2x2 — always present, never lost
+	 * while alive. Two wide is the number that makes the rule: a 3-wide rifle
+	 * cannot enter it, so the best weapons are uncarryable without a bag, and
+	 * nothing has to explain that because the grid refuses.
 	 */
 	UPROPERTY(EditAnywhere, config, Category = "Loot")
-	int32 BasePocketCells = 4;
+	FIntPoint PocketGrid = FIntPoint(2, 2);
 
 	/**
-	 * What a worn backpack adds. 4 + 8 = 12, which is exactly the old fixed
-	 * BackpackSlots — so the backend's plausibility cap on a full haul does not
-	 * move, and only the *start* of a raid got harder. Raising this without
-	 * raising sarko-api's domain.MaxRaidStacks makes full hauls get rejected at
-	 * result time, fifteen minutes after the mistake.
+	 * What a worn backpack adds, as its OWN grid (spec §1.2). 4x2 — 4 + 8 = 12
+	 * cells, which is exactly the total the previous design used, so sarko-api's
+	 * domain.MaxRaidStacks (13 = twelve cells plus the worn bag) does not move.
+	 * Raising either dimension without raising MaxRaidStacks makes full hauls get
+	 * rejected at result time, fifteen minutes after the mistake.
 	 */
 	UPROPERTY(EditAnywhere, config, Category = "Loot")
-	int32 BackpackBonusCells = 8;
+	FIntPoint BackpackGrid = FIntPoint(4, 2);
 
 	/** How close the pawn must be to open a container. Enforced on the server. */
 	UPROPERTY(EditAnywhere, config, Category = "Loot")

@@ -62,6 +62,21 @@ struct FSarkoItemDef
 	UPROPERTY()
 	int32 StackSize = 1;
 
+	/**
+	 * The rectangle this item occupies, in whole cells. No rotation: every item
+	 * is authored in the orientation it occupies (spec §1).
+	 *
+	 * Authored in items.json and REQUIRED there, not defaulted — spec §5 names
+	 * careless sizing as the way the "a rifle needs a backpack" rule quietly
+	 * stops holding, and a field that may be omitted is a field that will be.
+	 * Sarko.Loot.ItemSizesMatchTheDesignTable is the second half of that guard.
+	 */
+	UPROPERTY()
+	int32 Width = 1;
+
+	UPROPERTY()
+	int32 Height = 1;
+
 	UPROPERTY()
 	ESarkoItemCategory Category = ESarkoItemCategory::Junk;
 };

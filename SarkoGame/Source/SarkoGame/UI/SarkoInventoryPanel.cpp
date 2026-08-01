@@ -54,7 +54,7 @@ FBox2D SarkoUI::InteractButtonRectFor(const ASarkoCharacter* Pawn, FBox2D SafeFr
 		return Ordinary;
 	}
 
-	const int32 Cells = Pawn->BackpackComponent ? Pawn->BackpackComponent->GetSlotLimit() : GridColumns;
+	const int32 Cells = Pawn->BackpackComponent ? Pawn->BackpackComponent->GetCellCount() : GridColumns;
 	const FBox2D Panel = InventoryPanelRect(SafeFrame, Cells, PointScale);
 	return SarkoInput::InteractButtonRectBesidePanel(SafeFrame, Panel);
 }
@@ -134,7 +134,7 @@ float SSarkoInventoryPanel::OverlayScale() const
 int32 SSarkoInventoryPanel::PlayerCells() const
 {
 	const ASarkoCharacter* P = Pawn.Get();
-	return (P && P->BackpackComponent) ? P->BackpackComponent->GetSlotLimit() : SarkoUI::GridColumns;
+	return (P && P->BackpackComponent) ? P->BackpackComponent->GetCellCount() : SarkoUI::GridColumns;
 }
 
 FMargin SSarkoInventoryPanel::PanelPadding() const
@@ -651,7 +651,7 @@ void SSarkoInventoryPanel::PlayRefusal(int32 SlotIndex, ESarkoTakeRefusal Reason
 	{
 		if (P->BackpackComponent)
 		{
-			bBagFull = P->BackpackComponent->GetUsedSlots() >= P->BackpackComponent->GetSlotLimit();
+			bBagFull = P->BackpackComponent->GetUsedCells() >= P->BackpackComponent->GetCellCount();
 		}
 	}
 
