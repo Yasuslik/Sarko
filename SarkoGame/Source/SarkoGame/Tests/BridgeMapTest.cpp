@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 
+#include "AI/SarkoBotArchetypes.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Map/SarkoBuildings.h"
 #include "Map/SarkoMapDefinition.h"
@@ -39,6 +40,50 @@ namespace
 			}
 		}
 		return Solid;
+	}
+
+	/**
+	 * Every authored encounter spawn point on the map, flattened, remembering
+	 * which encounter it belongs to.
+	 *
+	 * Since the realism stage the shipped map has NO `botSpawns`: enemies arrive
+	 * from encounters. Every "nothing spawns inside geometry" invariant in this
+	 * file used to walk Map.BotSpawns and would otherwise now be a green verdict
+	 * about an empty array — which is the exact shape of a test that stops
+	 * testing. These points are what those invariants walk instead.
+	 */
+	struct FEncounterPoint
+	{
+		FString Id;
+		FVector Location;
+		FVector2D PostPos;
+		FName Archetype;
+		int32 EncounterIndex = INDEX_NONE;
+		FString EncounterId;
+	};
+
+	TArray<FEncounterPoint> EncounterSpawnPoints(const FSarkoMapDefinition& Map)
+	{
+		TArray<FEncounterPoint> Points;
+		for (int32 Index = 0; Index < Map.Encounters.Num(); ++Index)
+		{
+			for (const FSarkoEncounterSpawn& Spawn : Map.Encounters[Index].Spawns)
+			{
+				Points.Add({ Spawn.Id, Spawn.Location, Spawn.PostPos, Spawn.Archetype, Index, Map.Encounters[Index].Id });
+			}
+		}
+		return Points;
+	}
+
+	/** The number of enemies the tutorial's authored encounters actually put on the map. */
+	int32 TutorialEnemyCount(const FSarkoMapDefinition& Map)
+	{
+		int32 Total = 0;
+		for (const FSarkoEncounter& Encounter : Map.Encounters)
+		{
+			Total += FMath::Min(Encounter.BudgetCost, Encounter.MaxAlive);
+		}
+		return Total;
 	}
 }
 
@@ -100,6 +145,12 @@ bool FSarkoBridgeMapIsValid::RunTest(const FString& Parameters)
 	for (const FSarkoMapProp& Prop : Map.Props)               { CheckInside(Prop.Location, TEXT("a prop")); }
 	for (const FSarkoLootContainerSpot& C : Map.Containers)   { CheckInside(C.Location, TEXT("a container")); }
 	for (const FSarkoBotSpot& B : Map.BotSpawns)              { CheckInside(B.Location, TEXT("a bot spawn")); }
+	const TArray<FEncounterPoint> EncounterPoints = EncounterSpawnPoints(Map);
+	for (const FEncounterPoint& P : EncounterPoints)
+	{
+		CheckInside(P.Location, TEXT("an encounter spawn point"));
+		CheckInside(FVector(P.PostPos.X, P.PostPos.Y, 0.f), TEXT("an encounter post"));
+	}
 
 	// Nobody starts inside geometry — solid geometry, see SolidOnly.
 	const TArray<FSarkoCoverBlock> SolidBlocks = SolidOnly(Map.Blocks);
@@ -115,6 +166,13 @@ bool FSarkoBridgeMapIsValid::RunTest(const FString& Parameters)
 		TestFalse(TEXT("no bot spawn sits inside a block"),
 			SarkoMap::IsPointInsideBlocksXY(FVector2D(Bot.Location.X, Bot.Location.Y), SolidBlocks));
 	}
+	for (const FEncounterPoint& Point : EncounterPoints)
+	{
+		TestFalse(FString::Printf(TEXT("encounter spawn point '%s' does not sit inside a block"), *Point.Id),
+			SarkoMap::IsPointInsideBlocksXY(FVector2D(Point.Location.X, Point.Location.Y), SolidBlocks));
+		TestFalse(FString::Printf(TEXT("the post of '%s' is not inside a block"), *Point.Id),
+			SarkoMap::IsPointInsideBlocksXY(Point.PostPos, SolidBlocks));
+	}
 
 	// Every prop kind resolves, or that prop silently does not appear.
 	for (const FSarkoMapProp& Prop : Map.Props)
@@ -127,7 +185,12 @@ bool FSarkoBridgeMapIsValid::RunTest(const FString& Parameters)
 	// Content density: the frame must not be an empty plain.
 	TestTrue(TEXT("there are at least 12 points of interest worth of props"), Map.Props.Num() >= 40);
 	TestTrue(TEXT("there is loot to find"), Map.Containers.Num() >= 15);
-	TestTrue(TEXT("there are bots"), Map.BotSpawns.Num() >= 6);
+	// "There are bots" moved from botSpawns to encounters with the realism
+	// stage. Written against the encounters rather than the (now empty) bot
+	// array on purpose: a count of an array nobody fills is a green verdict
+	// about nothing.
+	TestTrue(TEXT("there are enemies to meet"), Map.Encounters.Num() >= 3);
+	TestTrue(TEXT("and a ceiling on how many"), Map.EncounterBudget.bAuthored);
 	return true;
 }
 
@@ -188,6 +251,13 @@ bool FSarkoBridgeRiskGradientExists::RunTest(const FString& Parameters)
 	for (const FSarkoBotSpot& Bot : Map.BotSpawns)
 	{
 		(Bot.Location.Y > 0.f ? NearBots : FarBots)++;
+	}
+	// Posts, not spawn points: where a bot HOLDS is where the danger is. A spawn
+	// point is a door that has to be far from the player at one instant; the
+	// post is the ground the player has to cross.
+	for (const FEncounterPoint& Point : EncounterSpawnPoints(Map))
+	{
+		(Point.PostPos.Y > 0.f ? NearBots : FarBots)++;
 	}
 	TestTrue(TEXT("the far half holds more bots than the near half"), FarBots > NearBots);
 
@@ -274,6 +344,13 @@ bool FSarkoBridgeBuildingsAreEnterable::RunTest(const FString& Parameters)
 	{
 		TestFalse(FString::Printf(TEXT("bot '%s' does not spawn inside a wall"), *Bot.Id),
 			SarkoMap::IsPointInsideBlocksXY(FVector2D(Bot.Location.X, Bot.Location.Y), SolidCover));
+	}
+	for (const FEncounterPoint& Point : EncounterSpawnPoints(Map))
+	{
+		TestFalse(FString::Printf(TEXT("encounter spawn point '%s' is not inside a wall"), *Point.Id),
+			SarkoMap::IsPointInsideBlocksXY(FVector2D(Point.Location.X, Point.Location.Y), SolidCover));
+		TestFalse(FString::Printf(TEXT("the post of '%s' is not inside a wall"), *Point.Id),
+			SarkoMap::IsPointInsideBlocksXY(Point.PostPos, SolidCover));
 	}
 	// ТЗ §29: "перед контейнером 120 uu свободно" — a container buried in a wall
 	// cannot be looted, and a building wall is the easiest thing to bury one in.
@@ -490,9 +567,17 @@ bool FSarkoBridgeStaysInsideTheActorBudget::RunTest(const FString& Parameters)
 	// "One prop field" is the whole of this task's effect on this number. Every
 	// prop part in the sector is an instance inside ASarkoPropField now, not an
 	// actor of its own.
+	//
+	// The bot term is now the ENCOUNTER BUDGET rather than the botSpawns count,
+	// and it is charged in full even though it is never all standing at once:
+	// the budget is the ceiling on how many enemy pawns can exist in one raid,
+	// which is exactly what an actor budget wants to know. In practice the
+	// sector bills fewer — the first ninety seconds of a raid replicate zero
+	// enemies now, against six from second zero before.
 	const FSarkoMapLayout Layout = SarkoMap::ToLayout(Map);
+	const int32 BudgetedEnemies = Map.BotSpawns.Num() + FMath::Max(Map.EncounterBudget.Tutorial, Map.EncounterBudget.Normal);
 	const int32 Actors = 1 + Layout.Cover.Num() + 1
-		+ Map.Containers.Num() + Map.Extractions.Num() + Map.BotSpawns.Num() + 1 + 2;
+		+ Map.Containers.Num() + Map.Extractions.Num() + BudgetedEnemies + 1 + 2;
 	const int32 PropComponents = SarkoMap::CountInstancedComponents(Map);
 	const int32 PropParts = SarkoMap::CountPropParts(Map);
 
@@ -580,9 +665,59 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 	// docs/design/bridge-full-map-tz.md as the acceptance bar for Stage D; this
 	// is the bar for the sector that ships now.
 	TestEqual(TEXT("nineteen containers"), Map.Containers.Num(), 19);
-	TestEqual(TEXT("six bots"), Map.BotSpawns.Num(), 6);
 	TestEqual(TEXT("four player spawns"), Map.PlayerSpawns.Num(), 4);
 	TestEqual(TEXT("three extractions, one of them reachable"), Map.Extractions.Num(), 3);
+
+	// THE SIX POSTED BOTS ARE GONE. Owner decision: three to five enemies for
+	// the whole tutorial raid, every one of them an event. They are replaced by
+	// three encounters costing 1 + 1 + 2 against a budget of 4 — one at the gas
+	// station, one on the depot approach, two in the warehouse, and a quiet walk
+	// home. The `botSpawns` shape stays supported for non-tutorial content; this
+	// map simply authors none.
+	TestEqual(TEXT("no statically posted bots"), Map.BotSpawns.Num(), 0);
+	TestEqual(TEXT("three encounters"), Map.Encounters.Num(), 3);
+	TestEqual(TEXT("a tutorial budget of four"), Map.EncounterBudget.Tutorial, 4);
+	TestEqual(TEXT("and the first fight is one enemy"), Map.EncounterBudget.FirstFightMaxAlive, 1);
+
+	int32 TotalCost = 0;
+	for (const FSarkoEncounter& Encounter : Map.Encounters)
+	{
+		TotalCost += Encounter.BudgetCost;
+	}
+	TestEqual(TEXT("the three encounters spend the tutorial budget exactly"), TotalCost, Map.EncounterBudget.Tutorial);
+	TestEqual(TEXT("and put four enemies on the map, in the order 1, 1, 2"), TutorialEnemyCount(Map), 4);
+
+	// Order is what makes "the first fight is the gas station" data rather than
+	// luck: it is the tie-break when two triggers arm in the same evaluation.
+	TArray<const FSarkoEncounter*> ByOrder;
+	for (const FSarkoEncounter& Encounter : Map.Encounters)
+	{
+		ByOrder.Add(&Encounter);
+	}
+	ByOrder.Sort([](const FSarkoEncounter& A, const FSarkoEncounter& B) { return A.Order < B.Order; });
+	TestEqual(TEXT("the gas station is first"), ByOrder[0]->Id, FString(TEXT("bridge_enc_gas_station")));
+	TestEqual(TEXT("and it is one enemy"), ByOrder[0]->MaxAlive, 1);
+	TestEqual(TEXT("the depot approach is second"), ByOrder[1]->Id, FString(TEXT("bridge_enc_depot_approach")));
+	TestEqual(TEXT("also one"), ByOrder[1]->MaxAlive, 1);
+	TestEqual(TEXT("the warehouse is last"), ByOrder[2]->Id, FString(TEXT("bridge_enc_rail_warehouse")));
+	TestEqual(TEXT("and it is the two-bot fight the escalation builds to"), ByOrder[2]->MaxAlive, 2);
+	for (const FSarkoEncounter& Encounter : Map.Encounters)
+	{
+		TestTrue(FString::Printf(TEXT("tutorial encounter '%s' is one-shot"), *Encounter.Id), Encounter.bOneShot);
+	}
+
+	// Two triggers that overlap are two events that happen at once, which is how
+	// a 1/1/2 escalation collapses into a single four-bot moment. The gas
+	// station and the depot approach deliberately DO overlap (the route is only
+	// 8600 uu long and the gas trigger arms 2600 uu before the station), so this
+	// is asserted for the pair it matters for: the last two, which are the ones
+	// that would otherwise put three enemies on the map in one breath.
+	{
+		const float Separation = FVector2D::Distance(ByOrder[1]->Trigger.Location, ByOrder[2]->Trigger.Location);
+		TestTrue(FString::Printf(TEXT("the depot approach and the warehouse triggers do not overlap (%.0f uu apart, radii %.0f + %.0f)"),
+			Separation, ByOrder[1]->Trigger.RadiusUU, ByOrder[2]->Trigger.RadiusUU),
+			Separation > ByOrder[1]->Trigger.RadiusUU + ByOrder[2]->Trigger.RadiusUU);
+	}
 
 	// 3 junk / 7 common / 6 good / 1 med / 2 military.
 	TMap<FName, int32> Tiers;
@@ -615,29 +750,103 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 		TestTrue(FString::Printf(TEXT("bot '%s' is inside the active third"), *Bot.Id),
 			InActiveThird(Bot.Location));
 	}
+	for (const FEncounterPoint& Point : EncounterSpawnPoints(Map))
+	{
+		TestTrue(FString::Printf(TEXT("encounter spawn point '%s' is inside the active third"), *Point.Id),
+			InActiveThird(Point.Location));
+		TestTrue(FString::Printf(TEXT("the post of '%s' is inside the active third"), *Point.Id),
+			InActiveThird(FVector(Point.PostPos.X, Point.PostPos.Y, 0.f)));
+	}
+	for (const FSarkoEncounter& Encounter : Map.Encounters)
+	{
+		TestTrue(FString::Printf(TEXT("the trigger of '%s' is inside the active third"), *Encounter.Id),
+			InActiveThird(FVector(Encounter.Trigger.Location.X, Encounter.Trigger.Location.Y, 0.f)));
+	}
 	for (const FTransform& Spawn : Map.PlayerSpawns)
 	{
 		TestTrue(TEXT("every player spawn is inside the active third"),
 			InActiveThird(Spawn.GetLocation()));
 	}
 
-	// ТЗ §11: the first fight is one bot. Eight bots that all heard the player
-	// and converged turned a firefight into an execution once already, and the
-	// hearing radius is 1800 uu — so no two bots may be able to hear the same
-	// shot. This is the whole reason six positions were chosen by hand.
-	for (int32 A = 0; A < Map.BotSpawns.Num(); ++A)
+	// THE PLACEMENT INVARIANT, REPLACED.
+	//
+	// What this used to assert: every pair of bot posts is >= 1800 uu apart. It
+	// tested the wrong thing, and the map it was protecting failed the right one
+	// while passing this one. Distance between two bots is not what hurts the
+	// player — what hurts the player is standing on a point they MUST stand on
+	// and being inside two bots' hearing at the same time. Measured on the
+	// shipped map before this change: bridge_loot_rail_mil_01, the pistol, the
+	// tutorial's climax, was 1170 uu from bridge_bot_rail_west and 1414 uu from
+	// bridge_bot_rail_warehouse — inside both, at the moment the player has the
+	// least to fight with. Every pair test passed.
+	//
+	// So: containers, not bot pairs. For every container and every extraction,
+	// the posts that can hear it must all belong to AT MOST ONE ENCOUNTER. Two
+	// bots from the SAME encounter hearing one crate is the authored two-bot
+	// fight (the warehouse is exactly that, on purpose). Two bots from two
+	// unrelated encounters converging on it is the bug.
+	//
+	// Hearing is per archetype, not the project default: the whole reason
+	// archetypes carry their own hearing radius is that "how far a bot listens"
+	// is a property of the bot.
 	{
-		for (int32 B = A + 1; B < Map.BotSpawns.Num(); ++B)
+		const TArray<FEncounterPoint> Posts = EncounterSpawnPoints(Map);
+		TArray<TPair<FString, FVector2D>> MustStandOn;
+		for (const FSarkoLootContainerSpot& Spot : Map.Containers)
 		{
-			const float Distance = FVector2D(
-				Map.BotSpawns[A].Location.X - Map.BotSpawns[B].Location.X,
-				Map.BotSpawns[A].Location.Y - Map.BotSpawns[B].Location.Y).Size();
-			TestTrue(FString::Printf(TEXT("bots '%s' and '%s' are %.0f uu apart (>= 1800)"),
-				*Map.BotSpawns[A].Id, *Map.BotSpawns[B].Id, Distance), Distance >= 1800.f);
+			MustStandOn.Emplace(Spot.Id, FVector2D(Spot.Location.X, Spot.Location.Y));
 		}
+		for (const FSarkoExtractionSpot& Spot : Map.Extractions)
+		{
+			MustStandOn.Emplace(Spot.Id, FVector2D(Spot.Location.X, Spot.Location.Y));
+		}
+
+		int32 HeardByAnyone = 0;
+		for (const TPair<FString, FVector2D>& Point : MustStandOn)
+		{
+			TSet<int32> ListeningEncounters;
+			FString Listeners;
+			for (const FEncounterPoint& Post : Posts)
+			{
+				FSarkoBotArchetype Archetype;
+				if (!SarkoAI::FindBotArchetype(Post.Archetype, Archetype))
+				{
+					// Sarko.Map.BridgeMapIsValid is not the test that fails for
+					// this; the PARSER is, at load. Reaching here means the table
+					// and the parser have drifted apart.
+					AddError(FString::Printf(TEXT("'%s' has archetype '%s', which is not in the archetype table"),
+						*Post.Id, *Post.Archetype.ToString()));
+					continue;
+				}
+				const float Distance = FVector2D::Distance(Point.Value, Post.PostPos);
+				if (Distance <= Archetype.HearingRadiusUU)
+				{
+					ListeningEncounters.Add(Post.EncounterIndex);
+					Listeners += FString::Printf(TEXT("%s (%s, %.0f uu of %.0f) "),
+						*Post.Id, *Post.EncounterId, Distance, Archetype.HearingRadiusUU);
+				}
+			}
+			if (ListeningEncounters.Num() > 0)
+			{
+				++HeardByAnyone;
+			}
+			TestTrue(FString::Printf(
+				TEXT("'%s' is inside the hearing of at most one encounter's posts — heard by: %s"),
+				*Point.Key, Listeners.IsEmpty() ? TEXT("nobody") : *Listeners),
+				ListeningEncounters.Num() <= 1);
+		}
+
+		// A guard against the guard. If every post drifted out of earshot of
+		// every container this test would pass by testing nothing — and a map
+		// where no crate is ever guarded is a map with no tension in it.
+		TestTrue(FString::Printf(TEXT("some containers ARE guarded (%d of %d points are heard by someone)"),
+			HeardByAnyone, MustStandOn.Num()), HeardByAnyone >= 4);
 	}
 
-	// ТЗ §8: "бот не виден при появлении". The nearest bot is a whole zone away.
+	// ТЗ §8: "бот не виден при появлении". The nearest post is a whole zone
+	// away, so a raid cannot begin within earshot of anything. With encounters
+	// this is doubly true — nothing is spawned at all until the player walks to
+	// a POI — but the authored geometry still has to hold on its own.
 	for (const FTransform& Spawn : Map.PlayerSpawns)
 	{
 		for (const FSarkoBotSpot& Bot : Map.BotSpawns)
@@ -647,6 +856,29 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 				Spawn.GetLocation().Y - Bot.Location.Y).Size();
 			TestTrue(FString::Printf(TEXT("bot '%s' is not visible from a spawn (%.0f uu)"),
 				*Bot.Id, Distance), Distance >= 6000.f);
+		}
+		for (const FEncounterPoint& Point : EncounterSpawnPoints(Map))
+		{
+			const float Distance = FVector2D::Distance(
+				FVector2D(Spawn.GetLocation().X, Spawn.GetLocation().Y),
+				FVector2D(Point.Location.X, Point.Location.Y));
+			TestTrue(FString::Printf(TEXT("encounter spawn point '%s' is not visible from a player spawn (%.0f uu)"),
+				*Point.Id, Distance), Distance >= 6000.f);
+		}
+	}
+
+	// And the trigger circles cannot reach the spawn camp: an encounter that
+	// arms while the player is still choosing which crate to open would put an
+	// enemy on the map before the raid has taught anything.
+	for (const FTransform& Spawn : Map.PlayerSpawns)
+	{
+		for (const FSarkoEncounter& Encounter : Map.Encounters)
+		{
+			const float Distance = FVector2D::Distance(
+				FVector2D(Spawn.GetLocation().X, Spawn.GetLocation().Y), Encounter.Trigger.Location);
+			TestTrue(FString::Printf(TEXT("the trigger of '%s' does not reach a player spawn (%.0f uu, radius %.0f)"),
+				*Encounter.Id, Distance, Encounter.Trigger.RadiusUU),
+				Distance > Encounter.Trigger.RadiusUU + 6000.f);
 		}
 	}
 
@@ -842,6 +1074,16 @@ bool FSarkoBridgeSpawnsClearTheProps::RunTest(const FString& Parameters)
 	{
 		Points.Emplace(Bot.Id, FVector2D(Bot.Location.X, Bot.Location.Y));
 	}
+	// Encounter spawn points are exactly the case this test exists for: the
+	// original bug was a hand-placed bot inside a freight car, and an encounter
+	// spawn point is the same hand-placed coordinate under a new key. The post
+	// is checked too — a bot that holds inside a solid prop cannot patrol.
+	const TArray<FEncounterPoint> EncounterPoints = EncounterSpawnPoints(Map);
+	for (const FEncounterPoint& Point : EncounterPoints)
+	{
+		Points.Emplace(Point.Id, FVector2D(Point.Location.X, Point.Location.Y));
+		Points.Emplace(Point.Id + TEXT(" (post)"), Point.PostPos);
+	}
 	for (const FSarkoLootContainerSpot& Spot : Map.Containers)
 	{
 		Points.Emplace(Spot.Id, FVector2D(Spot.Location.X, Spot.Location.Y));
@@ -863,9 +1105,9 @@ bool FSarkoBridgeSpawnsClearTheProps::RunTest(const FString& Parameters)
 		}
 	}
 
-	TestEqual(TEXT("every player spawn, bot spawn and container was checked"), Points.Num(),
-		Map.PlayerSpawns.Num() + Map.BotSpawns.Num() + Map.Containers.Num());
-	TestTrue(FString::Printf(TEXT("the ledger's 4 spawns, 6 bots and 19 containers were checked (%d)"),
+	TestEqual(TEXT("every player spawn, bot spawn, encounter point and container was checked"), Points.Num(),
+		Map.PlayerSpawns.Num() + Map.BotSpawns.Num() + EncounterPoints.Num() * 2 + Map.Containers.Num());
+	TestTrue(FString::Printf(TEXT("the ledger's 4 spawns, 7 encounter points (and their posts) and 19 containers were checked (%d)"),
 		Points.Num()), Points.Num() >= 29);
 	TestEqual(TEXT("every point was compared against every solid part"),
 		Comparisons, Points.Num() * SolidParts.Num());
