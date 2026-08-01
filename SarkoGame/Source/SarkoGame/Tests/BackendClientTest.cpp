@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 
+#include "Core/SarkoGameInstance.h"
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Dom/JsonObject.h"
@@ -672,6 +673,84 @@ bool FSarkoCraftResponseIsParsed::RunTest(const FString& Parameters)
 	TestEqual(TEXT("and it is the swamp"), New[0], FString(TEXT("swamp")));
 	TestEqual(TEXT("crafting nothing new opens nothing"),
 		SarkoShelter::NewlyUnlockedMaps(After, After).Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoAnUnsentHaulSurvives,
+	"Sarko.Backend.AnUnsentHaulSurvives",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoAnUnsentHaulSurvives::RunTest(const FString& Parameters)
+{
+	// A raid result is the one thing this game produces that cannot be recreated:
+	// the session token is single-use, the haul is already gone from the world,
+	// and an unsubmitted session expires on the server and closes as `died`. One
+	// attempt is all a timeout or an iOS suspension needs to destroy it, so the
+	// result goes to disk before the first attempt and comes back on next launch.
+
+	// The backoff. Exponential from 2, capped at 60: about two minutes of trying
+	// per launch, and never a tight loop against a server that is down.
+	TestEqual(TEXT("the first retry waits 2 s"),
+		SarkoResult::RetryDelaySeconds(0, 2.f, 60.f), 2.f, 0.001f);
+	TestEqual(TEXT("then 4"), SarkoResult::RetryDelaySeconds(1, 2.f, 60.f), 4.f, 0.001f);
+	TestEqual(TEXT("then 8"), SarkoResult::RetryDelaySeconds(2, 2.f, 60.f), 8.f, 0.001f);
+	TestEqual(TEXT("then 16"), SarkoResult::RetryDelaySeconds(3, 2.f, 60.f), 16.f, 0.001f);
+	TestEqual(TEXT("then 32"), SarkoResult::RetryDelaySeconds(4, 2.f, 60.f), 32.f, 0.001f);
+	TestEqual(TEXT("and then the cap, not 64"),
+		SarkoResult::RetryDelaySeconds(5, 2.f, 60.f), 60.f, 0.001f);
+	TestEqual(TEXT("a far-future attempt is still the cap, never an overflow"),
+		SarkoResult::RetryDelaySeconds(400, 2.f, 60.f), 60.f, 0.001f);
+
+	// The round trip through the file's shape. This is what an app kill has to
+	// leave behind, so every field the submission needs must come back.
+	FSarkoPendingResult Pending;
+	Pending.SessionId = TEXT("11111111-2222-3333-4444-555555555555");
+	Pending.SessionToken = TEXT("a-one-time-token");
+	Pending.Outcome = TEXT("extracted");
+	Pending.Items.Add(FSarkoItemStack{ TEXT("ammo_9mm"), 46 });
+	Pending.Items.Add(FSarkoItemStack{ TEXT("backpack"), 1 });
+
+	FSarkoPendingResult Restored;
+	FString Error;
+	TestTrue(TEXT("a written result reads back"),
+		SarkoResult::ParsePending(SarkoResult::SerialisePending(Pending), Restored, Error));
+	TestEqual(TEXT("the session survives"), Restored.SessionId, Pending.SessionId);
+	TestEqual(TEXT("the TOKEN survives, without which the haul cannot be claimed at all"),
+		Restored.SessionToken, Pending.SessionToken);
+	TestEqual(TEXT("the outcome survives as the wire word, not an enum"),
+		Restored.Outcome, Pending.Outcome);
+	TestEqual(TEXT("both stacks survive"), Restored.Items.Num(), 2);
+	if (Restored.Items.Num() == 2)
+	{
+		TestEqual(TEXT("with their ids"), Restored.Items[0].Item, FName(TEXT("ammo_9mm")));
+		TestEqual(TEXT("and their quantities"), Restored.Items[0].Quantity, 46);
+		TestEqual(TEXT("and the worn bag"), Restored.Items[1].Item, FName(TEXT("backpack")));
+	}
+
+	// A KIA result carries no haul and is still worth submitting: the session has
+	// to be closed or it expires as one anyway, and the shelter's label depends on
+	// it.
+	FSarkoPendingResult Empty;
+	Empty.SessionId = TEXT("s");
+	Empty.SessionToken = TEXT("t");
+	Empty.Outcome = TEXT("died");
+	TestTrue(TEXT("an empty haul is still a result"),
+		SarkoResult::ParsePending(SarkoResult::SerialisePending(Empty), Restored, Error));
+	TestEqual(TEXT("with no items"), Restored.Items.Num(), 0);
+
+	// A file killed halfway through the write is refused rather than submitted as
+	// a haul with no token, which the server would answer 401 to forever.
+	TestFalse(TEXT("a truncated file is refused"),
+		SarkoResult::ParsePending(TEXT("{\"session_id\":\"s\",\"sess"), Restored, Error));
+	TestFalse(TEXT("a result with no token is refused"),
+		SarkoResult::ParsePending(TEXT("{\"session_id\":\"s\",\"outcome\":\"died\",\"items\":[]}"),
+			Restored, Error));
+	TestFalse(TEXT("...and it says why"), Error.IsEmpty());
+
+	// And it must land somewhere that survives the app, not somewhere temporary.
+	TestTrue(TEXT("the pending result lives under Saved/"),
+		SarkoResult::PendingResultPath().Contains(TEXT("Saved")));
 	return true;
 }
 

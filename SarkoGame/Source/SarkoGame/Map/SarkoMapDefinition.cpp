@@ -942,6 +942,26 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 				return false;
 			}
 			Spot.RadiusUU = static_cast<float>(RadiusUU);
+
+			// Optional, and absent means "open from the first frame" — which is
+			// three of the four zones on this map. Negative is refused rather than
+			// clamped: it can only be a typo, and a zone that reads as "opens
+			// 600 seconds ago" is a zone whose author meant something else.
+			double OpensAfterSeconds = 0.0;
+			if (!ReadOptionalNumber(*Object, TEXT("opensAfterSeconds"), OpensAfterSeconds, OutError))
+			{
+				OutError = FString::Printf(TEXT("extractions[%d]: %s"), Index, *OutError);
+				return false;
+			}
+			if (OpensAfterSeconds < 0.0)
+			{
+				OutError = FString::Printf(
+					TEXT("extractions[%d]: 'opensAfterSeconds' must not be negative, found %.1f"),
+					Index, OpensAfterSeconds);
+				return false;
+			}
+			Spot.OpensAfterSeconds = static_cast<float>(OpensAfterSeconds);
+
 			if (!ReadOptionalString(*Object, TEXT("name"), Spot.Name, OutError))
 			{
 				OutError = FString::Printf(TEXT("extractions[%d]: %s"), Index, *OutError);

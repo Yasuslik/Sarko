@@ -851,6 +851,12 @@ void ASarkoRaidGameMode::Tick(float DeltaSeconds)
 	}
 	const float RequiredDwell = FMath::Max(0.1f, GetDefault<USarkoRaidSettings>()->ExtractDwellSeconds);
 
+	// Raid-clock seconds since ActivateRaid, from the clock this game mode
+	// started and the remaining time it owns — never from a wall clock and never
+	// from anything a client sends. This is what a late-opening zone is measured
+	// against (SarkoExtract::IsZoneOpen).
+	const float ElapsedSeconds = FMath::Max(0.f, MapClockSeconds() - RaidState->RemainingSeconds);
+
 	// Prune pawns that are gone instead of letting the map grow for the whole
 	// raid. Cheap: it is one entry per living player, not per actor.
 	for (auto Entry = Dwells.CreateIterator(); Entry; ++Entry)
@@ -872,12 +878,29 @@ void ASarkoRaidGameMode::Tick(float DeltaSeconds)
 		// The server's own copy of the pawn, never a client-supplied position —
 		// the same rule the loot channel follows.
 		const int32 ZoneIndex = SarkoExtract::FindZoneContaining(Pawn->GetActorLocation(), Zones);
+
+		// A zone that has not opened yet accrues NOTHING. The gate is here, on the
+		// authority, and not in the HUD that draws the zone as inert: the HUD is
+		// telling the player something, this is deciding it. Standing on a closed
+		// pad from second one and stepping off the instant it opens must not be a
+		// free extraction, so the dwell is advanced as if the pawn were outside
+		// every zone — which resets it, per AdvanceDwellInZone's first rule.
+		const bool bOpen = Zones.IsValidIndex(ZoneIndex)
+			&& SarkoExtract::IsZoneOpen(Zones[ZoneIndex].OpensAfterSeconds, ElapsedSeconds);
+		const int32 CountingZone = bOpen ? ZoneIndex : INDEX_NONE;
+
 		SarkoExtract::FSarkoDwell& Dwell = Dwells.FindOrAdd(Pawn);
-		Dwell = SarkoExtract::AdvanceDwellInZone(Dwell, ZoneIndex, DeltaSeconds);
+		Dwell = SarkoExtract::AdvanceDwellInZone(Dwell, CountingZone, DeltaSeconds);
 
 		// Replicated to the owner only, so that pawn's HUD can draw a countdown
 		// without anyone else learning that somebody is extracting.
-		Pawn->SetExtractProgress(Dwell.ZoneIndex, Dwell.Seconds);
+		//
+		// The zone the pawn is PHYSICALLY in, even when it is shut: the HUD needs
+		// to name the zone it is standing on to say how long it stays shut, and
+		// the dwell it is handed is the counted one, which for a closed zone is
+		// zero. Openness is re-derived on the client from the same map file, so
+		// nothing extra crosses the wire for it.
+		Pawn->SetExtractProgress(ZoneIndex, Dwell.Seconds);
 
 		// Dwell.ZoneIndex rather than the local ZoneIndex: they agree, and reading
 		// the state that was actually counted is what stops the two drifting if
@@ -1037,35 +1060,24 @@ void ASarkoRaidGameMode::FinishRaid(ESarkoRaidOutcome NewOutcome)
 		return;
 	}
 
-	// The client is captured by *strong* reference on purpose, unlike every other
-	// hop in this file. A raid can end moments before the world goes away — and
-	// after this task, it always does: ReturnToShelter travels away a few seconds
-	// later. The game instance is now a second owner, so this capture is belt to
-	// those braces; it stays because the lambda must survive even engine shutdown,
-	// where the game instance goes too. Nothing here touches the game mode.
-	Backend->SubmitResult(Session, SarkoBackend::OutcomeToWire(NewOutcome), Haul,
-		[Keep = Backend, Wire = FString(SarkoBackend::OutcomeToWire(NewOutcome)),
-		 WeakInstance = TWeakObjectPtr<USarkoGameInstance>(GetGameInstance<USarkoGameInstance>())]
-		(bool bSuccess, const FString& Error)
-		{
-			if (bSuccess)
-			{
-				UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: result '%s' submitted"), *Wire);
-			}
-			else
-			{
-				UE_LOG(LogTemp, Error,
-					TEXT("SarkoRaidGameMode: the raid result '%s' was NOT saved: %s. The session expires on the server and closes as died."),
-					*Wire, *Error);
-			}
-			// The shelter's "НЕ ЗБЕРЕЖЕНО" label is corrected here if the submission
-			// beat the travel, which it normally does. The game instance survives
-			// the travel, so this lands whichever world is current.
-			if (USarkoGameInstance* Instance = WeakInstance.Get())
-			{
-				Instance->LastRaid.bPersisted = bSuccess;
-			}
-		});
+	// THE SUBMISSION IS NOT THIS OBJECT'S ANY MORE, and that is the fix. It used
+	// to be one attempt, started here, with the client captured strongly so it
+	// could outlive the travel — but one attempt is all a timeout or an iOS
+	// suspension needs to destroy a legitimate haul, and a retry SCHEDULE cannot
+	// live in a game mode that is about to be destroyed by ReturnToShelter.
+	//
+	// The game instance owns it now: it writes the result to Saved/ before the
+	// first attempt, retries with backoff on its own timer manager (which survives
+	// the travel), and picks the file up again on the next launch if the app dies
+	// mid-flight. The server dedups by session token, so a resubmission of one it
+	// already took costs nothing.
+	//
+	// Nothing below waits for any of it. ReturnToShelter is called immediately and
+	// the travel is never held hostage to the network.
+	if (USarkoGameInstance* Instance = GetGameInstance<USarkoGameInstance>())
+	{
+		Instance->SubmitRaidResultWithRetry(Session, SarkoBackend::OutcomeToWire(NewOutcome), Haul);
+	}
 
 	// Recorded as not-yet-persisted and corrected by the completion above. The
 	// pessimistic direction on purpose: a label that says "saved" about a haul

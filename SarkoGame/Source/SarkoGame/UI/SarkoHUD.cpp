@@ -706,10 +706,17 @@ const FString& ASarkoHUD::ZoneNameFor(int32 ZoneIndex)
 		if (SarkoMap::LoadDefinitionFromDisk(GetDefault<USarkoRaidSettings>()->MapId.ToString(), Definition, Error))
 		{
 			CachedZoneNames.Reserve(Definition.Extractions.Num());
+			CachedZoneOpensAfter.Reserve(Definition.Extractions.Num());
 			for (const FSarkoExtractionSpot& Spot : Definition.Extractions)
 			{
 				CachedZoneNames.Add(Spot.Name.IsEmpty() ? Generic : Spot.Name);
+				CachedZoneOpensAfter.Add(Spot.OpensAfterSeconds);
 			}
+			// The same fallback the game mode uses (MapClockSeconds), so the two
+			// cannot disagree about what "ten minutes in" means.
+			CachedRaidDuration = Definition.RaidDurationSeconds > 0.f
+				? Definition.RaidDurationSeconds
+				: GetDefault<USarkoRaidSettings>()->RaidDurationSeconds;
 		}
 		else
 		{
@@ -772,19 +779,49 @@ void ASarkoHUD::DrawExtraction()
 		return;
 	}
 
-	const float Required = FMath::Max(0.1f, GetDefault<USarkoRaidSettings>()->ExtractDwellSeconds);
-	const float Left = FMath::Max(0.f, Required - Pawn->ExtractDwellSeconds);
-	const FString Text = FString::Printf(TEXT("%s — %.1f"), *ZoneNameFor(Pawn->ExtractZoneIndex), Left);
+	// Names the zone first, which also fills the caches the closed check below
+	// reads. One disk read per HUD, never per frame.
+	const FString& Name = ZoneNameFor(Pawn->ExtractZoneIndex);
+
+	// A zone that has not opened yet is INERT: no dwell is accruing on the server
+	// (ASarkoRaidGameMode::ExtractTick gates it), so drawing a countdown that
+	// never moves would be the HUD lying about the one thing it exists to say.
+	// It says how long the wait is instead. The clock is the same one the server
+	// measures against, re-derived here from the map file and the replicated
+	// RemainingSeconds — presentation, never authority.
+	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
+	const float OpensAfter = CachedZoneOpensAfter.IsValidIndex(Pawn->ExtractZoneIndex)
+		? CachedZoneOpensAfter[Pawn->ExtractZoneIndex] : 0.f;
+	const float Elapsed = RaidState ? FMath::Max(0.f, CachedRaidDuration - RaidState->RemainingSeconds) : 0.f;
+
+	FString Text;
+	FLinearColor Plate(0.f, 0.25f, 0.05f, 0.55f);
+	FLinearColor Ink(0.55f, 1.f, 0.6f);
+	if (!SarkoExtract::IsZoneOpen(OpensAfter, Elapsed))
+	{
+		const int32 Wait = FMath::CeilToInt(SarkoExtract::SecondsUntilOpen(OpensAfter, Elapsed));
+		Text = FString::Printf(TEXT("%s — ЗАЧИНЕНО ЩЕ %d:%02d"), *Name, Wait / 60, Wait % 60);
+		// Grey rather than green, because green is the colour of a dwell that is
+		// running and nothing is running here.
+		Plate = FLinearColor(0.f, 0.f, 0.f, 0.55f);
+		Ink = FLinearColor(0.72f, 0.72f, 0.70f);
+	}
+	else
+	{
+		const float Required = FMath::Max(0.1f, GetDefault<USarkoRaidSettings>()->ExtractDwellSeconds);
+		const float Left = FMath::Max(0.f, Required - Pawn->ExtractDwellSeconds);
+		Text = FString::Printf(TEXT("%s — %.1f"), *Name, Left);
+	}
 
 	// Top-centre, below the clock and the loot prompt's slot: everything
 	// informational lives along the top (spec §9), and never a bottom corner.
 	const FVector2D Size = MeasurePt(Text, ExtractPt);
 	const float X = Safe.GetCenter().X - Size.X * 0.5f;
 	const float Y = Safe.Min.Y + Px(ExtractTopPt);
-	DrawRect(FLinearColor(0.f, 0.25f, 0.05f, 0.55f),
+	DrawRect(Plate,
 		X - Px(PlatePadXPt * 1.4f), Y - Px(PlatePadYPt * 1.5f),
 		Size.X + Px(PlatePadXPt * 2.8f), Size.Y + Px(PlatePadYPt * 3.f));
-	DrawTextPt(Text, FLinearColor(0.55f, 1.f, 0.6f), X, Y, ExtractPt);
+	DrawTextPt(Text, Ink, X, Y, ExtractPt);
 }
 
 void ASarkoHUD::DrawOutcomeSummary()

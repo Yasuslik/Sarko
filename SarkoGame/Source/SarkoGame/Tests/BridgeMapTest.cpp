@@ -2,6 +2,7 @@
 
 #include "AI/SarkoBotArchetypes.h"
 #include "Core/SarkoRaidSettings.h"
+#include "Loot/SarkoExtractionZone.h"
 #include "Map/SarkoBuildings.h"
 #include "Map/SarkoMapDefinition.h"
 #include "Map/SarkoMapKinds.h"
@@ -666,7 +667,10 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 	// is the bar for the sector that ships now.
 	TestEqual(TEXT("nineteen containers"), Map.Containers.Num(), 19);
 	TestEqual(TEXT("four player spawns"), Map.PlayerSpawns.Num(), 4);
-	TestEqual(TEXT("three extractions, one of them reachable"), Map.Extractions.Num(), 3);
+	// FOUR since the map-comfort pass: E1/E2/E3 from ТЗ §12, plus the west
+	// cordon. Two of the four are reachable now — E1 from the first second, and
+	// the west cordon for the last five minutes only.
+	TestEqual(TEXT("four extractions, two of them reachable"), Map.Extractions.Num(), 4);
 
 	// THE SIX POSTED BOTS ARE GONE. Owner decision: three to five enemies for
 	// the whole tutorial raid, every one of them an event. They are replaced by
@@ -894,17 +898,60 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 			FMath::IsNearlyEqual(static_cast<float>(E1->Location.Y), 19500.f, 1.f));
 		TestTrue(TEXT("E1 is inside the active third"), InActiveThird(E1->Location));
 	}
+	// THE SECOND REACHABLE EXIT, and the answer to the 93-second walk home. It is
+	// in the active third on purpose — the one extraction other than E1 that is —
+	// and it is gated by TIME rather than by geometry.
+	const FSarkoExtractionSpot* West = Map.Extractions.FindByPredicate(
+		[](const FSarkoExtractionSpot& Spot) { return Spot.Id == TEXT("bridge_extract_west_cordon"); });
+	TestNotNull(TEXT("the west cordon exists by id"), West);
+	if (West)
+	{
+		TestTrue(TEXT("the west cordon is reachable"), InActiveThird(West->Location));
+		TestEqual(TEXT("and it opens for the last five minutes of a fifteen-minute raid"),
+			West->OpensAfterSeconds, 600.f);
+		TestTrue(TEXT("which is a real wait, not a formality"),
+			West->OpensAfterSeconds > Map.RaidDurationSeconds * 0.5f
+				&& West->OpensAfterSeconds < Map.RaidDurationSeconds);
+		// It has to be a genuine alternative or it is scenery: closer to the last
+		// loot on the route than E1 is, and on the far side of no crossing.
+		const FSarkoLootContainerSpot* Mil02 = Map.Containers.FindByPredicate(
+			[](const FSarkoLootContainerSpot& Spot) { return Spot.Id == TEXT("bridge_loot_rail_mil_02"); });
+		if (Mil02 && E1)
+		{
+			const float ToWest = FVector2D(West->Location.X - Mil02->Location.X,
+				West->Location.Y - Mil02->Location.Y).Size();
+			const float ToE1 = FVector2D(E1->Location.X - Mil02->Location.X,
+				E1->Location.Y - Mil02->Location.Y).Size();
+			TestTrue(FString::Printf(
+					TEXT("the west cordon (%.0f uu from the last crate) is a real shortcut against E1 (%.0f uu)"),
+					ToWest, ToE1),
+				ToWest < ToE1 * 0.75f);
+		}
+	}
+
 	// E2 and E3 are data behind the closure, deliberately: ТЗ §12 lists three and
 	// Stage D opens them. They must NOT be inside the active third, or the sector
-	// would ship with three working exits and no reason to learn the route.
+	// would ship with working exits the route never has to be learned for.
 	for (const FSarkoExtractionSpot& Spot : Map.Extractions)
 	{
-		if (Spot.Id != TEXT("bridge_extract_north_path"))
+		if (Spot.Id != TEXT("bridge_extract_north_path") && Spot.Id != TEXT("bridge_extract_west_cordon"))
 		{
 			TestFalse(FString::Printf(TEXT("extraction '%s' is behind the closure"), *Spot.Id),
 				InActiveThird(Spot.Location));
 		}
 	}
+
+	// Exactly one extraction is open from the first second. Two would make the
+	// timed one pointless; none would make the raid unwinnable for ten minutes.
+	int32 OpenAtStart = 0;
+	for (const FSarkoExtractionSpot& Spot : Map.Extractions)
+	{
+		if (InActiveThird(Spot.Location) && SarkoExtract::IsZoneOpen(Spot.OpensAfterSeconds, 0.f))
+		{
+			++OpenAtStart;
+		}
+	}
+	TestEqual(TEXT("exactly one reachable extraction is open at second zero"), OpenAtStart, 1);
 	return true;
 }
 
