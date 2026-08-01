@@ -1,15 +1,84 @@
 #include "UI/SarkoHUD.h"
 
+#include "CanvasItem.h"
 #include "Combat/SarkoWeapon.h"
 #include "Core/SarkoPlayerController.h"
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Engine/Canvas.h"
+#include "EngineFontServices.h"
+#include "Fonts/FontMeasure.h"
 #include "Loot/SarkoBackpack.h"
 #include "Loot/SarkoExtractionZone.h"
 #include "Loot/SarkoLootContainer.h"
 #include "Map/SarkoMapDefinition.h"
+#include "Misc/ScopeExit.h"
 #include "Pawn/SarkoCharacter.h"
+#include "UI/SarkoUiScale.h"
+
+namespace
+{
+	/**
+	 * Every size this HUD is drawn at, in **points** on the 844x390 landscape
+	 * canvas described in UI/SarkoUiScale.h — i.e. what they measure on the glass
+	 * of a phone, at any pixel density.
+	 *
+	 * The type sizes are chosen against the shelter menu, which was validated at
+	 * real phone resolutions first: its title is 26 pt and its body 15 pt. The
+	 * clock and the ammo count are the two things a player glances at mid-fight
+	 * without stopping, so they get title-sized type; everything the player only
+	 * reads while standing still is nearer body size.
+	 */
+	constexpr float ClockPt = 26.f;
+	constexpr float AmmoPt = 26.f;
+	constexpr float BackpackPt = 20.f;
+	constexpr float ConnectingPt = 15.f;
+	constexpr float PromptPt = 17.f;
+	constexpr float ExtractPt = 20.f;
+	constexpr float DiedPt = 40.f;
+	constexpr float OutcomeTitlePt = 46.f;
+	constexpr float ReturningPt = 17.f;
+	constexpr float InteractLabelPt = 26.f;
+
+	/** In from the safe frame's side edges, and down from its top. */
+	constexpr float SideInsetPt = 16.f;
+	constexpr float TopRowPt = 10.f;
+
+	/**
+	 * The top rows, stacked down the safe frame in points.
+	 *
+	 * The order is the old one — clock and readouts, then the connection warning,
+	 * then the loot prompt, then the extraction banner — and the gaps are sized so
+	 * that any two of them showing at once (holding a crate inside an extraction
+	 * zone is a real state) still read as separate lines.
+	 */
+	constexpr float ConnectingTopPt = 46.f;
+	constexpr float PromptTopPt = 72.f;
+	constexpr float ExtractTopPt = 118.f;
+
+	/** The health bar, top-right, vertically inside the clock's row. */
+	constexpr float HealthBarWidthPt = 150.f;
+	constexpr float HealthBarHeightPt = 11.f;
+	constexpr float HealthBarTopPt = 16.f;
+
+	/** The loot channel's progress bar, under the prompt it belongs to. */
+	constexpr float LootBarWidthPt = 170.f;
+	constexpr float LootBarHeightPt = 8.f;
+	constexpr float LootBarGapPt = 8.f;
+
+	/** Padding inside the dark plate behind a piece of text. */
+	constexpr float PlatePadXPt = 10.f;
+	constexpr float PlatePadYPt = 4.f;
+
+	/** Stroke weights. Hairlines at 1:1 disappear on a phone. */
+	constexpr float StickStrokePt = 1.5f;
+	constexpr float AimConeStrokePt = 1.f;
+	constexpr float StickDotPt = 11.f;
+
+	/** The drop shadow every readout gets. The HUD is drawn over an arbitrary
+	 *  world, and white-on-white is the one failure that no size fixes. */
+	const FLinearColor TextShadow(0.f, 0.f, 0.f, 0.75f);
+}
 
 void ASarkoHUD::DrawHUD()
 {
@@ -26,8 +95,49 @@ void ASarkoHUD::DrawHUD()
 		return;
 	}
 
-	// Once per frame, before anything is placed. See the member's comment.
-	Safe = SarkoInput::SafeFrame(FVector2D(Canvas->SizeX, Canvas->SizeY));
+	// UCanvas applies the platform's safe zone itself before PostRender: on a
+	// device that reports insets it translates the canvas origin inward and
+	// shrinks SizeX/SizeY to match (Engine's UCanvas::ApplySafeZoneTransform).
+	// That is the same job SarkoInput::SafeFrame does, and doing both insets the
+	// HUD twice — while ASarkoPlayerController::UpdateSticks hit-tests the
+	// interact button in raw viewport pixels, having done it once. The button
+	// would then be drawn in one place and pressed in another, which is precisely
+	// the bug this HUD had before and the one the player experiences as "it does
+	// not work". So the engine's transform is lifted for the duration of our own
+	// drawing and put back afterwards, leaving exactly one authority on the safe
+	// area — SafeFrame, the one the input path also uses.
+	//
+	// Both calls return immediately when the platform reports no insets, which is
+	// every desktop and every headless run, so nothing about the Mac changes.
+	Canvas->PopSafeZoneTransform();
+	ON_SCOPE_EXIT{ Canvas->ApplySafeZoneTransform(); };
+
+	// Once per frame, before anything is placed. See the members' comments.
+	const FVector2D ViewportSize(Canvas->SizeX, Canvas->SizeY);
+	Safe = SarkoInput::SafeFrame(ViewportSize);
+
+	const float NewScale = SarkoUI::PointScaleForViewport(ViewportSize);
+	if (NewScale != MeasuredAtScale)
+	{
+		PointScale = NewScale;
+		InvalidateMeasurements();
+
+		// Logged on the scale changing rather than per frame — so once, on the
+		// first frame of a raid, and again only if the window is resized. The whole
+		// layout is expressed in points and this factor is the only thing turning
+		// it into pixels; a wrong one is an unreadable HUD and nothing else says so.
+		const FVector2D Digits = MeasurePt(TEXT("00:00"), ClockPt);
+		UE_LOG(LogTemp, Display,
+			TEXT("SarkoHUD: viewport %.0fx%.0f px, scale %.3f px/pt (canvas %.0fx%.0f pt); ")
+			TEXT("clock %.0f px = %.1f pt tall, interact button %.0f px = %.1f pt"),
+			ViewportSize.X, ViewportSize.Y, PointScale,
+			ViewportSize.X / PointScale, ViewportSize.Y / PointScale,
+			Digits.Y, Digits.Y / PointScale,
+			SarkoInput::InteractButtonRect(Safe).GetSize().X,
+			SarkoInput::InteractButtonRect(Safe).GetSize().X / PointScale);
+
+		MeasuredAtScale = NewScale;
+	}
 
 	DrawStick(PC->GetMoveStick(), FLinearColor(1.f, 1.f, 1.f, 0.35f));
 	DrawStick(PC->GetAimStick(), FLinearColor(1.f, 0.85f, 0.2f, 0.45f));
@@ -42,6 +152,65 @@ void ASarkoHUD::DrawHUD()
 	DrawOutcomeSummary();
 }
 
+void ASarkoHUD::InvalidateMeasurements()
+{
+	CachedClockSeconds = -1;
+	CachedReloadingWidth = -1.f;
+	CachedInteractLabelWidth = -1.f;
+	bPromptCached = false;
+}
+
+FSlateFontInfo ASarkoHUD::FontPt(float PointSize) const
+{
+	// The engine's large font, asked for at a size rather than magnified from one.
+	// With no LargeFontName configured it resolves to a transient UFont whose
+	// RuntimeFontSource is CoreStyleDefault — so this is FCoreStyle's face, the
+	// same one the shelter menu draws, and still no font asset.
+	//
+	// Not FCoreStyle::GetDefaultFontStyle() directly, which is what the shelter
+	// calls: the style hands back an FSlateFontInfo with a null FontObject, and
+	// FCanvasSimpleTextItem::HasValidText() tests exactly that pointer and then
+	// silently draws nothing. A HUD that renders every bar and no text at all is
+	// how that reads from the outside.
+	UFont* Large = GEngine ? GEngine->GetLargeFont() : nullptr;
+	if (!Large)
+	{
+		return FSlateFontInfo();
+	}
+	// Runtime-cached, so overriding the size asks the font cache to rasterise
+	// glyphs at that size instead of scaling up the 10-pixel ones the legacy size
+	// would give — which is the difference between a readable clock and a blurry
+	// one at the 3x a phone needs.
+	FSlateFontInfo Info = Large->GetLegacySlateFontInfo();
+	Info.Size = FMath::Max(1.f, PointSize * PointScale);
+	return Info;
+}
+
+FVector2D ASarkoHUD::MeasurePt(const FString& Text, float PointSize) const
+{
+	if (!FEngineFontServices::IsInitialized())
+	{
+		return FVector2D::ZeroVector;
+	}
+	const TSharedPtr<FSlateFontMeasure> Measure = FEngineFontServices::Get().GetFontMeasure();
+	if (!Measure.IsValid())
+	{
+		return FVector2D::ZeroVector;
+	}
+	// FontScale 1, matching the canvas: the size asked for in FontPt is already in
+	// pixels, and the canvas the HUD draws into has a DPI scale of exactly 1.
+	return Measure->Measure(Text, FontPt(PointSize), 1.f);
+}
+
+void ASarkoHUD::DrawTextPt(const FString& Text, const FLinearColor& Colour, float X, float Y, float PointSize)
+{
+	// FStringView and not FText: DrawHUD is a tick path and the strings handed to
+	// this are the cached ones the class already keeps, so nothing here allocates.
+	FCanvasTextStringViewItem Item(FVector2D(X, Y), Text, FontPt(PointSize), Colour);
+	Item.EnableShadow(TextShadow, FVector2D(FMath::Max(1.f, Px(1.f)), FMath::Max(1.f, Px(1.f))));
+	Canvas->DrawItem(Item);
+}
+
 void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, const FLinearColor& Colour)
 {
 	if (!Stick.bActive)
@@ -50,6 +219,13 @@ void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, const FLinearColor& Col
 	}
 
 	// Ring at the thumb's landing point, dot at the current position.
+	//
+	// The ring's radius is the one thing on this HUD that is deliberately *not*
+	// scaled: FSarkoTouchStick::RadiusPx is the screen distance at which the stick
+	// reads full deflection, so the ring is a picture of the input rule and would
+	// be lying if it were drawn at any other size. Only the ink is scaled — a
+	// two-pixel stroke is invisible at 3x, which is how a stick could be active
+	// and look like it was not.
 	const int32 Segments = 24;
 	for (int32 i = 0; i < Segments; ++i)
 	{
@@ -60,9 +236,10 @@ void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, const FLinearColor& Col
 			Stick.Origin.Y + FMath::Sin(A0) * FSarkoTouchStick::RadiusPx,
 			Stick.Origin.X + FMath::Cos(A1) * FSarkoTouchStick::RadiusPx,
 			Stick.Origin.Y + FMath::Sin(A1) * FSarkoTouchStick::RadiusPx,
-			Colour, 2.f);
+			Colour, Px(StickStrokePt));
 	}
-	DrawRect(Colour, Stick.Current.X - 12.f, Stick.Current.Y - 12.f, 24.f, 24.f);
+	const float Dot = Px(StickDotPt);
+	DrawRect(Colour, Stick.Current.X - Dot * 0.5f, Stick.Current.Y - Dot * 0.5f, Dot, Dot);
 }
 
 void ASarkoHUD::DrawAimCone()
@@ -83,7 +260,7 @@ void ASarkoHUD::DrawAimCone()
 	{
 		const FVector Start2D = Project(Muzzle);
 		const FVector End2D = Project(End);
-		DrawLine(Start2D.X, Start2D.Y, End2D.X, End2D.Y, Colour, 1.5f);
+		DrawLine(Start2D.X, Start2D.Y, End2D.X, End2D.Y, Colour, Px(AimConeStrokePt));
 	};
 
 	const FVector Left = Muzzle + Aim.RotateAngleAxis(Settings.AimConeHalfAngleDegrees, FVector::UpVector) * Settings.WeaponRangeUU;
@@ -111,12 +288,11 @@ void ASarkoHUD::DrawTopBar()
 	{
 		CachedClockSeconds = Total;
 		CachedClock = FString::Printf(TEXT("%02d:%02d"), Total / 60, Total % 60);
-		float ClockHeight = 0.f;
-		GetTextSize(CachedClock, CachedClockWidth, ClockHeight, GEngine->GetLargeFont(), 1.f);
+		CachedClockWidth = MeasurePt(CachedClock, ClockPt).X;
 	}
 
-	DrawText(CachedClock, FLinearColor::White, Safe.GetCenter().X - CachedClockWidth * 0.5f, Safe.Min.Y + 24.f,
-		GEngine->GetLargeFont(), 1.f);
+	DrawTextPt(CachedClock, FLinearColor::White,
+		Safe.GetCenter().X - CachedClockWidth * 0.5f, Safe.Min.Y + Px(TopRowPt), ClockPt);
 
 	// The player must be able to tell "the raid has not started yet" from "the
 	// crates are broken". Spec §4.6's loud degradation is a log line for the
@@ -125,12 +301,10 @@ void ASarkoHUD::DrawTopBar()
 	// there is no steady state worth optimising.
 	if (!RaidState->bSessionReady)
 	{
-		const FString Connecting = TEXT("З'ЄДНАННЯ...");
-		float Width = 0.f;
-		float Height = 0.f;
-		GetTextSize(Connecting, Width, Height, GEngine->GetLargeFont(), 1.f);
-		DrawText(Connecting, FLinearColor(1.f, 0.75f, 0.2f), Safe.GetCenter().X - Width * 0.5f, Safe.Min.Y + 56.f,
-			GEngine->GetLargeFont(), 1.f);
+		static const FString Connecting(TEXT("З'ЄДНАННЯ..."));
+		const float Width = MeasurePt(Connecting, ConnectingPt).X;
+		DrawTextPt(Connecting, FLinearColor(1.f, 0.75f, 0.2f),
+			Safe.GetCenter().X - Width * 0.5f, Safe.Min.Y + Px(ConnectingTopPt), ConnectingPt);
 	}
 }
 
@@ -152,14 +326,16 @@ void ASarkoHUD::DrawHealth()
 		? FMath::Clamp(Health->GetHealth() / Health->GetMaxHealth(), 0.f, 1.f)
 		: 0.f;
 
-	constexpr float BarWidth = 260.f;
-	constexpr float BarHeight = 14.f;
+	const float BarWidth = Px(HealthBarWidthPt);
+	const float BarHeight = Px(HealthBarHeightPt);
 	// Measured from the safe frame's right edge, not the canvas': in landscape
 	// that edge is 59 pt in from the glass on a notched phone.
-	const float BarX = Safe.Max.X - BarWidth - 24.f;
-	const float BarY = Safe.Min.Y + 28.f;
+	const float BarX = Safe.Max.X - BarWidth - Px(SideInsetPt);
+	const float BarY = Safe.Min.Y + Px(HealthBarTopPt);
+	const float Border = Px(2.f);
 
-	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f), BarX - 2.f, BarY - 2.f, BarWidth + 4.f, BarHeight + 4.f);
+	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f),
+		BarX - Border, BarY - Border, BarWidth + Border * 2.f, BarHeight + Border * 2.f);
 
 	// Green through red, so falling health is readable without reading a number.
 	const FLinearColor Fill = FMath::Lerp(FLinearColor(0.85f, 0.15f, 0.1f), FLinearColor(0.3f, 0.85f, 0.25f), Fraction);
@@ -180,13 +356,10 @@ void ASarkoHUD::DrawHealth()
 	}
 
 	// Unmissable, centred: this is the state the tester could not previously see.
-	const FString DeadText = TEXT("YOU DIED");
-	float TextWidth = 0.f;
-	float TextHeight = 0.f;
-	GetTextSize(DeadText, TextWidth, TextHeight, GEngine->GetLargeFont(), 2.f);
-	DrawText(DeadText, FLinearColor(1.f, 0.2f, 0.15f),
-		Safe.GetCenter().X - TextWidth * 0.5f, Safe.Min.Y + Safe.GetSize().Y * 0.42f,
-		GEngine->GetLargeFont(), 2.f);
+	static const FString DeadText(TEXT("YOU DIED"));
+	const float TextWidth = MeasurePt(DeadText, DiedPt).X;
+	DrawTextPt(DeadText, FLinearColor(1.f, 0.2f, 0.15f),
+		Safe.GetCenter().X - TextWidth * 0.5f, Safe.Min.Y + Safe.GetSize().Y * 0.42f, DiedPt);
 }
 
 void ASarkoHUD::DrawAmmo()
@@ -217,7 +390,7 @@ void ASarkoHUD::DrawAmmo()
 
 	const FLinearColor Colour = bReloading ? FLinearColor(1.f, 0.6f, 0.1f, 1.f) : FLinearColor::White;
 
-	DrawText(CachedAmmoText, Colour, Safe.Min.X + 24.f, Safe.Min.Y + 24.f, GEngine->GetLargeFont(), 1.f);
+	DrawTextPt(CachedAmmoText, Colour, Safe.Min.X + Px(SideInsetPt), Safe.Min.Y + Px(TopRowPt), AmmoPt);
 }
 
 void ASarkoHUD::DrawBackpack()
@@ -249,20 +422,21 @@ void ASarkoHUD::DrawBackpack()
 	// two digits of a magazine count, and a fixed offset that clears "30"
 	// overlaps it the moment the player reloads.
 	//
-	// Measured once and kept. DrawHUD is a tick path and GetTextSize takes an
-	// FString, so doing this inline allocated and freed a string every frame to
-	// re-derive a constant.
+	// Measured once per scale and kept. DrawHUD is a tick path, and measuring
+	// inline allocated and freed a string every frame to re-derive a constant.
 	if (CachedReloadingWidth < 0.f)
 	{
-		float AmmoHeight = 0.f;
-		GetTextSize(TEXT("RELOADING"), CachedReloadingWidth, AmmoHeight, GEngine->GetLargeFont(), 1.f);
+		static const FString Reloading(TEXT("RELOADING"));
+		CachedReloadingWidth = MeasurePt(Reloading, AmmoPt).X;
 	}
-	const float X = Safe.Min.X + 24.f + CachedReloadingWidth + 24.f;
+	const float X = Safe.Min.X + Px(SideInsetPt) + CachedReloadingWidth + Px(SideInsetPt);
 
 	// Amber when full, so "the crate had more in it" is legible at a glance
 	// rather than being discovered by counting.
 	const FLinearColor Colour = Used >= Limit ? FLinearColor(1.f, 0.6f, 0.1f, 1.f) : FLinearColor::White;
-	DrawText(CachedBackpackText, Colour, X, Safe.Min.Y + 24.f, GEngine->GetLargeFont(), 1.f);
+	// Baseline-ish alignment with the taller ammo readout beside it: sitting both
+	// at the same top edge would leave the smaller number floating.
+	DrawTextPt(CachedBackpackText, Colour, X, Safe.Min.Y + Px(TopRowPt + (AmmoPt - BackpackPt) * 0.75f), BackpackPt);
 }
 
 void ASarkoHUD::DrawInteract()
@@ -275,6 +449,13 @@ void ASarkoHUD::DrawInteract()
 
 	// The button is always drawn, so the player learns where it is before they
 	// need it; it dims when there is nothing in reach.
+	//
+	// The rect comes from SarkoInput and is *not* scaled here: it is already
+	// derived from the safe frame's shorter axis with a floor, which makes it
+	// 52 pt on a 14 Pro and 52 pt on a 720p phone — past the 44 pt tap-target
+	// minimum on both. Scaling it again here would make the drawn button a
+	// different rectangle from the one ASarkoPlayerController::UpdateSticks
+	// hit-tests, which is the one thing about this button that must never happen.
 	const FBox2D Rect = SarkoInput::InteractButtonRect(Safe);
 	const ASarkoLootContainer* Target = PC->GetInteractTarget();
 	const FLinearColor ButtonColour = Target
@@ -289,11 +470,13 @@ void ASarkoHUD::DrawInteract()
 	static const FString InteractLabel(TEXT("E"));
 	if (CachedInteractLabelWidth < 0.f)
 	{
-		GetTextSize(InteractLabel, CachedInteractLabelWidth, CachedInteractLabelHeight, GEngine->GetLargeFont(), 1.f);
+		const FVector2D LabelSize = MeasurePt(InteractLabel, InteractLabelPt);
+		CachedInteractLabelWidth = LabelSize.X;
+		CachedInteractLabelHeight = LabelSize.Y;
 	}
-	DrawText(InteractLabel, FLinearColor::White,
+	DrawTextPt(InteractLabel, FLinearColor::White,
 		Rect.GetCenter().X - CachedInteractLabelWidth * 0.5f, Rect.GetCenter().Y - CachedInteractLabelHeight * 0.5f,
-		GEngine->GetLargeFont(), 1.f);
+		InteractLabelPt);
 
 	if (!Target)
 	{
@@ -310,15 +493,19 @@ void ASarkoHUD::DrawInteract()
 		bPromptCached = true;
 		CachedPromptTier = Target->Tier;
 		CachedPrompt = FString::Printf(TEXT("ОБШУКАТИ (%s)"), *CachedPromptTier.ToString());
-		GetTextSize(CachedPrompt, CachedPromptWidth, CachedPromptHeight, GEngine->GetLargeFont(), 1.f);
+		const FVector2D PromptSize = MeasurePt(CachedPrompt, PromptPt);
+		CachedPromptWidth = PromptSize.X;
+		CachedPromptHeight = PromptSize.Y;
 	}
 
 	const float PromptWidth = CachedPromptWidth;
 	const float PromptHeight = CachedPromptHeight;
 	const float PromptX = Safe.GetCenter().X - PromptWidth * 0.5f;
-	const float PromptY = Safe.Min.Y + 76.f;
-	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f), PromptX - 10.f, PromptY - 4.f, PromptWidth + 20.f, PromptHeight + 8.f);
-	DrawText(CachedPrompt, FLinearColor::White, PromptX, PromptY, GEngine->GetLargeFont(), 1.f);
+	const float PromptY = Safe.Min.Y + Px(PromptTopPt);
+	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f),
+		PromptX - Px(PlatePadXPt), PromptY - Px(PlatePadYPt),
+		PromptWidth + Px(PlatePadXPt * 2.f), PromptHeight + Px(PlatePadYPt * 2.f));
+	DrawTextPt(CachedPrompt, FLinearColor::White, PromptX, PromptY, PromptPt);
 
 	if (!PC->IsInteractHeld())
 	{
@@ -337,11 +524,13 @@ void ASarkoHUD::DrawInteract()
 	const float Duration = FMath::Max(0.01f, GetDefault<USarkoRaidSettings>()->LootChannelSeconds);
 	const float Fraction = FMath::Clamp(Pawn->GetLootChannelElapsed() / Duration, 0.f, 1.f);
 
-	constexpr float BarWidth = 260.f;
-	constexpr float BarHeight = 12.f;
+	const float BarWidth = Px(LootBarWidthPt);
+	const float BarHeight = Px(LootBarHeightPt);
 	const float BarX = Safe.GetCenter().X - BarWidth * 0.5f;
-	const float BarY = PromptY + PromptHeight + 10.f;
-	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.5f), BarX - 2.f, BarY - 2.f, BarWidth + 4.f, BarHeight + 4.f);
+	const float BarY = PromptY + PromptHeight + Px(LootBarGapPt);
+	const float Border = Px(2.f);
+	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.5f),
+		BarX - Border, BarY - Border, BarWidth + Border * 2.f, BarHeight + Border * 2.f);
 	DrawRect(FLinearColor(0.95f, 0.8f, 0.25f, 0.9f), BarX, BarY, BarWidth * Fraction, BarHeight);
 }
 
@@ -389,13 +578,13 @@ void ASarkoHUD::DrawExtraction()
 
 	// Top-centre, below the clock and the loot prompt's slot: everything
 	// informational lives along the top (spec §9), and never a bottom corner.
-	float Width = 0.f;
-	float Height = 0.f;
-	GetTextSize(Text, Width, Height, GEngine->GetLargeFont(), 1.5f);
-	const float X = Safe.GetCenter().X - Width * 0.5f;
-	const float Y = Safe.Min.Y + 130.f;
-	DrawRect(FLinearColor(0.f, 0.25f, 0.05f, 0.55f), X - 14.f, Y - 6.f, Width + 28.f, Height + 12.f);
-	DrawText(Text, FLinearColor(0.55f, 1.f, 0.6f), X, Y, GEngine->GetLargeFont(), 1.5f);
+	const FVector2D Size = MeasurePt(Text, ExtractPt);
+	const float X = Safe.GetCenter().X - Size.X * 0.5f;
+	const float Y = Safe.Min.Y + Px(ExtractTopPt);
+	DrawRect(FLinearColor(0.f, 0.25f, 0.05f, 0.55f),
+		X - Px(PlatePadXPt * 1.4f), Y - Px(PlatePadYPt * 1.5f),
+		Size.X + Px(PlatePadXPt * 2.8f), Size.Y + Px(PlatePadYPt * 3.f));
+	DrawTextPt(Text, FLinearColor(0.55f, 1.f, 0.6f), X, Y, ExtractPt);
 }
 
 void ASarkoHUD::DrawOutcomeSummary()
@@ -421,12 +610,10 @@ void ASarkoHUD::DrawOutcomeSummary()
 	// edge of a dimmed screen reads as a rendering fault.
 	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.55f), 0.f, 0.f, Canvas->SizeX, Canvas->SizeY);
 
-	float TitleWidth = 0.f;
-	float TitleHeight = 0.f;
-	GetTextSize(Title, TitleWidth, TitleHeight, GEngine->GetLargeFont(), 2.5f);
+	const FVector2D TitleSize = MeasurePt(Title, OutcomeTitlePt);
 	float Y = Safe.Min.Y + Safe.GetSize().Y * 0.22f;
-	DrawText(Title, Colour, Safe.GetCenter().X - TitleWidth * 0.5f, Y, GEngine->GetLargeFont(), 2.5f);
-	Y += TitleHeight + 24.f;
+	DrawTextPt(Title, Colour, Safe.GetCenter().X - TitleSize.X * 0.5f, Y, OutcomeTitlePt);
+	Y += TitleSize.Y + Px(16.f);
 
 	// The itemised haul used to be drawn here and now lives in the shelter (spec
 	// §6.5: "вынесено: …" moves there, where it sits above the stash it was just
@@ -444,12 +631,9 @@ void ASarkoHUD::DrawOutcomeSummary()
 	const FString Returning = RaidState->bReturningToShelter
 		? TEXT("ПОВЕРНЕННЯ ДО УКРИТТЯ...")
 		: TEXT("ПОВЕРНЕННЯ НЕДОСТУПНЕ — ДИВ. ЛОГ");
-	float Width = 0.f;
-	float Height = 0.f;
-	GetTextSize(Returning, Width, Height, GEngine->GetLargeFont(), 1.f);
+	const float Width = MeasurePt(Returning, ReturningPt).X;
 	const FLinearColor ReturningColour = RaidState->bReturningToShelter
 		? FLinearColor(0.8f, 0.8f, 0.8f)
 		: FLinearColor(1.f, 0.65f, 0.2f);
-	DrawText(Returning, ReturningColour, Safe.GetCenter().X - Width * 0.5f, Y,
-		GEngine->GetLargeFont(), 1.f);
+	DrawTextPt(Returning, ReturningColour, Safe.GetCenter().X - Width * 0.5f, Y, ReturningPt);
 }

@@ -3,6 +3,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Styling/CoreStyle.h"
+#include "UI/SarkoUiScale.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
@@ -29,8 +30,8 @@ namespace
 	 * stacked column does not fit in it at any legible font size. The screen is two
 	 * columns now — see Construct.
 	 */
-	constexpr float DesignWidth = 844.f;
-	constexpr float DesignHeight = 390.f;
+	constexpr float DesignWidth = SarkoUI::DesignWidthPt;
+	constexpr float DesignHeight = SarkoUI::DesignHeightPt;
 
 	/**
 	 * The horizontal margin, which on a landscape phone is a safe area and not a
@@ -133,18 +134,12 @@ namespace
 
 float SSarkoShelterWidget::UiScaleForViewport(FVector2D ViewportSize)
 {
-	if (ViewportSize.X < 1.f || ViewportSize.Y < 1.f)
-	{
-		return 1.f;
-	}
-	// min, not max: taking the larger ratio would overflow the canvas along the
-	// other axis, which for the status line means a backend error running off the
-	// side of the screen. Unchanged by the portrait-to-landscape move — only the
-	// two constants it divides by swapped.
-	return FMath::Clamp(
-		FMath::Min(static_cast<float>(ViewportSize.X) / DesignWidth,
-			static_cast<float>(ViewportSize.Y) / DesignHeight),
-		0.5f, 6.f);
+	// The rule itself now lives in UI/SarkoUiScale.h, because the in-raid HUD
+	// needs the identical one: a player who can read "В РЕЙД" and then cannot read
+	// the ammo count on the same phone is looking at a bug. Its behaviour is
+	// unchanged — min of the two ratios, clamped — and Sarko.UI.PointScale pins
+	// the two callers to the same numbers.
+	return SarkoUI::PointScaleForViewport(ViewportSize);
 }
 
 float SSarkoShelterWidget::UiScale() const
