@@ -19,12 +19,25 @@ ESarkoAIState SarkoAI::DecideState(
 	bool bHasLineOfSight,
 	float HearingRadius,
 	float FiringRange,
-	float ShootHysteresisRangeUU)
+	float ShootHysteresisRangeUU,
+	bool bInvestigationActive)
 {
-	// Nothing to react to: wander.
+	// Nothing to react to. A bot that is still walking to a noise it has not
+	// reached keeps walking; everything else wanders its post.
 	if (!bHasTarget || DistanceToTarget > HearingRadius)
 	{
-		return ESarkoAIState::Patrol;
+		return bInvestigationActive ? ESarkoAIState::Investigate : ESarkoAIState::Patrol;
+	}
+
+	// THE LINE-OF-SIGHT GATE. Inside hearing but with nothing in sight the bot
+	// investigates — it walks to where the sound came from. It does not chase,
+	// and it certainly does not shoot: a bot that closed on a target it could
+	// not see was a bot aggroing through a wall, and one that fired at
+	// WeaponRangeUU*0.5 = 2000 uu was firing from off the player's screen
+	// entirely (ТЗ §11).
+	if (!bHasLineOfSight)
+	{
+		return ESarkoAIState::Investigate;
 	}
 
 	// Seen and close enough to hit: shoot. Already shooting tolerates
@@ -36,11 +49,24 @@ ESarkoAIState SarkoAI::DecideState(
 		? FiringRange + ShootHysteresisRangeUU
 		: FiringRange;
 
-	if (bHasLineOfSight && DistanceToTarget <= EffectiveFiringRange)
+	if (DistanceToTarget <= EffectiveFiringRange)
 	{
 		return ESarkoAIState::Shoot;
 	}
 	return ESarkoAIState::Chase;
+}
+
+FVector SarkoAI::PatrolPointInLeash(const FVector& PostPos, float LeashUU, float AngleRand01, float RadiusRand01)
+{
+	// A non-positive leash is a bot pinned to its post rather than a bot with
+	// the run of the map — the old behaviour on a bad number was the latter.
+	const float Leash = FMath::Max(0.f, LeashUU);
+	const float Angle = FMath::Clamp(AngleRand01, 0.f, 1.f) * 2.f * PI;
+	const float Radius = Leash * FMath::Sqrt(FMath::Clamp(RadiusRand01, 0.f, 1.f));
+	return FVector(
+		PostPos.X + FMath::Cos(Angle) * Radius,
+		PostPos.Y + FMath::Sin(Angle) * Radius,
+		PostPos.Z);
 }
 
 FVector2D SarkoAI::ComputeSteerDirection(
@@ -80,6 +106,44 @@ float SarkoAI::ChooseSteerSign(FVector2D DesiredDirection, FVector2D ImpactNorma
 ASarkoAIController::ASarkoAIController()
 {
 	PrimaryActorTick.bCanEverTick = true;
+}
+
+void ASarkoAIController::OnPossess(APawn* InPawn)
+{
+	Super::OnPossess(InPawn);
+
+	// A bot whose map data authored no post takes the place it was put down as
+	// its post. That is the whole fix for "every bot walks at the world origin
+	// on frame one": there is now always a post, and the initial patrol target
+	// is it. SetPost may already have run (the encounter director calls it right
+	// after SpawnActor, which is before possession in the placed-or-spawned auto
+	// possess path is *not* guaranteed) — so only fill in what nobody authored.
+	if (InPawn && AuthoredLeashUU < 0.f && PostPos.IsNearlyZero())
+	{
+		PostPos = InPawn->GetActorLocation();
+		PatrolTarget = PostPos;
+	}
+}
+
+void ASarkoAIController::SetPost(const FVector& InPostPos, float InLeashUU)
+{
+	PostPos = InPostPos;
+	AuthoredLeashUU = InLeashUU;
+	// The initial target IS the post. Not FVector::ZeroVector, which is the
+	// world origin and, on the shipped map, the closed bridge.
+	PatrolTarget = PostPos;
+}
+
+float ASarkoAIController::GetLeashUU() const
+{
+	return AuthoredLeashUU >= 0.f ? AuthoredLeashUU : GetDefault<USarkoRaidSettings>()->AIPatrolLeashUU;
+}
+
+void ASarkoAIController::SetPerception(float InHearingRadiusUU, float InFiringRangeUU, float InFireIntervalSeconds)
+{
+	HearingRadiusOverrideUU = InHearingRadiusUU;
+	FiringRangeOverrideUU = InFiringRangeUU;
+	FireIntervalOverrideSeconds = InFireIntervalSeconds;
 }
 
 APawn* ASarkoAIController::FindNearestLivingPlayer() const
@@ -211,8 +275,18 @@ void ASarkoAIController::SteerToward(const FVector& TargetLocation, const USarko
 
 void ASarkoAIController::RerollPatrolTarget(const APawn& Self, const USarkoRaidSettings& Settings)
 {
-	const float Extent = Settings.MapExtent * 0.8f;
-	PatrolTarget = FVector(FMath::FRandRange(-Extent, Extent), FMath::FRandRange(-Extent, Extent), Self.GetActorLocation().Z);
+	// Inside the leash, around the post. This used to pick uniformly inside
+	// +/-MapExtent*0.8 — a 320x320 m square covering the closed two-thirds, the
+	// player's spawn shelf and the extraction — which, with the stuck detector
+	// re-rolling every 2 s, is why no authored bot position survived 90 seconds.
+	const FVector Post(PostPos.X, PostPos.Y, Self.GetActorLocation().Z);
+	PatrolTarget = SarkoAI::PatrolPointInLeash(Post, GetLeashUU(), FMath::FRand(), FMath::FRand());
+
+	if (Settings.bLogAIDiagnostics)
+	{
+		UE_LOG(LogTemp, Log, TEXT("SarkoAI: patrol target %s, %.0f uu from post %s (leash %.0f)"),
+			*PatrolTarget.ToString(), FVector::Dist2D(PatrolTarget, Post), *Post.ToString(), GetLeashUU());
+	}
 }
 
 void ASarkoAIController::Tick(float DeltaSeconds)
@@ -251,8 +325,26 @@ void ASarkoAIController::Tick(float DeltaSeconds)
 	const float Distance = Target ? FVector::Dist(Self->GetActorLocation(), Target->GetActorLocation()) : 0.f;
 	const bool bLineOfSight = Target ? LineOfSightTo(Target) : false;
 
+	const float HearingRadiusUU = HearingRadiusOverrideUU > 0.f ? HearingRadiusOverrideUU : Settings.EnemyHearingRadiusUU;
+	const float FiringRangeUU = FiringRangeOverrideUU > 0.f ? FiringRangeOverrideUU : Settings.EnemyFiringRangeUU;
+	const float FireIntervalSeconds = FireIntervalOverrideSeconds > 0.f ? FireIntervalOverrideSeconds : Settings.EnemyFireIntervalSeconds;
+
+	// A target inside hearing and out of sight is a NOISE, and a noise is a
+	// position remembered once — not a subscription. The memory is refreshed
+	// only while the bot cannot see the target; the moment it can, Chase and
+	// Shoot take over and the investigation is moot.
+	if (Target && Distance <= HearingRadiusUU && !bLineOfSight)
+	{
+		InvestigateTarget = Target->GetActorLocation();
+		if (!bInvestigating)
+		{
+			bInvestigating = true;
+			InvestigateSeconds = 0.f;
+		}
+	}
+
 	State = SarkoAI::DecideState(State, Target != nullptr, Distance, bLineOfSight,
-		Settings.EnemyHearingRadiusUU, Settings.WeaponRangeUU * 0.5f, Settings.AIShootHysteresisRangeUU);
+		HearingRadiusUU, FiringRangeUU, Settings.AIShootHysteresisRangeUU, bInvestigating);
 
 	DebugLogAccum += DeltaSeconds;
 	const bool bLogThisTick = Settings.bLogAIDiagnostics && DebugLogAccum > 1.f;
@@ -297,12 +389,13 @@ void ASarkoAIController::Tick(float DeltaSeconds)
 		}
 	}
 
-	// A stuck Chase falls back to Patrol for this tick so it steers toward
-	// the fresh wander point instead of straight at the same blocked
-	// geometry it was already failing to get around.
-	const ESarkoAIState EffectiveState = (bForceFallbackToPatrol && State == ESarkoAIState::Chase)
-		? ESarkoAIState::Patrol
-		: State;
+	// A stuck Chase or Investigate falls back to Patrol for this tick so it
+	// steers toward the fresh wander point instead of straight at the same
+	// blocked geometry it was already failing to get around.
+	const ESarkoAIState EffectiveState =
+		(bForceFallbackToPatrol && (State == ESarkoAIState::Chase || State == ESarkoAIState::Investigate))
+			? ESarkoAIState::Patrol
+			: State;
 
 	switch (EffectiveState)
 	{
@@ -313,6 +406,31 @@ void ASarkoAIController::Tick(float DeltaSeconds)
 		}
 		SteerToward(PatrolTarget, Settings, bLogThisTick);
 		break;
+
+	case ESarkoAIState::Investigate:
+	{
+		// Walk to the noise, once. Arriving and finding nothing, or running out
+		// of patience, both end the same way: the investigation is dropped and
+		// the patrol target is reset to the post, so the next tick walks home.
+		InvestigateSeconds += DeltaSeconds;
+		const bool bArrived = FVector::Dist2D(Self->GetActorLocation(), InvestigateTarget) <= Settings.AIInvestigateArriveRadiusUU;
+		const bool bGaveUp = InvestigateSeconds >= Settings.AIInvestigateTimeoutSeconds;
+		if (bArrived || bGaveUp)
+		{
+			bInvestigating = false;
+			InvestigateSeconds = 0.f;
+			PatrolTarget = FVector(PostPos.X, PostPos.Y, Self->GetActorLocation().Z);
+			if (Settings.bLogAIDiagnostics)
+			{
+				UE_LOG(LogTemp, Log, TEXT("SarkoAI: investigation over (%s), returning to post %s"),
+					bArrived ? TEXT("arrived, nothing there") : TEXT("gave up"), *PostPos.ToString());
+			}
+			SteerToward(PatrolTarget, Settings, bLogThisTick);
+			break;
+		}
+		SteerToward(InvestigateTarget, Settings, bLogThisTick);
+		break;
+	}
 
 	case ESarkoAIState::Chase:
 		if (Target)
@@ -326,7 +444,12 @@ void ASarkoAIController::Tick(float DeltaSeconds)
 		// component to stop, so standing still while shooting just means not
 		// calling AddMovementInput; the character's own braking deceleration
 		// handles the rest.
-		if (Target && FireCooldown <= 0.f)
+		//
+		// bLineOfSight is re-asserted here rather than trusted from DecideState:
+		// the firing path is the one place where being wrong means shooting
+		// through a wall from off the player's screen, and one gate in one pure
+		// function is one refactor away from not being a gate at all.
+		if (Target && bLineOfSight && Distance <= FiringRangeUU + Settings.AIShootHysteresisRangeUU && FireCooldown <= 0.f)
 		{
 			if (USarkoWeaponComponent* Weapon = Self->FindComponentByClass<USarkoWeaponComponent>())
 			{
@@ -339,7 +462,7 @@ void ASarkoAIController::Tick(float DeltaSeconds)
 				else
 				{
 					Weapon->ServerFire(Origin, Direction);
-					FireCooldown = Settings.EnemyFireIntervalSeconds;
+					FireCooldown = FireIntervalSeconds;
 				}
 			}
 		}

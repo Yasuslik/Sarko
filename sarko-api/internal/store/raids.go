@@ -184,6 +184,13 @@ var (
 	ErrBadSessionToken = errors.New("bad session token")
 	// ErrSessionNotOpen means the session is voided or never existed.
 	ErrSessionNotOpen = errors.New("session not open")
+	// ErrSessionNotConfirmed means a result arrived for a session that never
+	// confirmed it entered the map. It is deliberately its own error rather
+	// than a shade of ErrSessionNotOpen: the session IS open, and the caller's
+	// fix is to confirm it, which is worth saying out loud on an endpoint that
+	// already distinguishes its refusals (unlike ConfirmRaid, which collapses
+	// all of its own).
+	ErrSessionNotConfirmed = errors.New("session not confirmed")
 )
 
 // SubmitResultParams is the input to SubmitResult.
@@ -230,13 +237,19 @@ func (s *Store) ConfirmRaid(ctx context.Context, playerID, sessionID, sessionTok
 		stateText  string
 		storedHash []byte
 		ownerID    string
+		loadoutRaw []byte
+		expired    bool
 	)
 	// Enum columns are read as text — see the note in sweepPlayerTx.
+	//
+	// expires_at <= now() is evaluated by Postgres, not compared against the Go
+	// clock, for the same reason SubmitResult does it that way: this call, that
+	// one and the sweeper must all agree on what "late" means.
 	err = tx.QueryRow(ctx,
-		`SELECT state::text, session_token_hash, player_id
+		`SELECT state::text, session_token_hash, player_id, loadout, expires_at <= now()
 		 FROM raid_sessions WHERE id = $1 FOR UPDATE`,
 		sessionID,
-	).Scan(&stateText, &storedHash, &ownerID)
+	).Scan(&stateText, &storedHash, &ownerID, &loadoutRaw, &expired)
 	notFound := errors.Is(err, pgx.ErrNoRows)
 	if err != nil && !notFound {
 		return time.Time{}, fmt.Errorf("load session: %w", err)
@@ -245,12 +258,51 @@ func (s *Store) ConfirmRaid(ctx context.Context, playerID, sessionID, sessionTok
 	// Anti-oracle: unlike SubmitResult (which reports ErrNotFound,
 	// ErrBadSessionToken and ErrSessionNotOpen as distinct errors), a caller
 	// here must not be able to tell an unknown session id, a wrong token, a
-	// non-pending session and somebody else's session apart — all four
-	// collapse to ErrSessionNotOpen. Wrong-owner deliberately gets no error of
-	// its own: a distinct one would confirm that a guessed session id exists.
+	// non-pending session, somebody else's session and an expired one apart —
+	// all five collapse to ErrSessionNotOpen. Wrong-owner deliberately gets no
+	// error of its own: a distinct one would confirm that a guessed session id
+	// exists.
 	badToken := !notFound && subtle.ConstantTimeCompare(storedHash, auth.HashToken(sessionToken)) != 1
 	wrongOwner := !notFound && ownerID != playerID
 	if notFound || badToken || wrongOwner || stateText != string(domain.StatePending) {
+		return time.Time{}, ErrSessionNotOpen
+	}
+
+	// Expiry is enforced here, not only by the sweeper.
+	//
+	// Without this the UPDATE below handed an already-dead pending session a
+	// brand-new expires_at of now() + raid duration + grace buffer: PENDING_TTL
+	// meant nothing whenever the sweeper had not reached the row yet, which is
+	// a nondeterministic window at best and unbounded if the sweeper goroutine
+	// stops (it has no restart and no health signal). SubmitResult already
+	// claimed the invariant this restores — "the sweeper is a garbage collector
+	// whose failure costs storage, not correctness" — and confirm was the hole
+	// in it.
+	//
+	// The session is closed the way the sweeper would close it rather than just
+	// refused, so the abandoned loadout comes back now instead of whenever the
+	// sweeper next runs, and so the two paths cannot answer differently. A
+	// pending session never entered the map, so this always voids and refunds.
+	// The caller still sees the same uniform ErrSessionNotOpen: the refund is a
+	// side effect on the player's own row, not information about it.
+	if expired {
+		var loadout []domain.ItemStack
+		if err := json.Unmarshal(loadoutRaw, &loadout); err != nil {
+			return time.Time{}, fmt.Errorf("unmarshal loadout: %w", err)
+		}
+		if err := closeExpiredSessionTx(ctx, tx, expiredSession{
+			id:       sessionID,
+			playerID: ownerID,
+			state:    domain.StatePending,
+			loadout:  loadout,
+		}); err != nil {
+			return time.Time{}, err
+		}
+		// Committed even though an error is returned: the void is the point of
+		// this block, and the deferred rollback would throw it away.
+		if err := tx.Commit(ctx); err != nil {
+			return time.Time{}, fmt.Errorf("commit: %w", err)
+		}
 		return time.Time{}, ErrSessionNotOpen
 	}
 
@@ -393,6 +445,34 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 			CreditedItems: []domain.ItemStack{},
 			AlreadyClosed: true,
 		}, nil
+	}
+
+	// Only a confirmed raid can produce a result.
+	//
+	// `pending` means the loadout was debited and the client never entered the
+	// map — that is the entire distinction ConfirmRaid exists to draw, and the
+	// one closeExpiredSessionTx honours by giving the loadout back rather than
+	// crediting anything. This function used to accept `pending` anyway and
+	// credit a full haul, so
+	//
+	//     POST /v1/raid/start  ->  POST /v1/raid/result
+	//
+	// in a loop banked a backpack per round trip with zero gameplay, and the
+	// tutorial latch below fired on the first of them — permanently skipping
+	// the tutorial for an account that had never played a raid. The loadout
+	// debit deterred nothing, because the client sends an empty loadout.
+	//
+	// Placed after the expiry block on purpose: an expired pending session is
+	// the sweeper's case, not this one, and it keeps answering ErrSessionNotOpen
+	// with the loadout returned. A live pending session is a caller that skipped
+	// a step, and it is told exactly that.
+	//
+	// The session is deliberately left alone — not voided, not closed. A stray
+	// or replayed result must not be able to destroy a raid the player is about
+	// to confirm and play; it expires on its own if they never do, and the
+	// sweeper refunds it then.
+	if state == domain.StatePending {
+		return RaidResult{}, ErrSessionNotConfirmed
 	}
 
 	// Ordered players-before-stash_items deliberately. GrantStarterKit locks

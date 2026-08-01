@@ -9,7 +9,12 @@ class USarkoCharacterAnimComponent;
 class USarkoHealthComponent;
 class USarkoWeaponComponent;
 
-/** One enemy archetype — the slice deliberately has exactly one. */
+/**
+ * One enemy pawn. What kind of enemy it is arrives from the map's authored
+ * `spawns[]` row through ApplyArchetypeAndPost, not from a subclass — the
+ * archetype table is numbers (SarkoAI::GetBotArchetypes), and a numbers table
+ * does not need three actor classes to express three rows.
+ */
 UCLASS()
 class ASarkoEnemyCharacter : public ACharacter
 {
@@ -19,6 +24,17 @@ public:
 	ASarkoEnemyCharacter();
 
 	virtual void BeginPlay() override;
+
+	/**
+	 * Server only, called by the encounter director immediately after
+	 * SpawnActor. Pushes the archetype's numbers into the components that own
+	 * them and tells the controller where this bot holds.
+	 *
+	 * An archetype the table does not know is a loud no-op rather than a silent
+	 * default: the map parser already refuses such a file, so reaching here with
+	 * one means the table and the parser have drifted apart.
+	 */
+	void ApplyArchetypeAndPost(FName ArchetypeId, const FVector& PostPos, float LeashUU);
 
 protected:
 	void HandleDeath(AActor* Killer);

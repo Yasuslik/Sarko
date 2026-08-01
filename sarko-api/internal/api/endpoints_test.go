@@ -166,6 +166,117 @@ func TestFullRaidCycleOverHTTP(t *testing.T) {
 	}
 }
 
+// TestResultWithoutConfirmIs409OverHTTP is the exploit loop at the wire, which
+// is where it was actually free: two POSTs, no gameplay, a full backpack banked
+// per round trip and the tutorial flag latched on the first one.
+//
+// It gets its own error code. session_not_open would have been a lie — the
+// session is open, the caller skipped a step — and a client that hits this has
+// a bug it can act on rather than a state it must guess at.
+func TestResultWithoutConfirmIs409OverHTTP(t *testing.T) {
+	c := newTestServer(t)
+	c.login("device-no-confirm")
+
+	var started store.StartedRaid
+	if code := c.do(http.MethodPost, "/v1/raid/start",
+		map[string]any{"map_id": "bridge", "loadout": []any{}}, &started); code != http.StatusOK {
+		t.Fatalf("raid/start status = %d, want 200", code)
+	}
+
+	// No /v1/raid/confirm.
+	var env errorEnvelope
+	code := c.do(http.MethodPost, "/v1/raid/result", map[string]any{
+		"session_id":    started.SessionID,
+		"session_token": started.SessionToken,
+		"outcome":       "extracted",
+		"items":         []map[string]any{{"item_id": "bike_frame", "quantity": 1}},
+	}, &env)
+	if code != http.StatusConflict {
+		t.Fatalf("raid/result without confirm = %d, want 409", code)
+	}
+	if env.Error.Code != "session_not_confirmed" {
+		t.Errorf("error code = %q, want session_not_confirmed", env.Error.Code)
+	}
+
+	var raw map[string]any
+	if code := c.do(http.MethodGet, "/v1/profile", nil, &raw); code != http.StatusOK {
+		t.Fatalf("profile status = %d, want 200", code)
+	}
+	if raw["tutorial_completed"] != false {
+		t.Errorf("tutorial_completed = %v after an unconfirmed result, want false", raw["tutorial_completed"])
+	}
+
+	var profile store.Profile
+	if code := c.do(http.MethodGet, "/v1/profile", nil, &profile); code != http.StatusOK {
+		t.Fatalf("profile status = %d, want 200", code)
+	}
+	if got := loot(profile.Stash); len(got) != 0 {
+		t.Errorf("stash = %v, want nothing beyond the starter kit", got)
+	}
+
+	// The honest path from the same session still works.
+	c.confirm(started)
+	var result store.RaidResult
+	if code := c.do(http.MethodPost, "/v1/raid/result", map[string]any{
+		"session_id":    started.SessionID,
+		"session_token": started.SessionToken,
+		"outcome":       "extracted",
+		"items":         []map[string]any{{"item_id": "bike_frame", "quantity": 1}},
+	}, &result); code != http.StatusOK {
+		t.Fatalf("raid/result after confirm = %d, want 200", code)
+	}
+}
+
+// TestRaidResultRejectsAHaulThatCannotBePacked is the geometry gate at the
+// wire: thirteen 3x2 bicycle frames passed every count-based check (one merged
+// stack; 13 was its own per-item cap) and the bag holds exactly one.
+func TestRaidResultRejectsAHaulThatCannotBePacked(t *testing.T) {
+	c := newTestServer(t)
+	c.login("device-bike-thief")
+
+	var started store.StartedRaid
+	if code := c.do(http.MethodPost, "/v1/raid/start",
+		map[string]any{"map_id": "bridge", "loadout": []any{}}, &started); code != http.StatusOK {
+		t.Fatalf("raid/start status = %d, want 200", code)
+	}
+	c.confirm(started)
+
+	var env errorEnvelope
+	code := c.do(http.MethodPost, "/v1/raid/result", map[string]any{
+		"session_id":    started.SessionID,
+		"session_token": started.SessionToken,
+		"outcome":       "extracted",
+		"items":         []map[string]any{{"item_id": "bike_frame", "quantity": 13}},
+	}, &env)
+	if code != http.StatusBadRequest {
+		t.Fatalf("thirteen bike frames = %d, want 400", code)
+	}
+	if env.Error.Code != "implausible_items" {
+		t.Errorf("error code = %q, want implausible_items", env.Error.Code)
+	}
+
+	// Nothing was credited and the raid is still live, so the honest haul —
+	// one frame, which does fit — still lands.
+	var result store.RaidResult
+	if code := c.do(http.MethodPost, "/v1/raid/result", map[string]any{
+		"session_id":    started.SessionID,
+		"session_token": started.SessionToken,
+		"outcome":       "extracted",
+		"items":         []map[string]any{{"item_id": "bike_frame", "quantity": 1}},
+	}, &result); code != http.StatusOK {
+		t.Fatalf("one bike frame = %d, want 200", code)
+	}
+
+	var profile store.Profile
+	if code := c.do(http.MethodGet, "/v1/profile", nil, &profile); code != http.StatusOK {
+		t.Fatalf("profile status = %d, want 200", code)
+	}
+	got := loot(profile.Stash)
+	if len(got) != 1 || got[0].ItemID != "bike_frame" || got[0].Quantity != 1 {
+		t.Errorf("stash = %v, want exactly one bike_frame", got)
+	}
+}
+
 // TestConfirmReturnsDeadlineIncludingGraceBuffer pins the fix for the bug where
 // a late-but-legitimate extraction was recorded as death: the server's deadline
 // is the raid duration *plus* a grace buffer, and confirm reports it so the

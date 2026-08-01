@@ -2,62 +2,81 @@ package domain
 
 import "fmt"
 
-// ItemStackSizes is every item id the game can legitimately produce, mapped to
-// how many units of it fit in one backpack slot. It mirrors
-// SarkoGame/Data/Items/items.json, which is the authored source — the values,
-// not the file, because domain stays dependency-free and must compile in an
-// image that ships only sarko-api/. loot_test.go reads that file and fails if
-// the ids or the stack sizes drift in either direction.
+// ItemDef is as much of one client catalog row as the server has to know: how
+// many units share a stack, and the rectangle that stack occupies in the carry
+// grid.
+//
+// Width and Height are whole cells and mirror items.json's `size: [w, h]`. They
+// are never rotated, because the client's grid does not rotate either
+// (SarkoGrid::FirstFit) — so a 3-wide frame can only ever enter the 4-wide
+// backpack page, and that asymmetry is load-bearing rather than incidental.
+type ItemDef struct {
+	StackSize int
+	Width     int
+	Height    int
+}
+
+// ItemDefs is every item id the game can legitimately produce, mapped to its
+// stack size and its footprint. It mirrors SarkoGame/Data/Items/items.json,
+// which is the authored source — the values, not the file, because domain stays
+// dependency-free and must compile in an image that ships only sarko-api/.
+// loot_test.go reads that file and fails if the ids, the stack sizes or the
+// sizes drift in either direction.
 //
 // Why the backend needs its own copy: stash_items.item_id is free-form TEXT and
 // ValidateStacks only bounds its *length*, so before this list existed a client
 // could submit any id it liked — including a helicopter turbine out of a starter
 // sector — and have it credited. The client is the raid host in this slice
 // (spec §4 "зафиксированная иллюзия"), so it is exactly the party that cannot
-// be trusted with the set of things that exist — nor with how many of them fit.
-var ItemStackSizes = map[string]int{
+// be trusted with the set of things that exist — nor with how many of them fit,
+// nor with how much room they take.
+var ItemDefs = map[string]ItemDef{
 	// Weapons and ammo.
-	"pistol":   1,
-	"ammo_9mm": 60,
+	"pistol":   {StackSize: 1, Width: 2, Height: 1},
+	"ammo_9mm": {StackSize: 60, Width: 1, Height: 1},
 	// Medical.
-	"medkit":      3,
-	"bandage":     5,
-	"painkillers": 5,
+	"medkit":      {StackSize: 3, Width: 1, Height: 1},
+	"bandage":     {StackSize: 5, Width: 1, Height: 1},
+	"painkillers": {StackSize: 5, Width: 1, Height: 1},
 	// Junk and valuables.
-	"scrap_metal": 10,
-	"copper_wire": 10,
-	"duct_tape":   5,
-	"canned_food": 5,
-	"vodka":       3,
-	"cigarettes":  5,
-	"toolbox":     1,
+	"scrap_metal": {StackSize: 10, Width: 1, Height: 1},
+	"copper_wire": {StackSize: 10, Width: 1, Height: 1},
+	"duct_tape":   {StackSize: 5, Width: 1, Height: 1},
+	"canned_food": {StackSize: 5, Width: 1, Height: 1},
+	"vodka":       {StackSize: 3, Width: 1, Height: 1},
+	"cigarettes":  {StackSize: 5, Width: 1, Height: 1},
+	"toolbox":     {StackSize: 1, Width: 2, Height: 1},
 	// Vehicle parts. These three are the bicycle recipe in garage.go; the later
 	// tiers' parts (engine_small, fuel_tank, engine_large, wheel_medium,
 	// wheel_large, gearbox, battery, turbine, rotor_blade, avionics) are
 	// deliberately absent — no shipped loot table can produce them yet, so
 	// accepting them would only ever be accepting a lie.
-	"bike_frame":  1,
-	"wheel_small": 2,
-	"chain":       1,
+	"bike_frame":  {StackSize: 1, Width: 3, Height: 2},
+	"wheel_small": {StackSize: 2, Width: 2, Height: 2},
+	"chain":       {StackSize: 1, Width: 1, Height: 1},
 	// Worn equipment. A backpack is submitted as a stack of one when the player
 	// extracts wearing it, so the id has to exist here or the whole haul is
 	// rejected at result time — which is how the client's catalog and this map
 	// are kept honest by loot_test.go's drift alarm.
-	"backpack": 1,
+	"backpack": {StackSize: 1, Width: 2, Height: 2},
 }
 
-// KnownItemIDs is the set of legitimate item ids. It is derived from
-// ItemStackSizes rather than written out a second time, so the id list and the
-// stack sizes cannot drift from each other inside this package.
+// KnownItemIDs is the set of legitimate item ids. It is derived from ItemDefs
+// rather than written out a second time, so the id list and the definitions
+// cannot drift from each other inside this package.
 var KnownItemIDs = knownItemIDs()
 
 func knownItemIDs() map[string]struct{} {
-	ids := make(map[string]struct{}, len(ItemStackSizes))
-	for id := range ItemStackSizes {
+	ids := make(map[string]struct{}, len(ItemDefs))
+	for id := range ItemDefs {
 		ids[id] = struct{}{}
 	}
 	return ids
 }
+
+// StackSizeOf is how many units of an item share one stack — one rectangle in
+// the grid. Unknown ids yield 0; callers reject those before they ever ask.
+func StackSizeOf(itemID string) int { return ItemDefs[itemID].StackSize }
 
 // MaxRaidStacks is the most item stacks one raid can deliver: twelve carried
 // cells (4 pockets + 8 from a worn backpack, container-inventory spec §2.3) plus
@@ -73,8 +92,15 @@ const MaxRaidStacks = 13
 // frames, i.e. complete the bicycle recipe about 780 times over.
 //
 // Unknown ids yield 0; callers reject those before they ever ask for a cap.
+//
+// This is the outer wall, not the wall. It counts stacks and ignores the shape
+// of them, so it still says 13 for a 3×2 bike_frame of which the bag holds
+// exactly one. FitsCarryGrid is what closes that gap; this stays because it is
+// O(1), it bounds the numbers *before* the placer turns them into rectangles,
+// and a cheap check that cannot be tricked into allocating is worth keeping in
+// front of one that can.
 func MaxRaidUnits(itemID string) int {
-	return MaxRaidStacks * ItemStackSizes[itemID]
+	return MaxRaidStacks * ItemDefs[itemID].StackSize
 }
 
 // StarterKit is what a brand-new player is given once, at anonymous
@@ -93,11 +119,15 @@ func StarterKit() []ItemStack {
 // ValidateRaidItems is the plausibility gate on anything a client claims to
 // have carried. The backpack is the physical bound on a raid, so the rules are
 // its geometry: every id must exist, every quantity must be positive, the
-// merged haul must fit MaxRaidStacks slots, and one item is capped at
-// MaxRaidStacks × its stackSize — the slots-times-stack-size product, not a
-// flat number. That distinction is the difference between 780 rounds of 9×18
-// (a plausible full backpack of ammo) and 780 bicycle frames (which do not
-// stack, so thirteen is every frame thirteen stacks can hold).
+// merged haul must fit MaxRaidStacks slots, one item is capped at
+// MaxRaidStacks × its stackSize — and, finally, the whole haul must place into
+// the carry grid (FitsCarryGrid).
+//
+// The last check is the one that binds. The three before it count; only the
+// placer measures. Counting alone let thirteen 3×2 bicycle frames through a bag
+// that holds one, and let thirteen ids each at their own cap through a bag of
+// twelve cells. They stay in front of it because they are O(1) and they bound
+// the quantities before the placer allocates a rectangle per stack.
 //
 // The quantity check is repeated here rather than left to ValidateStacks:
 // nothing pins the order the two are called in, and without it a forged result
@@ -111,7 +141,7 @@ func StarterKit() []ItemStack {
 // against the layer they actually test.
 func ValidateRaidItems(stacks []ItemStack) error {
 	for _, s := range stacks {
-		if _, ok := ItemStackSizes[s.ItemID]; !ok {
+		if _, ok := ItemDefs[s.ItemID]; !ok {
 			// The id is not echoed: it is unbounded caller input, and
 			// ValidateStacks already refuses to echo it for the same reason.
 			return fmt.Errorf("unknown item id")
@@ -128,8 +158,12 @@ func ValidateRaidItems(stacks []ItemStack) error {
 	for _, s := range merged {
 		if limit := MaxRaidUnits(s.ItemID); s.Quantity > limit {
 			return fmt.Errorf("item %s: at most %d units fit a backpack (%d slots × a stack of %d), got %d",
-				s.ItemID, limit, MaxRaidStacks, ItemStackSizes[s.ItemID], s.Quantity)
+				s.ItemID, limit, MaxRaidStacks, ItemDefs[s.ItemID].StackSize, s.Quantity)
 		}
 	}
-	return nil
+
+	// The geometry, last: the checks above are the outer wall (they bound the
+	// numbers so this one can safely turn them into rectangles), and this is the
+	// wall — the haul has to actually place into the bag the client carries.
+	return FitsCarryGrid(merged)
 }

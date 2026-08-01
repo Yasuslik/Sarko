@@ -58,6 +58,15 @@ public:
 	 */
 	void ApplyDamage(float Amount, AActor* DamageInstigator);
 
+	/**
+	 * Server only, and only before the pawn has taken a hit: sets the pool this
+	 * archetype fights with (SarkoAI::GetBotArchetypes). Distinct from
+	 * ResetForTest below, which is a test seam and says so — this one is a
+	 * production path and the difference matters when someone greps for who
+	 * writes MaxHealth.
+	 */
+	void InitialiseMaxHealth(float NewMaxHealth);
+
 	/** Test seam: puts the component in a known state without a world. */
 	void ResetForTest(float NewMaxHealth);
 

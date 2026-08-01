@@ -897,19 +897,63 @@
     { "id": "bridge_spawn_04", "pos": [-17500, 15000, 150], "yaw": -45 }
   ],
 
-  "botSpawns": [
-    { "note": "THE GAS STATION — two, per the owner's split. §11's АЗС парковка, verbatim.",
-      "id": "bridge_bot_gas_forecourt", "pos": [-12500, -7500, 150], "zone": "mid" },
-    { "note": "§11's АЗС двор (-15000,-10500) shifted +400,-200 — the ledger point is exactly on сарай S02's east wall centre line, and a bot spawned inside a wall is the oldest bug on this map. §11 allows +/-300-800.",
-      "id": "bridge_bot_gas_yard", "pos": [-14600, -10700, 150], "zone": "deep" },
+  "botSpawns": [],
 
-    { "note": "THE RAIL DEPOT — four, per the owner's split. These two are §11's ж/д запад and ж/д разгрузка, verbatim.",
-      "id": "bridge_bot_rail_west", "pos": [-16000, -16500, 150], "zone": "deep" },
-    { "id": "bridge_bot_rail_dock", "pos": [-11000, -17500, 150], "zone": "deep" },
-    { "note": "The two the owner's count adds beyond §11's west entries. Placed at the depot's own sub-areas and spaced so no two of the six can hear one shot: the closest pair on this map is rail_dock and rail_dispatcher at 2052 uu, against an 1800 uu hearing radius.",
-      "id": "bridge_bot_rail_warehouse", "pos": [-14600, -18600, 150], "zone": "deep" },
-    { "note": "Shifted 400 south of the plan's (-12400,-15600): that point is INSIDE the freight car at (-12300,-15600), whose body is 1400 x 300 uu — a bot spawned inside a solid prop is the same bug the gas_yard note above is about, and no map test sees it because the invariants check blocks and building walls, not props. At y = -16000 it stands 250 uu clear of the car's south face, on the диспетчерская side of the train beside L28. §11 allows +/-300-800.",
-      "id": "bridge_bot_rail_dispatcher", "pos": [-12400, -16000, 150], "zone": "deep" }
+  "encounterBudget": {
+    "note": "THE CEILING FOR THE WHOLE RAID, and the primary object of the encounter system — the triggers are secondary. Four for the tutorial (the owner asked for 3-5) against three encounters costing 1 + 1 + 2, so the budget is spent exactly and the map goes quiet for the walk home. That quiet is content, not absence. 'normal' is the ladder above the tutorial and nothing on this map reads it yet. firstFightMaxAlive is one and is non-negotiable: eight bots that all heard the same shot turned a firefight into an execution once already, and this is the system enforcing what the authoring already intends.",
+    "tutorial": 4,
+    "normal": 8,
+    "firstFightMaxAlive": 1
+  },
+
+  "encounters": [
+    { "note": "1 — THE GAS STATION. The first fight in the player's life, and it is one enemy: order 10 puts it first, so encounterBudget.firstFightMaxAlive caps it at one whatever else changes. The trigger sits on the station itself, so a player coming down the west dirt road arms it around y = -6400, roughly 2600 uu of walking before they can be shot at by a 1100 uu bot. Both authored doors are the old hand-placed posts from before encounters existed — points already proven clear of every block, building wall and prop by the map suite.",
+      "id": "bridge_enc_gas_station",
+      "order": 10,
+      "budgetCost": 1,
+      "maxAlive": 1,
+      "oneShot": true,
+      "trigger": { "kind": "radius", "pos": [-13500, -9000], "radiusUU": 2600, "armAfterUU": 3400 },
+      "spawns": [
+        { "note": "PREFERRED. The АЗС двор, south-west of the station and BEHIND IT from a northern approach — the sight line from here to a player arming the trigger passes straight through bridge_gas_station's 2200x1500 footprint, which is what makes this the point that qualifies first. It holds the yard, so the fight starts when the player walks in, not when the encounter fires.",
+          "id": "bridge_encspawn_gas_yard", "pos": [-14600, -10700, 150], "archetype": "scav_pistol",
+          "postPos": [-14600, -10700], "leashUU": 1400 },
+        { "note": "The forecourt, north-east of the station. The fallback door for a player who comes at the station from the west or the south, where the yard would be in plain sight. Never used at the same time as the yard — maxAlive is 1.",
+          "id": "bridge_encspawn_gas_forecourt", "pos": [-12500, -7500, 150], "archetype": "scav_pistol",
+          "postPos": [-12500, -7500], "leashUU": 1400 } ] },
+
+    { "note": "2 — THE DEPOT APPROACH. One again, and one archetype further on: scav_smg trades reach for cadence, so the lesson the gas station taught (get close, or do not shoot) is examined rather than repeated. The trigger sits on the open ground between the station and the depot, clear of the warehouse trigger's circle so the two are separate events and not one three-bot moment.",
+      "id": "bridge_enc_depot_approach",
+      "order": 20,
+      "budgetCost": 1,
+      "maxAlive": 1,
+      "oneShot": true,
+      "trigger": { "kind": "radius", "pos": [-13600, -12400], "radiusUU": 1800, "armAfterUU": 2600 },
+      "spawns": [
+        { "note": "PREFERRED. Beside the диспетчерская, 250 uu clear of the freight car's south face — the shifted point that exists because the ledger's original (-12400,-15600) was INSIDE that car. Deep enough that a player arming the trigger at y = -10600 is 4800 uu away.",
+          "id": "bridge_encspawn_depot_dispatcher", "pos": [-12400, -16000, 150], "archetype": "scav_smg",
+          "postPos": [-12400, -16000], "leashUU": 1400 },
+        { "note": "The east dock. The fallback door, and it posts where it appears: bridge_loot_l27 and mil_02 are its crates, and no other post on this map can hear either.",
+          "id": "bridge_encspawn_depot_dock", "pos": [-11000, -17500, 150], "archetype": "scav_smg",
+          "postPos": [-11000, -17500], "leashUU": 1400 } ] },
+
+    { "note": "3 — THE RAIL WAREHOUSE. Two, and the tutorial's whole escalation is this: one, one, two. Both posts can hear bridge_loot_rail_mil_01 — the pistol, in the warehouse's deepest room — and that is the AUTHORED two-bot fight rather than the bug the old map had, where mil_01 was heard by two bots from two unrelated posts that happened to converge. The invariant is per encounter, and both of these are this encounter's. Nothing is reserved for the walk home: after this the map is quiet, on purpose.",
+      "id": "bridge_enc_rail_warehouse",
+      "order": 30,
+      "budgetCost": 2,
+      "maxAlive": 2,
+      "oneShot": true,
+      "trigger": { "kind": "radius", "pos": [-15200, -17600], "radiusUU": 3200, "armAfterUU": 4000 },
+      "spawns": [
+        { "note": "South of the warehouse, outside its footprint (which runs y -18400..-16800) — behind the building from every northern approach.",
+          "id": "bridge_encspawn_rail_warehouse_s", "pos": [-14600, -18600, 150], "archetype": "scav_smg",
+          "postPos": [-14600, -18600], "leashUU": 1400 },
+        { "note": "The depot's west end, by ж/д запад. 2200 uu from a player arming this trigger at y = -14400, and it is the post that hears bridge_loot_l26 and l30.",
+          "id": "bridge_encspawn_rail_west", "pos": [-16000, -16500, 150], "archetype": "scav_pistol",
+          "postPos": [-16000, -16500], "leashUU": 1400 },
+        { "note": "A THIRD door for a two-bot encounter, deliberately. The west point clears the 1800 uu floor from a northern approach but stands on open depot ground, so it is the one of the three most likely to be disqualified on sight rather than on distance — and an encounter that cannot fill maxAlive does not fire at all. This door is 4900 uu east of the trigger boundary with the freight cars and the диспетчерская between, and it POSTS at the west end regardless, so the bot walks into the warehouse rather than appearing beside it.",
+          "id": "bridge_encspawn_rail_dock_fallback", "pos": [-11000, -17500, 150], "archetype": "scav_pistol",
+          "postPos": [-16000, -16500], "leashUU": 1400 } ] }
   ],
 
   "extractions": [

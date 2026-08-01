@@ -1315,4 +1315,257 @@ bool FSarkoBuildingsFailLoudly::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace
+{
+	/**
+	 * Everything an encounter file needs around the section under test. Written
+	 * as a wrapper rather than repeated inline because every row of the bad-case
+	 * table below differs from the good one in exactly one place, and that is
+	 * the property the table is trying to demonstrate.
+	 */
+	FString EncounterFile(const TCHAR* BudgetAndEncounters)
+	{
+		return FString::Printf(
+			TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,)")
+			TEXT(R"("playerSpawns":[{"id":"p","pos":[0,0,0],"yaw":0}],%s})"),
+			BudgetAndEncounters);
+	}
+
+	const TCHAR* const GoodBudget = TEXT(R"("encounterBudget":{"tutorial":4,"normal":8,"firstFightMaxAlive":1})");
+
+	/** One well-formed encounter, with the fields the bad cases perturb. */
+	FString GoodEncounter(const TCHAR* Overrides = TEXT(""))
+	{
+		return FString::Printf(
+			TEXT(R"("encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+			TEXT(R"("trigger":{"kind":"radius","pos":[-13500,-9000],"radiusUU":2600,"armAfterUU":3400},)")
+			TEXT(R"("spawns":[{"id":"s1","pos":[-14600,-10700,150],"archetype":"scav_pistol",)")
+			TEXT(R"("postPos":[-14600,-10700],"leashUU":1400}]%s}])"), Overrides);
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoMapParsesEncounters,
+	"Sarko.Map.ParsesEncounters",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoMapParsesEncounters::RunTest(const FString& Parameters)
+{
+	// The positive case first, field by field, because every rejection below is
+	// only meaningful against a shape that is known to be accepted.
+	FSarkoMapDefinition Definition;
+	FString Error;
+	const FString Json = EncounterFile(*FString::Printf(TEXT("%s,%s"), GoodBudget, *GoodEncounter()));
+	if (!TestTrue(FString::Printf(TEXT("a well-formed encounter file parses: %s"), *Error),
+			SarkoMap::ParseDefinition(Json, Definition, Error)))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("the budget is read"), Definition.EncounterBudget.Tutorial, 4);
+	TestEqual(TEXT("the normal ladder is read"), Definition.EncounterBudget.Normal, 8);
+	TestEqual(TEXT("the first fight is capped at one"), Definition.EncounterBudget.FirstFightMaxAlive, 1);
+	TestTrue(TEXT("the budget records that it was authored"), Definition.EncounterBudget.bAuthored);
+
+	if (!TestEqual(TEXT("one encounter"), Definition.Encounters.Num(), 1))
+	{
+		return false;
+	}
+	const FSarkoEncounter& Encounter = Definition.Encounters[0];
+	TestEqual(TEXT("its id"), Encounter.Id, FString(TEXT("e1")));
+	TestEqual(TEXT("its order"), Encounter.Order, 10);
+	TestEqual(TEXT("its cost"), Encounter.BudgetCost, 1);
+	TestEqual(TEXT("its ceiling"), Encounter.MaxAlive, 1);
+	TestTrue(TEXT("it is one-shot"), Encounter.bOneShot);
+	TestEqual(TEXT("the trigger is a radius"), static_cast<int32>(Encounter.Trigger.Kind),
+		static_cast<int32>(ESarkoTriggerKind::Radius));
+	TestEqual(TEXT("the trigger radius"), Encounter.Trigger.RadiusUU, 2600.f);
+	TestEqual(TEXT("the hysteresis band"), Encounter.Trigger.ArmAfterUU, 3400.f);
+	if (!TestEqual(TEXT("one authored spawn point"), Encounter.Spawns.Num(), 1))
+	{
+		return false;
+	}
+	TestEqual(TEXT("the spawn's archetype"), Encounter.Spawns[0].Archetype, FName(TEXT("scav_pistol")));
+	TestEqual(TEXT("the spawn's leash"), Encounter.Spawns[0].LeashUU, 1400.f);
+	TestEqual(TEXT("the spawn's post"), Encounter.Spawns[0].PostPos, FVector2D(-14600.f, -10700.f));
+
+	// The spawn point and the post are DIFFERENT fields, and the parser must
+	// keep them apart: where a pawn is created has to satisfy "far away and out
+	// of sight at this instant", while where it holds has to be the interesting
+	// ground at the POI. A parser that read one into the other would pass every
+	// assertion above if the map happened to author them equal.
+	const FString SplitJson = EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+		TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+		TEXT(R"("spawns":[{"id":"s1","pos":[-11000,-17500,150],"archetype":"scav_pistol","postPos":[-16000,-16500],"leashUU":1400}]}])"), GoodBudget));
+	FSarkoMapDefinition Split;
+	if (TestTrue(TEXT("a spawn point away from its post parses"),
+			SarkoMap::ParseDefinition(SplitJson, Split, Error)) && Split.Encounters.Num() == 1)
+	{
+		TestEqual(TEXT("the pawn is created where 'pos' says"),
+			Split.Encounters[0].Spawns[0].Location, FVector(-11000.f, -17500.f, 150.f));
+		TestEqual(TEXT("and holds where 'postPos' says"),
+			Split.Encounters[0].Spawns[0].PostPos, FVector2D(-16000.f, -16500.f));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoMapRejectsBadEncounters,
+	"Sarko.Map.RejectsBadEncounters",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoMapRejectsBadEncounters::RunTest(const FString& Parameters)
+{
+	// Same discipline as every other section's table: an encounter file is
+	// hand-edited, so it will be broken eventually, and the worst outcome is the
+	// silent one — a raid that quietly contains no enemies, or contains them
+	// without a ceiling. Every row here is one field away from the good file in
+	// Sarko.Map.ParsesEncounters.
+	const TArray<TPair<FString, FString>> BadCases = {
+		// Encounters with no ceiling is the one cross-section rule: the budget is
+		// the primary object of the system, and a map without it is a map whose
+		// enemy count is bounded by nothing at all.
+		{ TEXT("encounters with no encounterBudget"),
+			EncounterFile(*GoodEncounter()) },
+		{ TEXT("encounterBudget is not an object"),
+			EncounterFile(*FString::Printf(TEXT(R"("encounterBudget":4,%s)"), *GoodEncounter())) },
+		{ TEXT("encounterBudget missing firstFightMaxAlive"),
+			EncounterFile(*FString::Printf(TEXT(R"("encounterBudget":{"tutorial":4,"normal":8},%s)"), *GoodEncounter())) },
+		{ TEXT("a zero tutorial budget, which is a map with encounters that can never fire"),
+			EncounterFile(*FString::Printf(TEXT(R"("encounterBudget":{"tutorial":0,"normal":8,"firstFightMaxAlive":1},%s)"), *GoodEncounter())) },
+		{ TEXT("a quoted numeral for the budget"),
+			EncounterFile(*FString::Printf(TEXT(R"("encounterBudget":{"tutorial":"4","normal":8,"firstFightMaxAlive":1},%s)"), *GoodEncounter())) },
+		// JSON has one number type, so a fraction would be truncated and the
+		// author's mistake would become the raid's ceiling with nothing logged.
+		{ TEXT("a fractional budget"),
+			EncounterFile(*FString::Printf(TEXT(R"("encounterBudget":{"tutorial":4.5,"normal":8,"firstFightMaxAlive":1},%s)"), *GoodEncounter())) },
+
+		{ TEXT("encounters is not an array"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":{})"), GoodBudget)) },
+		{ TEXT("an anonymous encounter"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+		{ TEXT("a missing order, which makes 'the first fight is the gas station' luck"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+		{ TEXT("a fractional budgetCost"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1.5,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+		{ TEXT("a zero budgetCost, which is a free encounter"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":0,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+		// A default here would be a silent decision about whether a POI can hand
+		// out enemies twice, which is the difference between a tutorial and a
+		// grinder.
+		{ TEXT("a missing oneShot"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+		{ TEXT("a stringy oneShot, which FString::ToBool would read as false"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":"ture",)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+		{ TEXT("a maxAlive higher than the number of authored doors"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":3,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+
+		{ TEXT("a missing trigger"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+		// An unlisted kind must not fall back to radius: a typo would become a
+		// trigger of the wrong shape in the right place, which reads as a
+		// gameplay bug and not as a data bug.
+		{ TEXT("an unknown trigger kind"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"volume","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+		{ TEXT("a trigger pos that is a triple, not a pair"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+		{ TEXT("a zero trigger radius"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":0,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+		// A hysteresis band of zero width is the pumping bug the field exists to
+		// stop, and it looks exactly like a correct file.
+		{ TEXT("armAfterUU equal to radiusUU — a hysteresis band of zero width"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":200,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+		{ TEXT("armAfterUU inside radiusUU"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":2600,"armAfterUU":1000},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+
+		{ TEXT("no spawns at all — an encounter that can never fire"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},"spawns":[]}])"), GoodBudget)) },
+		{ TEXT("an anonymous spawn point"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+		// The archetype is checked against the table HERE, at load, for the same
+		// reason a fixedItems id is checked against the catalog here: the
+		// alternative is a bot that silently never appears, mid-raid, from a file
+		// that parses.
+		{ TEXT("an archetype the table does not know"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_bazooka","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+		{ TEXT("a missing postPos, which is a bot with nowhere to hold"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","leashUU":1400}]}])"), GoodBudget)) },
+		// A bot with no leash is the bug the leash exists to fix.
+		{ TEXT("a zero leash"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":0}]}])"), GoodBudget)) },
+		{ TEXT("a missing leash"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"s1","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0]}]}])"), GoodBudget)) },
+		// Ids are one namespace across the whole file, encounters and their spawn
+		// points included: a report, a test or a person reading "the thing called
+		// X" does not know which section X was declared in.
+		{ TEXT("an encounter id that collides with a spawn point id"),
+			EncounterFile(*FString::Printf(TEXT(R"(%s,"encounters":[{"id":"same","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"same","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}])"), GoodBudget)) },
+		{ TEXT("a spawn point id that collides with a container id"),
+			FString::Printf(TEXT(R"({"id":"x","extentUU":20000,"raidDurationSeconds":900,)")
+				TEXT(R"("playerSpawns":[{"id":"p","pos":[0,0,0],"yaw":0}],"containers":[{"id":"dup","pos":[250,0,0]}],%s,)")
+				TEXT(R"("encounters":[{"id":"e1","order":10,"budgetCost":1,"maxAlive":1,"oneShot":true,)")
+				TEXT(R"("trigger":{"kind":"radius","pos":[0,0],"radiusUU":100,"armAfterUU":200},)")
+				TEXT(R"("spawns":[{"id":"dup","pos":[0,0,0],"archetype":"scav_pistol","postPos":[0,0],"leashUU":1400}]}]})"), GoodBudget) },
+	};
+
+	for (const TPair<FString, FString>& Case : BadCases)
+	{
+		FSarkoMapDefinition Definition;
+		FString Error;
+		TestFalse(FString::Printf(TEXT("rejected: %s"), *Case.Key),
+			SarkoMap::ParseDefinition(Case.Value, Definition, Error));
+		TestFalse(FString::Printf(TEXT("names the problem: %s"), *Case.Key), Error.IsEmpty());
+	}
+
+	// A map with no encounters at all is NOT an error: the pre-encounter
+	// `botSpawns` shape still works and non-tutorial content uses it. Asserted
+	// here so the table above cannot drift into rejecting every old map file.
+	FSarkoMapDefinition Legacy;
+	FString LegacyError;
+	TestTrue(TEXT("a map with neither encounters nor a budget still parses"),
+		SarkoMap::ParseDefinition(EncounterFile(TEXT(R"("botSpawns":[{"id":"b","pos":[250,0,0],"zone":"deep"}])")),
+			Legacy, LegacyError));
+	TestEqual(TEXT("and carries no encounters"), Legacy.Encounters.Num(), 0);
+	TestFalse(TEXT("and knows its budget was never authored"), Legacy.EncounterBudget.bAuthored);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

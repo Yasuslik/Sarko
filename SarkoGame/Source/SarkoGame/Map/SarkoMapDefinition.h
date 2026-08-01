@@ -108,6 +108,154 @@ struct FSarkoBotSpot
 	FName Zone;
 };
 
+/** How an encounter's trigger decides the player has arrived. */
+UENUM()
+enum class ESarkoTriggerKind : uint8
+{
+	/**
+	 * The only shape today, and an enum rather than an implied constant so a
+	 * corridor trigger can be added later as an ADDITION and not a migration.
+	 * Radius, not a box: `pos` + `radiusUU` is the exact shape the parser
+	 * already knows from `extractions`, the POIs on this map are round-ish
+	 * (a station forecourt, a depot yard), and a yaw'd box is a second thing to
+	 * get wrong.
+	 */
+	Radius
+};
+
+/** One enemy an encounter may put on the map, authored point by authored point. */
+USTRUCT()
+struct FSarkoEncounterSpawn
+{
+	GENERATED_BODY()
+
+	/** Stable name (ТЗ §18). Required — this is the id the spawn log prints. */
+	UPROPERTY()
+	FString Id;
+
+	/**
+	 * Where the pawn is CREATED. Never procedural: a spawn point that is a JSON
+	 * row is a spawn point the map test can assert is not inside a wall, a
+	 * building or a prop. "A bot spawned inside a wall" is called the oldest bug
+	 * on this map in bridge.json's own notes, and it has recurred twice.
+	 */
+	UPROPERTY()
+	FVector Location = FVector::ZeroVector;
+
+	/** A row of SarkoAI::GetBotArchetypes. Rejected at parse time if unknown. */
+	UPROPERTY()
+	FName Archetype;
+
+	/**
+	 * Where this bot HOLDS, once it exists — distinct from Location on purpose.
+	 * The spawn point has to satisfy "far from the player and out of sight at
+	 * this instant"; the post has to be the interesting ground at the POI. On a
+	 * map where those two can be the same point they are, and where they cannot
+	 * (a spawn door that only qualifies from one approach) they are not.
+	 */
+	UPROPERTY()
+	FVector2D PostPos = FVector2D::ZeroVector;
+
+	/** How far from PostPos this bot may wander. See USarkoRaidSettings::AIPatrolLeashUU. */
+	UPROPERTY()
+	float LeashUU = 1400.f;
+};
+
+/** Where the player has to walk for an encounter to happen. */
+USTRUCT()
+struct FSarkoEncounterTrigger
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	ESarkoTriggerKind Kind = ESarkoTriggerKind::Radius;
+
+	UPROPERTY()
+	FVector2D Location = FVector2D::ZeroVector;
+
+	UPROPERTY()
+	float RadiusUU = 0.f;
+
+	/**
+	 * Hysteresis, and it must exceed RadiusUU. The trigger only becomes armable
+	 * again once the player has been FURTHER than this from it — otherwise a
+	 * player loitering on the boundary pumps the system, arming and disarming
+	 * several times a second.
+	 */
+	UPROPERTY()
+	float ArmAfterUU = 0.f;
+};
+
+/** One authored event: the player walks somewhere, and enemies are at the building. */
+USTRUCT()
+struct FSarkoEncounter
+{
+	GENERATED_BODY()
+
+	/** Stable name (ТЗ §18), required, unique across the whole file. */
+	UPROPERTY()
+	FString Id;
+
+	/**
+	 * Tie-break when two triggers arm in the same evaluation — lower fires
+	 * first. This is what makes "the first fight is the gas station" data rather
+	 * than luck, and it is what `firstFightMaxAlive` is measured against.
+	 */
+	UPROPERTY()
+	int32 Order = 0;
+
+	/** Charged against the per-raid budget when this encounter fires. Never refunded. */
+	UPROPERTY()
+	int32 BudgetCost = 1;
+
+	/** Ceiling for THIS encounter alone; the budget is the ceiling for the raid. */
+	UPROPERTY()
+	int32 MaxAlive = 1;
+
+	/** Tutorial encounters are one-shot; a normal raid may re-arm a POI. */
+	UPROPERTY()
+	bool bOneShot = true;
+
+	UPROPERTY()
+	FSarkoEncounterTrigger Trigger;
+
+	UPROPERTY()
+	TArray<FSarkoEncounterSpawn> Spawns;
+};
+
+/**
+ * How many enemies a raid of each kind is allowed, for the whole raid.
+ *
+ * The primary object of the encounter system is this counter, not the triggers:
+ * "three to five enemies for the whole tutorial" is a raid-scoped number, and a
+ * trigger that fires when the budget is spent must do nothing, silently and
+ * correctly.
+ */
+USTRUCT()
+struct FSarkoEncounterBudget
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 Tutorial = 0;
+
+	UPROPERTY()
+	int32 Normal = 0;
+
+	/**
+	 * The ceiling on the FIRST fight of a raid, whatever that encounter's own
+	 * maxAlive says. One. It is non-negotiable and it saved the game once
+	 * already: eight bots that all heard the same shot turned a firefight into
+	 * an execution.
+	 */
+	UPROPERTY()
+	int32 FirstFightMaxAlive = 0;
+
+	/** False when the map authored no `encounterBudget` at all — then nothing spawns. */
+	UPROPERTY()
+	bool bAuthored = false;
+};
+
 /**
  * A whole hand-authored map, exactly as it appears in the data file.
  *
@@ -159,11 +307,22 @@ struct FSarkoMapDefinition
 	UPROPERTY()
 	TArray<FString> PlayerSpawnIds;
 
+	/**
+	 * Statically posted bots — the pre-encounter shape, kept because non-tutorial
+	 * content still uses it. The shipped tutorial map authors none: on that map
+	 * every enemy arrives through Encounters below.
+	 */
 	UPROPERTY()
 	TArray<FSarkoBotSpot> BotSpawns;
 
 	UPROPERTY()
 	TArray<FSarkoExtractionSpot> Extractions;
+
+	UPROPERTY()
+	TArray<FSarkoEncounter> Encounters;
+
+	UPROPERTY()
+	FSarkoEncounterBudget EncounterBudget;
 };
 
 namespace SarkoMap

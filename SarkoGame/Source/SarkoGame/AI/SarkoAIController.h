@@ -10,6 +10,14 @@ enum class ESarkoAIState : uint8
 {
 	Idle,
 	Patrol,
+	/**
+	 * Heard, not seen. The state that replaces chasing through a wall (ТЗ §11,
+	 * «агра через стены нет»): the bot walks once to where the noise came from
+	 * and, finding nothing there, goes back to its post. It is also what gives
+	 * the player the thing an extraction game needs — the ability to break
+	 * contact by breaking line of sight.
+	 */
+	Investigate,
 	Chase,
 	Shoot
 };
@@ -30,6 +38,15 @@ namespace SarkoAI
 	 * chatter Chase<->Shoot every tick as floating-point distance drifted by
 	 * fractions of a uu around the boundary.
 	 */
+	/**
+	 * bHasLineOfSight is now a GATE and not merely a shooting condition. Before
+	 * the realism stage a target inside the hearing radius was chased whether or
+	 * not the bot could see it, so a shot fired anywhere in a 1800 uu circle
+	 * pulled every bot in it through the geometry and into the player's face. A
+	 * heard-but-unseen target now produces Investigate instead: the bot walks to
+	 * where the sound was, and the caller decides how long it keeps believing in
+	 * it (bInvestigationActive below).
+	 */
 	ESarkoAIState DecideState(
 		ESarkoAIState Current,
 		bool bHasTarget,
@@ -37,7 +54,20 @@ namespace SarkoAI
 		bool bHasLineOfSight,
 		float HearingRadius,
 		float FiringRange,
-		float ShootHysteresisRangeUU);
+		float ShootHysteresisRangeUU,
+		bool bInvestigationActive);
+
+	/**
+	 * Pure: a patrol point inside the bot's leash. AngleRand01 and RadiusRand01
+	 * are the two [0,1) randoms the caller draws, passed in rather than drawn
+	 * here so the one rule worth asserting — the result is never further from
+	 * the post than LeashUU — is testable without a world or a seed.
+	 *
+	 * The radius is scaled by sqrt(RadiusRand01) so points are uniform over the
+	 * disc rather than crowded at its centre; a bot that spends its patrol
+	 * standing on its own post reads as a bot that is not patrolling.
+	 */
+	FVector PatrolPointInLeash(const FVector& PostPos, float LeashUU, float AngleRand01, float RadiusRand01);
 
 	/**
 	 * Pure steering decision: there is no navmesh in this project, so the
@@ -79,8 +109,26 @@ public:
 	ASarkoAIController();
 
 	virtual void Tick(float DeltaSeconds) override;
+	virtual void OnPossess(APawn* InPawn) override;
 
 	ESarkoAIState GetState() const { return State; }
+
+	/**
+	 * Where this bot holds, and how far from it it may wander. Called by the
+	 * encounter director right after SpawnActor, from the authored `spawns[]`
+	 * row; a bot nobody tells takes its own spawn location as its post in
+	 * OnPossess, which is the same discipline with no data behind it.
+	 */
+	void SetPost(const FVector& InPostPos, float InLeashUU);
+
+	const FVector& GetPostPos() const { return PostPos; }
+	float GetLeashUU() const;
+
+	/**
+	 * Per-instance overrides from the bot archetype table. A non-positive value
+	 * means "use the project setting", which is what an unarchetyped bot gets.
+	 */
+	void SetPerception(float InHearingRadiusUU, float InFiringRangeUU, float InFireIntervalSeconds);
 
 private:
 	APawn* FindNearestLivingPlayer() const;
@@ -95,12 +143,44 @@ private:
 	 */
 	void SteerToward(const FVector& TargetLocation, const class USarkoRaidSettings& Settings, bool bLogThisTick);
 
-	/** Picks a fresh, far-off wander point and forces a Patrol-style steer this tick. */
+	/** Picks a fresh wander point INSIDE THE LEASH and forces a Patrol-style steer this tick. */
 	void RerollPatrolTarget(const APawn& Self, const class USarkoRaidSettings& Settings);
 
 	ESarkoAIState State = ESarkoAIState::Idle;
 	float FireCooldown = 0.f;
+
+	/**
+	 * Where this bot holds. Set from the map's authored `postPos` by the
+	 * encounter director, or from the pawn's own spawn location in OnPossess.
+	 *
+	 * It used to be that there was no post at all and PatrolTarget started at
+	 * FVector::ZeroVector — the world origin, which on the shipped map is the
+	 * closed bridge inside the sealed two-thirds. Every bot's first move was
+	 * therefore east into the closure wall, the stuck detector fired 2 s later,
+	 * and the reroll scattered it anywhere in a 320x320 m square.
+	 */
+	FVector PostPos = FVector::ZeroVector;
+
+	/** Negative means "no authored leash" — GetLeashUU falls back to the setting. */
+	float AuthoredLeashUU = -1.f;
+
+	/** Starts AT the post, not at the world origin. */
 	FVector PatrolTarget = FVector::ZeroVector;
+
+	/** Archetype overrides; non-positive means "use the project setting". */
+	float HearingRadiusOverrideUU = -1.f;
+	float FiringRangeOverrideUU = -1.f;
+	float FireIntervalOverrideSeconds = -1.f;
+
+	/**
+	 * The last position a target was perceived from without being seen — what
+	 * Investigate walks to. Cleared on arrival or on timeout, at which point the
+	 * bot drops back to Patrol and its patrol target is reset to the post, so
+	 * "looked, found nothing, went home" is a single code path.
+	 */
+	FVector InvestigateTarget = FVector::ZeroVector;
+	bool bInvestigating = false;
+	float InvestigateSeconds = 0.f;
 
 	/**
 	 * Per-instance (unlike the previous NAVDIAG code's function-local

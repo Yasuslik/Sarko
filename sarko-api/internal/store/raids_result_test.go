@@ -233,6 +233,167 @@ func TestDeathCreditsOnlyWhatWasSubmitted(t *testing.T) {
 	}
 }
 
+// TestStartThenResultWithoutConfirmBanksNothing is the exploit loop itself.
+//
+// start -> result, as fast as the network allows, with no confirm in between
+// and therefore no gameplay at all: the session is still `pending`, which means
+// "loadout debited, the client never entered the map". SubmitResult used to
+// accept that and credit the full haul, so the loop banked a backpack per round
+// trip. Nothing deterred it — the client's loadout is empty, so a start costs
+// nothing to lose.
+//
+// Every other SubmitResult test in this file calls ConfirmRaid first, which is
+// exactly why nothing covered this.
+func TestStartThenResultWithoutConfirmBanksNothing(t *testing.T) {
+	pool := testutil.Pool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	playerID := seedPlayer(t, s, "dev-no-confirm", nil)
+
+	started, err := s.StartRaid(ctx, startParams(playerID, nil))
+	if err != nil {
+		t.Fatalf("StartRaid: %v", err)
+	}
+
+	// No ConfirmRaid. Straight to the payday.
+	_, err = s.SubmitResult(ctx, store.SubmitResultParams{
+		PlayerID:     playerID,
+		SessionID:    started.SessionID,
+		SessionToken: started.SessionToken,
+		Outcome:      domain.OutcomeExtracted,
+		Items:        []domain.ItemStack{{ItemID: "turbine", Quantity: 13}},
+	})
+	if !errors.Is(err, store.ErrSessionNotConfirmed) {
+		t.Fatalf("err = %v, want ErrSessionNotConfirmed — a raid nobody entered cannot produce a haul", err)
+	}
+
+	profile, err := s.Profile(ctx, playerID)
+	if err != nil {
+		t.Fatalf("Profile: %v", err)
+	}
+	if len(profile.Stash) != 0 {
+		t.Errorf("stash = %v, want empty — the loop banked loot", profile.Stash)
+	}
+	// The same call also latched the tutorial flag, permanently skipping the
+	// tutorial for an account that had never played a raid.
+	if profile.TutorialCompleted {
+		t.Error("an unconfirmed result completed the tutorial")
+	}
+
+	// The session is untouched, deliberately: a stray or replayed result must
+	// not destroy a raid the player is about to confirm and play.
+	state, confirmedAt := sessionState(t, pool, started.SessionID)
+	if state != "pending" {
+		t.Errorf("state = %q, want pending — a refused result must not close the session", state)
+	}
+	if confirmedAt != nil {
+		t.Errorf("confirmed_at = %v, want nil", confirmedAt)
+	}
+
+	// And the honest path still works from exactly here: confirm, then submit.
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute); err != nil {
+		t.Fatalf("ConfirmRaid after a refused result: %v", err)
+	}
+	if _, err := s.SubmitResult(ctx, store.SubmitResultParams{
+		PlayerID:     playerID,
+		SessionID:    started.SessionID,
+		SessionToken: started.SessionToken,
+		Outcome:      domain.OutcomeExtracted,
+		Items:        []domain.ItemStack{{ItemID: "turbine", Quantity: 1}},
+	}); err != nil {
+		t.Fatalf("a confirmed raid must still submit: %v", err)
+	}
+}
+
+// TestResultLoopWithoutConfirmNeverPays runs the loop rather than one round of
+// it, because "free money per round trip" is the actual finding: one refusal
+// proves the check exists, ten prove the loop cannot be ground.
+func TestResultLoopWithoutConfirmNeverPays(t *testing.T) {
+	s := store.New(testutil.Pool(t))
+	ctx := context.Background()
+	playerID := seedPlayer(t, s, "dev-loop", nil)
+
+	started, err := s.StartRaid(ctx, startParams(playerID, nil))
+	if err != nil {
+		t.Fatalf("StartRaid: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		_, err := s.SubmitResult(ctx, store.SubmitResultParams{
+			PlayerID:     playerID,
+			SessionID:    started.SessionID,
+			SessionToken: started.SessionToken,
+			Outcome:      domain.OutcomeExtracted,
+			Items:        []domain.ItemStack{{ItemID: "turbine", Quantity: 13}},
+		})
+		if !errors.Is(err, store.ErrSessionNotConfirmed) {
+			t.Fatalf("round %d: err = %v, want ErrSessionNotConfirmed", i, err)
+		}
+	}
+
+	profile, err := s.Profile(ctx, playerID)
+	if err != nil {
+		t.Fatalf("Profile: %v", err)
+	}
+	if len(profile.Stash) != 0 {
+		t.Errorf("ten rounds of the loop banked %v", profile.Stash)
+	}
+}
+
+// TestConfirmRaidRejectsAnExpiredPendingSession pins the other half of the same
+// invariant. ConfirmRaid never looked at expires_at, so a pending session the
+// sweeper had not reached yet was confirmed anyway and handed a brand-new
+// deadline of now() + raid duration + grace buffer. PENDING_TTL therefore meant
+// nothing whenever the sweeper was behind — a nondeterministic window at best,
+// and unbounded if the sweeper goroutine had stopped.
+//
+// The sweeper is deliberately never called here: that is the whole point.
+func TestConfirmRaidRejectsAnExpiredPendingSession(t *testing.T) {
+	pool := testutil.Pool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	playerID := seedPlayer(t, s, "dev-confirm-expired", []domain.ItemStack{{ItemID: "ammo", Quantity: 30}})
+
+	p := startParams(playerID, []domain.ItemStack{{ItemID: "ammo", Quantity: 30}})
+	p.PendingTTL = -time.Second // the client never entered, and the deadline passed
+	started, err := s.StartRaid(ctx, p)
+	if err != nil {
+		t.Fatalf("StartRaid: %v", err)
+	}
+
+	_, err = s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Hour)
+	if !errors.Is(err, store.ErrSessionNotOpen) {
+		t.Fatalf("err = %v, want ErrSessionNotOpen (the uniform refusal)", err)
+	}
+
+	// Closed the way the sweeper would close it: voided, loadout back. Not
+	// "active with an hour on the clock", which is what it used to be.
+	state, confirmedAt := sessionState(t, pool, started.SessionID)
+	if state != "voided" {
+		t.Errorf("state = %q, want voided", state)
+	}
+	if confirmedAt != nil {
+		t.Errorf("confirmed_at = %v, want nil — an expired session was never entered", confirmedAt)
+	}
+
+	profile, err := s.Profile(ctx, playerID)
+	if err != nil {
+		t.Fatalf("Profile: %v", err)
+	}
+	got := map[string]int{}
+	for _, item := range profile.Stash {
+		got[item.ItemID] = item.Quantity
+	}
+	if got["ammo"] != 30 {
+		t.Errorf("loadout was not returned: %v", profile.Stash)
+	}
+
+	// The refused confirm freed the player, so a new raid starts immediately
+	// rather than waiting for the sweeper.
+	if _, err := s.StartRaid(ctx, startParams(playerID, nil)); err != nil {
+		t.Errorf("a new raid must start after an expired session is refused: %v", err)
+	}
+}
+
 // TestConfirmRaidRejectsWrongToken, TestConfirmRaidRejectsUnknownSessionID,
 // TestConfirmRaidRejectsAlreadyActiveSession and
 // TestConfirmRaidRejectsAnotherPlayersSession together prove ConfirmRaid's

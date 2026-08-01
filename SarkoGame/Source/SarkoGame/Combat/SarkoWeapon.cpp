@@ -201,7 +201,7 @@ void USarkoWeaponComponent::ServerFire(FVector Origin, FVector Direction)
 	{
 		if (USarkoHealthComponent* Health = HitActor->FindComponentByClass<USarkoHealthComponent>())
 		{
-			Health->ApplyDamage(Settings.WeaponDamage, Owner);
+			Health->ApplyDamage(DamageOverride > 0.f ? DamageOverride : Settings.WeaponDamage, Owner);
 		}
 	}
 }
