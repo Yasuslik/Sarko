@@ -88,6 +88,46 @@ FString SarkoUI::CellLabel(const FString& Name)
 	return First;
 }
 
+SarkoUI::ESarkoReloadState SarkoUI::ReloadStateFor(int32 AmmoInMagazine, int32 MagazineSize, bool bReloading)
+{
+	// Reloading outranks everything, including empty: while the reload is running
+	// the count is not the fact the player needs.
+	if (bReloading)
+	{
+		return ESarkoReloadState::Reloading;
+	}
+	if (AmmoInMagazine <= 0)
+	{
+		return ESarkoReloadState::Empty;
+	}
+	// A zero or negative magazine size is a broken config, not a divide by zero.
+	// Everything is "low" then, which is the direction that nags rather than the
+	// one that lies.
+	if (MagazineSize <= 0)
+	{
+		return ESarkoReloadState::Low;
+	}
+	// Exactly a third is still ready — the boundary belongs to the calmer state,
+	// so a 30-round magazine goes amber at 9 and not at 10.
+	return (AmmoInMagazine * 3 <= MagazineSize - 1) ? ESarkoReloadState::Low : ESarkoReloadState::Ready;
+}
+
+float SarkoUI::ReloadPulseAlpha(float TimeSeconds)
+{
+	return 0.45f + 0.20f * FMath::Sin(TimeSeconds * 2.f * PI * 2.f);
+}
+
+FString SarkoUI::InteractLabelFor(EInteractAction Action)
+{
+	switch (Action)
+	{
+	case EInteractAction::Search:  return TEXT("ОБШУКАТИ");
+	case EInteractAction::Close:   return TEXT("ЗАКРИТИ");
+	case EInteractAction::Extract: return TEXT("ЕВАКУАЦІЯ");
+	default:                       return FString();
+	}
+}
+
 namespace
 {
 	/**
@@ -203,6 +243,15 @@ FSarkoInventoryStyles::FSarkoInventoryStyles()
 			FLinearColor(1.f, 1.f, 1.f, Alpha), 2.f);
 		Flash.OutlineSettings.bUseBrushTransparency = false;
 		TransferFlash[Step] = Flash;
+
+		// The refused rectangle, at the size that FAILED. Same radius as a cell so
+		// it reads as a cell-shaped thing, and 3 pt of stroke against the pulse's
+		// 2 because it is drawn OVER occupied cells that already carry a 1.5 pt rim
+		// — a ghost the same weight as the thing it overhangs reads as part of it.
+		FSlateRoundedBoxBrush Ghost(FLinearColor::Transparent, SarkoUI::CellRadiusPt,
+			SarkoUI::AmberWarn.CopyWithNewOpacity(Alpha), 3.f);
+		Ghost.OutlineSettings.bUseBrushTransparency = false;
+		RefusalGhost[Step] = Ghost;
 	}
 }
 
@@ -230,6 +279,11 @@ const FSlateBrush* FSarkoInventoryStyles::RefusalGlowFor(float Alpha) const
 const FSlateBrush* FSarkoInventoryStyles::TransferFlashFor(float Alpha) const
 {
 	return RungFor(TransferFlash, GlowSteps, Alpha);
+}
+
+const FSlateBrush* FSarkoInventoryStyles::RefusalGhostFor(float Alpha) const
+{
+	return RungFor(RefusalGhost, GlowSteps, Alpha);
 }
 
 TSharedRef<const FSarkoInventoryStyles> FSarkoInventoryStyles::Get()

@@ -7,6 +7,12 @@
 #   * -RenderOffscreen, not -nullrhi. -nullrhi renders nothing at all, so the
 #     automation suite can never see this screen; -RenderOffscreen gives a real
 #     Metal RHI with no window.
+# SHELTER_EXTRA_CMDS is spliced into -ExecCmds ahead of the shutter, which is
+# how a state that takes three raids to earn gets photographed:
+#   SHELTER_EXTRA_CMDS="SarkoDebugStash 3" Scripts/shelter-shot.sh
+#   SHELTER_EXTRA_CMDS="SarkoDebugParts 3" Scripts/shelter-shot.sh
+# Both fake the CACHED profile only and send nothing to the backend.
+#
 #   * `Shot showui`, not `HighResShot`. HighResShot goes through the scene
 #     renderer and captures no Slate whatsoever, and this screen is entirely
 #     Slate — the PNG comes out black. Scripts/overview-shot.sh uses HighResShot
@@ -52,7 +58,7 @@ if [[ -n "${SHELTER_AFTER_RAID:-}" ]]; then
 	TIMEOUT="${SHELTER_TIMEOUT:-180}"
 else
 	MAP="/Engine/Maps/Entry"
-	EXEC_CMDS="t.MaxFPS 10, SarkoShelterShot $DELAY"
+	EXEC_CMDS="t.MaxFPS 10, ${SHELTER_EXTRA_CMDS:+$SHELTER_EXTRA_CMDS, }SarkoShelterShot $DELAY"
 	SHOT_ARGS=()
 fi
 

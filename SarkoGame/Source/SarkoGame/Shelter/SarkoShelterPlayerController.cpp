@@ -61,7 +61,8 @@ void ASarkoShelterPlayerController::BeginPlay()
 	}
 
 	Widget = SNew(SSarkoShelterWidget)
-		.OnEnterRaid(FSimpleDelegate::CreateUObject(this, &ASarkoShelterPlayerController::EnterRaid));
+		.OnEnterRaid(FSimpleDelegate::CreateUObject(this, &ASarkoShelterPlayerController::EnterRaid))
+		.OnCraft(FSimpleDelegate::CreateUObject(this, &ASarkoShelterPlayerController::Craft));
 
 	Viewport->AddViewportWidgetContent(Widget.ToSharedRef());
 
@@ -148,7 +149,142 @@ void ASarkoShelterPlayerController::RefreshWidget()
 	}
 	Widget->SetView(SarkoShelter::BuildView(
 		GameInstance->LastRaid, GameInstance->CachedProfile, GameInstance->bProfileLoaded,
-		LastError, SarkoLoot::GetItemCatalog()));
+		LastError, LastCraftLine, SarkoLoot::GetItemCatalog()));
+}
+
+void ASarkoShelterPlayerController::SarkoDebugParts(float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	TWeakObjectPtr<ASarkoShelterPlayerController> WeakThis(this);
+	FTimerHandle Handle;
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda([WeakThis]()
+	{
+		ASarkoShelterPlayerController* Self = WeakThis.Get();
+		USarkoGameInstance* GameInstance = Self ? Self->GetGameInstance<USarkoGameInstance>() : nullptr;
+		if (!GameInstance)
+		{
+			return;
+		}
+		// The mirrored recipe, not a hand-written list: if garage.go's recipe
+		// moves, this moves with it and the shot keeps showing the truth.
+		for (const FSarkoItemStack& Part : SarkoShelter::BicycleRecipe())
+		{
+			if (FSarkoItemStack* Held = GameInstance->CachedProfile.Stash.FindByPredicate(
+				[&Part](const FSarkoItemStack& Stack) { return Stack.Item == Part.Item; }))
+			{
+				Held->Quantity = FMath::Max(Held->Quantity, Part.Quantity);
+			}
+			else
+			{
+				GameInstance->CachedProfile.Stash.Add(Part);
+			}
+		}
+		GameInstance->bProfileLoaded = true;
+		UE_LOG(LogTemp, Warning,
+			TEXT("SarkoDebugParts: the CACHED profile now holds a bicycle's parts. Nothing was sent to the backend."));
+		Self->RefreshWidget();
+	}), FMath::Max(0.01f, DelaySeconds), false);
+#endif
+}
+
+void ASarkoShelterPlayerController::SarkoDebugStash(float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	TWeakObjectPtr<ASarkoShelterPlayerController> WeakThis(this);
+	FTimerHandle Handle;
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda([WeakThis]()
+	{
+		ASarkoShelterPlayerController* Self = WeakThis.Get();
+		USarkoGameInstance* GameInstance = Self ? Self->GetGameInstance<USarkoGameInstance>() : nullptr;
+		if (!GameInstance)
+		{
+			return;
+		}
+		// Deliberately UNSORTED and spanning every category, with a 2x1, a 2x2 and
+		// a 3x2 in it: the sort is what the frame is checking, and a multi-cell item
+		// is what proves the cell draws one box rather than w boxes with seams.
+		static const FName Mixed[] = {
+			TEXT("scrap_metal"), TEXT("pistol"),      TEXT("bandage"),    TEXT("ammo_9mm"),
+			TEXT("medkit"),      TEXT("toolbox"),     TEXT("bike_frame"), TEXT("wheel_small"),
+			TEXT("chain"),       TEXT("copper_wire"), TEXT("vodka"),      TEXT("cigarettes"),
+			TEXT("duct_tape"),   TEXT("canned_food"), TEXT("painkillers"), TEXT("backpack"),
+		};
+		static const int32 Amounts[] = { 14, 1, 5, 60, 2, 1, 1, 2, 3, 9, 2, 7, 4, 6, 5, 1 };
+
+		GameInstance->CachedProfile.Stash.Reset();
+		for (int32 Index = 0; Index < UE_ARRAY_COUNT(Mixed); ++Index)
+		{
+			GameInstance->CachedProfile.Stash.Add(FSarkoItemStack{ Mixed[Index], Amounts[Index] });
+		}
+		GameInstance->bProfileLoaded = true;
+		UE_LOG(LogTemp, Warning,
+			TEXT("SarkoDebugStash: the CACHED profile now holds %d mixed stacks. Nothing was sent to the backend."),
+			GameInstance->CachedProfile.Stash.Num());
+		Self->RefreshWidget();
+	}), FMath::Max(0.01f, DelaySeconds), false);
+#endif
+}
+
+void ASarkoShelterPlayerController::Craft()
+{
+	if (bCraftInFlight)
+	{
+		return;
+	}
+	USarkoGameInstance* GameInstance = GetGameInstance<USarkoGameInstance>();
+	const TSharedPtr<FSarkoBackendClient> Backend = GameInstance ? GameInstance->EnsureBackend() : nullptr;
+	if (!Backend.IsValid())
+	{
+		LastError = TEXT("no backend client");
+		RefreshWidget();
+		return;
+	}
+
+	// Snapshotted BEFORE the call, because the answer is a set difference and the
+	// profile is about to be replaced by the refetch below.
+	const TArray<FString> Before = GameInstance->CachedProfile.UnlockedMaps;
+
+	bCraftInFlight = true;
+	if (Widget.IsValid())
+	{
+		Widget->SetCraftInFlight(true);
+	}
+
+	// Weak: this completion routinely lands after the player has pressed В РЕЙД
+	// and this controller has been destroyed by the travel.
+	TWeakObjectPtr<ASarkoShelterPlayerController> WeakThis(this);
+	Backend->CraftVehicle([WeakThis, Before](bool bSuccess, const FString& Tier,
+		const TArray<FString>& Maps, const FString& Error)
+	{
+		ASarkoShelterPlayerController* Self = WeakThis.Get();
+		if (!Self)
+		{
+			return;
+		}
+		Self->bCraftInFlight = false;
+		if (!bSuccess)
+		{
+			// insufficient_items and max_tier arrive here. Shown verbatim: a
+			// refused craft with no reason is worse than no button.
+			Self->LastError = Error;
+			Self->RefreshWidget();
+			return;
+		}
+		Self->LastError.Reset();
+
+		const TArray<FString> Opened = SarkoShelter::NewlyUnlockedMaps(Before, Maps);
+		Self->LastCraftLine = Opened.Num() > 0
+			? FString::Printf(TEXT("ЗІБРАНО. ВІДКРИТО: %s"), *FString::Join(Opened, TEXT(", ")).ToUpper())
+			: FString(TEXT("ЗІБРАНО."));
+
+		// The parts have left the stash and the tier has moved, both server-side
+		// in one transaction. Refetch rather than patch the cached profile: the
+		// server's copy is the only one that knows what the debit actually took.
+		Self->FetchProfile();
+		Self->RefreshWidget();
+	});
+
+	RefreshWidget();
 }
 
 void ASarkoShelterPlayerController::FetchProfile()

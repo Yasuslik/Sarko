@@ -119,6 +119,35 @@ namespace SarkoUI
 	 * from.
 	 */
 	FString CellLabel(const FString& Name);
+
+	/**
+	 * What the reload button is saying (spec §4.3: "the magazine count lives on
+	 * it, it goes amber below a third, and it pulses when empty"). Pure, so
+	 * "amber below a third" is a test rather than an eyeball — and it lives here
+	 * rather than in the HUD for the same reason every colour above does: the HUD
+	 * cannot be constructed under -nullrhi and this can.
+	 */
+	enum class ESarkoReloadState : uint8 { Ready, Low, Empty, Reloading };
+
+	ESarkoReloadState ReloadStateFor(int32 AmmoInMagazine, int32 MagazineSize, bool bReloading);
+
+	/** The empty button's pulse, 0.25..0.65 at 2 Hz. Bounded away from zero: a
+	 *  button that vanishes on the trough reads as absent, not as urgent. */
+	float ReloadPulseAlpha(float TimeSeconds);
+
+	/**
+	 * What the interact button will do. Its LABEL is contextual; its rect never
+	 * is (spec §4.4: "a generic action button in a game with two actions is a
+	 * guess").
+	 *
+	 * Extract is declared and NOT wired: an extraction is a dwell, not a press,
+	 * so there is nothing to press yet — the value and its label exist as the
+	 * named seam for when there is, rather than as a live button that does
+	 * nothing.
+	 */
+	enum class EInteractAction : uint8 { None, Search, Close, Extract };
+
+	FString InteractLabelFor(EInteractAction Action);
 }
 
 /**
@@ -168,10 +197,27 @@ struct FSarkoInventoryStyles
 	/** The same trick for the transfer flash: a white rim over the receiving cell. */
 	FSlateBrush TransferFlash[GlowSteps];
 
+	/**
+	 * The refused rectangle's outline: amber, transparent-bodied, in the same
+	 * twelve baked opacities as the two ladders above and for exactly the same
+	 * reason — SBorder folds a brush's own tint into what it draws with
+	 * (SBorder.cpp:115), so a transparent BODY has a final alpha of zero and
+	 * FSlateDrawElement culls the whole element, outline included
+	 * (DrawElementTypes.cpp:154). bUseBrushTransparency stays FALSE here, which
+	 * makes the outline colour verbatim; the price is that each rung carries its
+	 * own alpha.
+	 *
+	 * Thicker than the pulse (3 pt against 2) because it is drawn OVER occupied
+	 * cells that already have a 1.5 pt rim of their own, and a ghost the same
+	 * weight as the thing it is overhanging reads as part of it.
+	 */
+	FSlateBrush RefusalGhost[GlowSteps];
+
 	/** The rung nearest Alpha, or null below the first — a null BorderImage draws
-	 *  nothing, which is exactly the resting state both of these want. */
+	 *  nothing, which is exactly the resting state all three of these want. */
 	const FSlateBrush* RefusalGlowFor(float Alpha) const;
 	const FSlateBrush* TransferFlashFor(float Alpha) const;
+	const FSlateBrush* RefusalGhostFor(float Alpha) const;
 
 	FSarkoInventoryStyles();
 };

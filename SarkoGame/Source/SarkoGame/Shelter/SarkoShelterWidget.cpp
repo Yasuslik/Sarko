@@ -3,14 +3,18 @@
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Styling/CoreStyle.h"
+#include "Loot/SarkoItemCatalog.h"
+#include "Loot/SarkoItemGrid.h"
+#include "UI/SarkoCellWidgets.h"
+#include "UI/SarkoInventoryStyle.h"
 #include "UI/SarkoUiScale.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SDPIScaler.h"
 #include "Widgets/Layout/SScrollBox.h"
-#include "Widgets/Layout/SSpacer.h"
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
 #include "Widgets/Text/STextBlock.h"
 
 namespace
@@ -167,6 +171,7 @@ float SSarkoShelterWidget::UiScale() const
 void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 {
 	OnEnterRaid = InArgs._OnEnterRaid;
+	OnCraft = InArgs._OnCraft;
 
 	// Logged once, at construction, because the whole layout is expressed in
 	// points and this factor is the only thing turning it into pixels — a wrong
@@ -250,17 +255,59 @@ void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 							.ColorAndOpacity(BrightColour)
 						]
 
-						+ SVerticalBox::Slot().AutoHeight()
-						[
-							SAssignNew(HaulBox, SVerticalBox)
-						]
-
-						// Pushes the status line and the buttons to the bottom of
-						// the column, so the buttons land under the left thumb
-						// where it already rests in landscape.
+						// Scrolled, and it takes the column's slack: a long haul
+						// used to push the status line and the buttons off the
+						// bottom of a 390 pt canvas, and the garage block below is
+						// three more rows plus a 48 pt button. FillHeight here does
+						// the pushing the bare SSpacer used to do, and does it
+						// without ever clipping.
 						+ SVerticalBox::Slot().FillHeight(1.f)
 						[
-							SNew(SSpacer)
+							SNew(SScrollBox)
+							+ SScrollBox::Slot()
+							[
+								SAssignNew(HaulBox, SVerticalBox)
+							]
+						]
+
+						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 6.f, 0.f, 2.f)
+						[
+							SAssignNew(GarageParts, SVerticalBox)
+						]
+
+						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
+						[
+							// The payoff sentence. Empty until a craft succeeds, and
+							// it stays for the rest of the visit rather than
+							// flashing: this is what every raid before it was for.
+							SAssignNew(CraftLineText, STextBlock)
+							.Font(ShelterFont(13.f))
+							.ColorAndOpacity(FSlateColor(FLinearColor(0.35f, 0.85f, 0.40f)))
+							.AutoWrapText(true)
+						]
+
+						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
+						[
+							SNew(SBox)
+							// 48 pt tall, past the 44 pt tap-target minimum. Width is
+							// the left column's, so "НЕ ВИСТАЧАЄ: Мале колесо" fits
+							// on one line at 13 pt rather than being ellipsed into a
+							// button that no longer explains anything.
+							.HeightOverride(48.f)
+							[
+								SAssignNew(CraftButton, SButton)
+								.ContentPadding(FMargin(14.f, 0.f))
+								.HAlign(HAlign_Center)
+								.VAlign(VAlign_Center)
+								.IsEnabled_Lambda([this]() { return bCraftEnabled; })
+								.OnClicked(this, &SSarkoShelterWidget::HandleCraft)
+								[
+									SAssignNew(CraftLabel, STextBlock)
+									.Font(ShelterFont(13.f))
+									.Justification(ETextJustify::Center)
+									.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+								]
+							]
 						]
 
 						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 8.f, 0.f, 8.f)
@@ -348,16 +395,33 @@ void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 							HorizontalRule()
 						]
 
-						// The stash can be any length, which is the reason this
-						// screen is Slate and not DrawHUD primitives: SScrollBox is
-						// the whole feature. It gets the full height of the body in
-						// landscape instead of whatever was left over in portrait.
+						// The stash is the SAME cell grid the raid's crate panel draws
+						// (spec §2: one visual language for "things you own"), and it
+						// can be any height — which is the reason this screen is Slate
+						// and not DrawHUD primitives. It grows downward and scrolls; it
+						// is never packed by the player.
 						+ SVerticalBox::Slot().FillHeight(1.f)
 						[
-							SNew(SScrollBox)
-							+ SScrollBox::Slot()
+							SNew(SOverlay)
+
+							+ SOverlay::Slot()
 							[
-								SAssignNew(StashBox, SVerticalBox)
+								SNew(SScrollBox)
+								+ SScrollBox::Slot()
+								[
+									SAssignNew(StashBox, SBox)
+								]
+							]
+
+							+ SOverlay::Slot()
+							.HAlign(HAlign_Center).VAlign(VAlign_Top)
+							.Padding(0.f, 24.f, 0.f, 0.f)
+							[
+								// Over the grid, not instead of it: an empty stash still
+								// shows the shape it will fill.
+								SAssignNew(StashNoteText, STextBlock)
+								.Font(ShelterFont(15.f))
+								.ColorAndOpacity(LabelColour)
 							]
 						]
 					]
@@ -373,7 +437,10 @@ void SSarkoShelterWidget::SetView(const FSarkoShelterView& View)
 
 	TitleText->SetText(FText::FromString(View.Title));
 	OutcomeText->SetText(FText::FromString(View.OutcomeTitle));
-	GarageText->SetText(FText::FromString(View.GarageLine));
+	GarageText->SetText(FText::FromString(View.Garage.Title));
+	CraftLabel->SetText(FText::FromString(View.Garage.CraftLabel));
+	CraftLineText->SetText(FText::FromString(View.CraftLine));
+	bCraftEnabled = View.Garage.bCanCraft;
 	StatusText->SetText(FText::FromString(View.StatusLine));
 
 	const auto Fill = [](const TSharedPtr<SVerticalBox>& Box, const TArray<FString>& Lines, float Size)
@@ -392,7 +459,30 @@ void SSarkoShelterWidget::SetView(const FSarkoShelterView& View)
 	};
 
 	Fill(HaulBox, View.HaulLines, 14.f);
-	Fill(StashBox, View.StashLines, 15.f);
+	Fill(GarageParts, View.Garage.PartLines, 13.f);
+
+	StashNoteText->SetText(FText::FromString(View.StashNote));
+
+	// Rebuilt wholesale, once per profile fetch and once per craft — never per
+	// frame. Slate is not a tick path.
+	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+	const int32 Rows = SarkoGrid::StashRowsFor(View.StashStacks, Catalog,
+		SarkoUI::StashColumns, SarkoUI::StashMinRows);
+	const FSarkoGridPage Page{ SarkoUI::StashColumns, Rows };
+	const TArray<FSarkoGridSlot> Slots = SarkoGrid::Place(View.StashStacks, Catalog, { Page });
+	StashBox->SetContent(SarkoUI::BuildGridPage(View.StashStacks, Slots, /*PageIndex*/ 0,
+		Page, *FSarkoInventoryStyles::Get()));
+}
+
+void SSarkoShelterWidget::SetCraftInFlight(bool bInFlight)
+{
+	// A second press while the first is in flight is a second debit. The button
+	// is re-enabled by the SetView that follows the refetched profile, which is
+	// also the moment the answer is actually known.
+	if (bInFlight)
+	{
+		bCraftEnabled = false;
+	}
 }
 
 #if !UE_BUILD_SHIPPING
@@ -410,6 +500,19 @@ bool SSarkoShelterWidget::SimulateEnterRaidClickIfEnabled()
 	RaidButton->SimulateClick();
 	return true;
 }
+
+bool SSarkoShelterWidget::SimulateCraftClickIfEnabled()
+{
+	// Same reason as above: the engine's SimulateClick does not consult the
+	// enabled state, so a scripted press would craft against a stash the button
+	// itself was refusing.
+	if (!CraftButton.IsValid() || !CraftButton->IsEnabled())
+	{
+		return false;
+	}
+	CraftButton->SimulateClick();
+	return true;
+}
 #endif
 
 TSharedPtr<SWidget> SSarkoShelterWidget::WidgetToFocus() const
@@ -420,5 +523,11 @@ TSharedPtr<SWidget> SSarkoShelterWidget::WidgetToFocus() const
 FReply SSarkoShelterWidget::HandleEnterRaid()
 {
 	OnEnterRaid.ExecuteIfBound();
+	return FReply::Handled();
+}
+
+FReply SSarkoShelterWidget::HandleCraft()
+{
+	OnCraft.ExecuteIfBound();
 	return FReply::Handled();
 }

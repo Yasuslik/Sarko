@@ -1,9 +1,11 @@
 #include "Loot/SarkoLootTable.h"
 
 #include "Dom/JsonObject.h"
-// TransferOne delegates the stacking and cell-limit rule to AddToBackpack rather
-// than reimplementing it: two copies of that arithmetic is how a haul half-fits.
+// TransferOne delegates the stacking and placement rule to SarkoGrid::AddToGrid
+// rather than reimplementing it: two copies of that arithmetic is how a haul
+// half-fits.
 #include "Loot/SarkoBackpack.h"
+#include "Loot/SarkoItemGrid.h"
 // For the full FSarkoLootContainerSpot that RollContainerFor reads FixedItems
 // off; the header only forward-declares it.
 #include "Map/SarkoMapDefinition.h"
@@ -294,7 +296,8 @@ TArray<FSarkoItemStack> SarkoLoot::RollContainerFor(const FSarkoLootContainerSpo
 }
 
 int32 SarkoLoot::TransferOne(TArray<FSarkoItemStack>& Container, int32 SlotIndex,
-	TArray<FSarkoItemStack>& Bag, const FSarkoItemCatalog& Catalog, int32 BagLimit)
+	TArray<FSarkoItemStack>& Bag, const FSarkoItemCatalog& Catalog,
+	const TArray<FSarkoGridPage>& Pages)
 {
 	if (!Container.IsValidIndex(SlotIndex))
 	{
@@ -307,11 +310,11 @@ int32 SarkoLoot::TransferOne(TArray<FSarkoItemStack>& Container, int32 SlotIndex
 		return 0;
 	}
 
-	// AddToBackpack is unchanged and still the only thing that knows about
-	// stacking and cell limits. It returns the remainder, which is exactly what
+	// SarkoGrid::AddToGrid is the only thing that knows about stacking and about
+	// which rectangles are free. It returns the remainder, which is exactly what
 	// stays in the crate.
 	const int32 Leftover = FMath::Clamp(
-		SarkoLoot::AddToBackpack(Bag, Catalog, BagLimit, Slot.Item, Slot.Quantity), 0, Slot.Quantity);
+		SarkoGrid::AddToGrid(Bag, Catalog, Pages, Slot.Item, Slot.Quantity), 0, Slot.Quantity);
 	const int32 Moved = Slot.Quantity - Leftover;
 	if (Moved <= 0)
 	{

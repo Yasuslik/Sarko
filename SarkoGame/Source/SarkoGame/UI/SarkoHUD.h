@@ -102,6 +102,17 @@ private:
 	/** The interact button, the "search this crate" prompt and the channel's progress bar. */
 	void DrawInteract();
 
+	/**
+	 * The reload button: a rounded plate carrying the magazine count, amber below
+	 * a third and pulsing at empty (spec §4.3).
+	 *
+	 * A dedicated control because reloading is a decision with a cost and the
+	 * player must be able to make it BEFORE the magazine runs out. Its rect is
+	 * SarkoInput::ReloadButtonRect and takes no game state, so it can never move —
+	 * a control that moves is a control you mis-press.
+	 */
+	void DrawReload();
+
 	/** Zone name and the dwell countdown, top-centre, while the owning pawn is in a zone. */
 	void DrawExtraction();
 
@@ -142,6 +153,19 @@ private:
 	 */
 	float CachedInteractLabelWidth = -1.f;
 	float CachedInteractLabelHeight = 0.f;
+
+	/**
+	 * The interact button's label is contextual now (ОБШУКАТИ / ЗАКРИТИ), so the
+	 * measurement cache is keyed on the STRING and not on the action: two actions
+	 * can share a width and none can share a string.
+	 */
+	FString CachedInteractLabel;
+
+	/** The reload button's count, measured when the number changes rather than
+	 *  every frame. DrawHUD is a tick path. */
+	FString CachedReloadLabel;
+	float CachedReloadLabelWidth = 0.f;
+	float CachedReloadLabelHeight = 0.f;
 
 	/**
 	 * The clock, rebuilt on the second rather than on the frame.

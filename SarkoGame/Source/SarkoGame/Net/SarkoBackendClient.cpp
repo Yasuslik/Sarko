@@ -667,6 +667,72 @@ void FSarkoBackendClient::SubmitResult(const FSarkoRaidSession& Session, const F
 		});
 }
 
+bool SarkoBackend::ParseCraftResponse(const FString& Json, FString& OutTier,
+	TArray<FString>& OutUnlockedMaps, FString& OutError)
+{
+	OutTier.Reset();
+	OutUnlockedMaps.Reset();
+	OutError.Reset();
+
+	TSharedPtr<FJsonObject> Root;
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
+	if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+	{
+		OutError = TEXT("/v1/garage/craft: the response is not valid JSON");
+		return false;
+	}
+	if (!Root->TryGetStringField(TEXT("vehicle_tier"), OutTier) || OutTier.IsEmpty())
+	{
+		OutError = TEXT("/v1/garage/craft: the response has no 'vehicle_tier'");
+		return false;
+	}
+	// Optional by design: absent means "the server did not say", not "no maps".
+	const TArray<TSharedPtr<FJsonValue>>* Maps = nullptr;
+	if (Root->TryGetArrayField(TEXT("unlocked_maps"), Maps) && Maps)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *Maps)
+		{
+			FString Map;
+			if (Value->TryGetString(Map) && !Map.IsEmpty())
+			{
+				OutUnlockedMaps.Add(Map);
+			}
+		}
+	}
+	return true;
+}
+
+void FSarkoBackendClient::CraftVehicle(FOnCraft OnDone)
+{
+	// An empty body on a POST is a legitimate shape, and Send takes the verb
+	// explicitly for exactly this reason — inferring "GET because there is no
+	// body" would make this request indistinguishable from /v1/profile.
+	Send(TEXT("POST"), TEXT("/v1/garage/craft"), FString(), /*bAuthenticated*/ true,
+		[OnDone](bool bSuccess, const FString& Body, const FString& Error)
+		{
+			if (!bSuccess)
+			{
+				// insufficient_items and max_tier land here. Error already carries
+				// the endpoint, the HTTP code and the envelope's message, which is
+				// what the shelter puts on screen verbatim.
+				OnDone(false, FString(), TArray<FString>(), Error);
+				return;
+			}
+			FString Tier;
+			TArray<FString> Maps;
+			FString ParseError;
+			if (!SarkoBackend::ParseCraftResponse(Body, Tier, Maps, ParseError))
+			{
+				UE_LOG(LogTemp, Error, TEXT("SarkoBackend: %s"), *ParseError);
+				OnDone(false, FString(), TArray<FString>(), ParseError);
+				return;
+			}
+			UE_LOG(LogTemp, Display, TEXT("SarkoBackend: crafted '%s'; %d maps unlocked"),
+				*Tier, Maps.Num());
+			OnDone(true, Tier, Maps, FString());
+		});
+}
+
 void FSarkoBackendClient::FetchProfile(FOnProfile OnDone)
 {
 	Send(TEXT("GET"), TEXT("/v1/profile"), FString(), /*bAuthenticated*/ true,

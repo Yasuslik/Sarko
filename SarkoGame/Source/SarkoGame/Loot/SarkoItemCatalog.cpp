@@ -98,6 +98,24 @@ bool SarkoLoot::ParseItemCatalog(const FString& Json, FSarkoItemCatalog& OutCata
 		}
 		Def.StackSize = static_cast<int32>(StackSize);
 
+		// Required, never defaulted: an omitted size is a 1x1 item nobody meant to
+		// author, and a 1x1 rifle is the "backpacks matter" rule quietly gone.
+		const TArray<TSharedPtr<FJsonValue>>* Size = nullptr;
+		if (!(*Object)->TryGetArrayField(TEXT("size"), Size) || !Size || Size->Num() != 2)
+		{
+			OutError = FString::Printf(
+				TEXT("item '%s': 'size' must be [width, height] in whole cells"), *Id);
+			return false;
+		}
+		Def.Width = static_cast<int32>((*Size)[0]->AsNumber());
+		Def.Height = static_cast<int32>((*Size)[1]->AsNumber());
+		if (Def.Width < 1 || Def.Height < 1)
+		{
+			OutError = FString::Printf(
+				TEXT("item '%s': 'size' is %dx%d; both must be at least 1"), *Id, Def.Width, Def.Height);
+			return false;
+		}
+
 		FString CategoryText;
 		if (!(*Object)->TryGetStringField(TEXT("category"), CategoryText) || !ParseCategory(CategoryText, Def.Category))
 		{

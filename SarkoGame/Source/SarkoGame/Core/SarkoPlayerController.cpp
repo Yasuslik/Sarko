@@ -67,35 +67,41 @@ FBox2D SarkoInput::SafeFrame(FVector2D ViewportSize)
 		: FBox2D(FVector2D::ZeroVector, ViewportSize);
 }
 
-FBox2D SarkoInput::InteractButtonRect(FBox2D Frame)
+FBox2D SarkoInput::ReloadButtonRect(FBox2D Frame, float PointScale)
 {
-	// Scaled to the shorter axis so the button is the same physical size on a
-	// phone and in a window, with a floor so it never drops below a thumb.
-	const FVector2D FrameSize = Frame.GetSize();
-	const float Size = FMath::Max(96.f, FMath::Min(FrameSize.X, FrameSize.Y) * 0.14f);
-	const float Right = Frame.Max.X - Size - Size * 0.35f;
-	const float Top = Frame.GetCenter().Y - Size * 0.5f;
-	return FBox2D(FVector2D(Right, Top), FVector2D(Right + Size, Top + Size));
+	const float Size = ReloadButtonSizePt * PointScale;
+	const float Right = Frame.Max.X - ThumbColumnRightInsetPt * PointScale;
+	const float Bottom = Frame.Max.Y - ReloadButtonBottomPt * PointScale;
+	return FBox2D(FVector2D(Right - Size, Bottom - Size), FVector2D(Right, Bottom));
 }
 
-FBox2D SarkoInput::InteractButtonRect(FVector2D ViewportSize)
+FBox2D SarkoInput::InteractButtonRect(FBox2D Frame, float PointScale)
 {
-	return InteractButtonRect(FBox2D(FVector2D::ZeroVector, ViewportSize));
+	const float Width = InteractButtonWidthPt * PointScale;
+	const float Height = InteractButtonHeightPt * PointScale;
+	const float Right = Frame.Max.X - ThumbColumnRightInsetPt * PointScale;
+	// Measured off the reload button rather than off the frame, so the 12 pt gap
+	// is the gap and cannot drift if either size changes.
+	const float Bottom = ReloadButtonRect(Frame, PointScale).Min.Y - ThumbButtonGapPt * PointScale;
+	return FBox2D(FVector2D(Right - Width, Bottom - Height), FVector2D(Right, Bottom));
 }
 
-FBox2D SarkoInput::InteractButtonRectBesidePanel(FBox2D Frame, FBox2D PanelRect)
+FVector2D SarkoInput::RightThumbAnchor(FBox2D Frame, float PointScale)
 {
-	// Same size and the same vertical band as the ordinary rect: the thumb
-	// already knows where this control is, and moving it vertically as well
-	// would make finding it a search rather than a reach.
-	const FBox2D Ordinary = InteractButtonRect(Frame);
-	const FVector2D Size = Ordinary.GetSize();
+	// Bottom-right, in from the corner by roughly where a thumb's tip lands when
+	// the hand is holding the phone rather than reaching across it.
+	return FVector2D(Frame.Max.X - 90.f * PointScale, Frame.Max.Y - 60.f * PointScale);
+}
 
-	// Left of the panel, with the button's own 0.3 as the gap — see the header
-	// for why that is a fraction and not 16 points. Clamped to the frame so a
-	// narrow window cannot push it off the leading edge.
-	const float Left = FMath::Max(Frame.Min.X, PanelRect.Min.X - Size.X * 0.3f - Size.X);
-	return FBox2D(FVector2D(Left, Ordinary.Min.Y), FVector2D(Left + Size.X, Ordinary.Max.Y));
+bool SarkoInput::ShouldFireWhileHeld(FVector2D AimValue, float FireDeadZone)
+{
+	return AimValue.Size() >= FMath::Max(KINDA_SMALL_NUMBER, FireDeadZone);
+}
+
+bool SarkoInput::IsMoveStickSuppressed(bool bContainerPanelOpen)
+{
+	// See the header: the ONE place, so spec §5's fallback is a one-line change.
+	return bContainerPanelOpen;
 }
 
 ASarkoPlayerController::ASarkoPlayerController()
@@ -195,11 +201,34 @@ void ASarkoPlayerController::PlayerTick(float DeltaTime)
 	const FVector2D AimValue = AimStick.Value();
 	Pawn->SetAimIntent(SarkoAim::StickToWorldDirection(AimValue, CameraYaw), AimStick.bActive);
 
-	// Release of the aim thumb is the only fire signal — never auto-fire
-	// (spec §9). bAimReleasedThisFrame is a one-frame edge, so this fires
-	// exactly once per release.
-	if (bAimReleasedThisFrame)
+	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+
+	// HOLD to fire (spec §4.2). There is no fire button: a dedicated one competes
+	// with the aim stick for the same thumb, and every mobile shooter that ships
+	// both ends up with players using one.
+	//
+	// Throttled to the weapon's own interval on this side as well as the
+	// server's, because RequestFire is a reliable RPC and a held stick would
+	// otherwise send one per frame. The server's rate limit is unchanged and
+	// still the authority; this is politeness.
+	if (AimStick.bActive && SarkoInput::ShouldFireWhileHeld(AimValue, Settings.AimFireDeadZone))
 	{
+		if (Now - LastLocalFireSeconds >= Settings.MinFireIntervalSeconds)
+		{
+			LastLocalFireSeconds = Now;
+			bAimFiredThisHold = true;
+			Pawn->RequestFire();
+		}
+	}
+
+	// FLICK: a quick tap that never crossed the dead zone still fires once, on
+	// release — the behaviour this game already had, kept deliberately as the
+	// aimed single shot. A hold that has already fired gets no bonus shot when
+	// the thumb finally lifts.
+	if (bAimReleasedThisFrame && !bAimFiredThisHold)
+	{
+		LastLocalFireSeconds = Now;
 		Pawn->RequestFire();
 	}
 }
@@ -245,21 +274,42 @@ void ASarkoPlayerController::UpdateSticks()
 	bool bAimTouchStillDown = false;
 
 	// The same rect the HUD draws, safe area and all — a button hit-tested where
-	// it is not drawn is a button that misses. InteractButtonRectFor is the ONE
-	// place that decides whether the button is in its usual spot or shifted left
-	// of an open container panel, and both the drawing and this hit test ask it.
-	const FBox2D InteractRect = SarkoUI::InteractButtonRectFor(Cast<ASarkoCharacter>(GetPawn()),
-		SarkoInput::SafeFrame(Viewport), SarkoUI::PointScaleForViewport(Viewport));
+	// it is not drawn is a button that misses. SarkoInput::InteractButtonRect is
+	// the ONE authority both consult, and it takes no game state at all: the rect
+	// never shifts, because the container panel moved to the other half of the
+	// screen (spec §4.5) and there is nothing left for it to avoid. The function
+	// that used to choose between two rects is gone with the second rect.
+	const FBox2D SafeFrame = SarkoInput::SafeFrame(Viewport);
+	const float PointScale = SarkoUI::PointScaleForViewport(Viewport);
+	const FBox2D InteractRect = SarkoInput::InteractButtonRect(SafeFrame, PointScale);
+	const FBox2D ReloadRect = SarkoInput::ReloadButtonRect(SafeFrame, PointScale);
 	bool bInteractTouchStillDown = false;
+	bool bReloadTouchStillDown = false;
 
-	// Three fingers now, not two: movement, aim and the interact button are
-	// three separate holds, and a player opening a crate while backing away
-	// from a bot is holding all three at once. Each slot is a stable identity
-	// for one held finger (UE keeps a finger in the same slot from press to
-	// release), so once a slot is bound to a stick — or to the button — it keeps
-	// driving that thing regardless of where its finger currently sits;
+	// Read once per frame, from the pawn's own mirror of what is open. The panel
+	// is a client-side view; this is a client-side input rule; neither needs the
+	// server's opinion.
+	const ASarkoCharacter* PanelPawn = Cast<ASarkoCharacter>(GetPawn());
+	const bool bMoveSuppressed = SarkoInput::IsMoveStickSuppressed(
+		PanelPawn && PanelPawn->GetOpenContainerIndex() != INDEX_NONE);
+
+	// Dropped on the frame suppression begins, not merely ignored: a stick left
+	// active would keep its last deflection and the pawn would walk on through
+	// the whole loot, which is the exact opposite of the intent.
+	if (bMoveSuppressed && MoveTouchIndex != INDEX_NONE)
+	{
+		MoveStick = FSarkoTouchStick();
+		MoveTouchIndex = INDEX_NONE;
+	}
+
+	// FOUR fingers now, not three: movement, aim, the interact button and the
+	// reload button are four separate holds, and a player backing away from a bot
+	// while opening a crate and reloading is holding all four at once. Each slot
+	// is a stable identity for one held finger (UE keeps a finger in the same slot
+	// from press to release), so once a slot is bound to a stick — or to a button
+	// — it keeps driving that thing regardless of where its finger currently sits;
 	// classification happens once, at press time.
-	for (int32 Index = 0; Index < 3; ++Index)
+	for (int32 Index = 0; Index < 4; ++Index)
 	{
 		float TouchX = 0.f;
 		float TouchY = 0.f;
@@ -271,6 +321,15 @@ void ASarkoPlayerController::UpdateSticks()
 			if (bPressed)
 			{
 				bInteractTouchStillDown = true;
+			}
+			continue;
+		}
+
+		if (Index == ReloadTouchIndex)
+		{
+			if (bPressed)
+			{
+				bReloadTouchStillDown = true;
 			}
 			continue;
 		}
@@ -317,9 +376,37 @@ void ASarkoPlayerController::UpdateSticks()
 			continue;
 		}
 
+		// The reload button, for the same reason and one step earlier in the
+		// thumb's arc. Claimed before stick classification: without this, pressing
+		// it would also start an aim drag — and with hold-to-fire that means the
+		// reload button shoots.
+		if (ReloadTouchIndex == INDEX_NONE && ReloadRect.IsInside(Position))
+		{
+			ReloadTouchIndex = Index;
+			bReloadTouchStillDown = true;
+			// The press edge IS the reload. A hold does nothing more, because
+			// there is nothing more for it to do.
+			if (ASarkoCharacter* ReloadPawn = Cast<ASarkoCharacter>(GetPawn()))
+			{
+				ReloadPawn->RequestReload();
+			}
+			continue;
+		}
+
 		if (SarkoInput::IsLeftHalf(Position, Viewport))
 		{
-			if (MoveTouchIndex == INDEX_NONE)
+			// Suppressed: the touch is consumed by nothing. It is NOT reclassified
+			// to the aim stick — a finger landing on the left while looting must
+			// not start aiming, and with hold-to-fire that would also start
+			// shooting.
+			//
+			// Reversible with no state to repair: when the panel closes this goes
+			// false on the next tick and the next left-half touch-DOWN re-anchors
+			// the stick normally. A finger already down when the panel closed
+			// drives nothing until it is lifted and pressed again, which is
+			// correct — a stick springing to life under a resting finger would
+			// start the pawn walking in whatever direction it happened to be.
+			if (!bMoveSuppressed && MoveTouchIndex == INDEX_NONE)
 			{
 				MoveTouchIndex = Index;
 				MoveStick.bActive = true;
@@ -337,6 +424,9 @@ void ASarkoPlayerController::UpdateSticks()
 				AimStick.Origin = Position;
 				AimStick.Current = Position;
 				bAimTouchStillDown = true;
+				// A new hold has fired nothing yet, so a flick that never leaves
+				// the dead zone still gets its one shot on release.
+				bAimFiredThisHold = false;
 			}
 		}
 	}
@@ -355,8 +445,13 @@ void ASarkoPlayerController::UpdateSticks()
 	{
 		InteractTouchIndex = INDEX_NONE;
 	}
+	if (!bReloadTouchStillDown)
+	{
+		ReloadTouchIndex = INDEX_NONE;
+	}
 
-	// Release of the aim thumb is the fire signal — never auto-fire (spec §9).
+	// Release of the aim thumb is the FLICK's fire signal. Holding it past the
+	// dead zone fires continuously (spec §4.2); PlayerTick owns both.
 	bAimReleasedThisFrame = bWasAiming && !AimStick.bActive;
 }
 
@@ -649,9 +744,16 @@ void ASarkoPlayerController::SarkoDebugLoot(int32 Count)
 		return;
 	}
 
-	// The bag itself first, or the capacity is four and eight of these are
+	// The bag itself first, or the capacity is four cells and most of these are
 	// refused — which is a different screenshot from the one being asked for.
-	Pawn->BackpackComponent->EquipBackpack(SarkoLoot::BackpackItemId);
+	//
+	// Count 0 means NO BAG, not "a bag with nothing in it": the dimmed
+	// НЕМАЄ РЮКЗАКА page is a state the panel has to be photographed in, and it
+	// is the only state a worn bag makes unreachable.
+	if (Count > 0)
+	{
+		Pawn->BackpackComponent->EquipBackpack(SarkoLoot::BackpackItemId);
+	}
 
 	// Ordered so the first four cells are four different hues: a four-pocket
 	// pawn photographed with Count 4 still shows the palette doing its job.
@@ -673,7 +775,7 @@ void ASarkoPlayerController::SarkoDebugLoot(int32 Count)
 	}
 	Pawn->BackpackComponent->SetSlots(Slots);
 	UE_LOG(LogTemp, Display, TEXT("SarkoDebugLoot: bag now %d/%d"),
-		Pawn->BackpackComponent->GetUsedSlots(), Pawn->BackpackComponent->GetSlotLimit());
+		Pawn->BackpackComponent->GetUsedCells(), Pawn->BackpackComponent->GetCellCount());
 #endif
 }
 
@@ -809,6 +911,21 @@ void ASarkoPlayerController::SarkoInventoryShot(float Delay)
 #if !UE_BUILD_SHIPPING
 	GetWorldTimerManager().SetTimer(DebugShotTimer, this,
 		&ASarkoPlayerController::TakeDebugShot, FMath::Max(0.1f, Delay), false);
+#endif
+}
+
+void ASarkoPlayerController::SarkoDebugAmmo(int32 Rounds)
+{
+#if !UE_BUILD_SHIPPING
+	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	if (!Pawn || !Pawn->WeaponComponent)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoDebugAmmo: no possessed pawn with a weapon"));
+		return;
+	}
+	Pawn->WeaponComponent->ResetForTest(FMath::Max(0, Rounds));
+	UE_LOG(LogTemp, Display, TEXT("SarkoDebugAmmo: magazine now %d"),
+		Pawn->WeaponComponent->GetAmmoInMagazine());
 #endif
 }
 

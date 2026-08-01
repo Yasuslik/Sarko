@@ -3,6 +3,7 @@
 // For SarkoRaid::OutcomeLosesHaul. Reached transitively through the game
 // instance header too, but named here because this file depends on it directly.
 #include "Core/SarkoRaidGameState.h"
+#include "Loot/SarkoItemGrid.h"
 
 TArray<FSarkoItemStack> SarkoShelter::BicycleRecipe()
 {
@@ -61,64 +62,99 @@ TArray<FString> SarkoShelter::BuildHaulLines(const FSarkoLastRaid& LastRaid, con
 	return Lines;
 }
 
-TArray<FString> SarkoShelter::BuildStashLines(const FSarkoProfile& Profile, const FSarkoItemCatalog& Catalog)
+TArray<FSarkoItemStack> SarkoShelter::BuildStashStacks(const FSarkoProfile& Profile,
+	const FSarkoItemCatalog& Catalog)
 {
-	TArray<FString> Lines;
-	if (Profile.Stash.Num() == 0)
-	{
-		Lines.Add(TEXT("СХОВОК ПОРОЖНІЙ"));
-		return Lines;
-	}
-
-	Lines.Reserve(Profile.Stash.Num());
-	for (const FSarkoItemStack& Stack : Profile.Stash)
-	{
-		const FSarkoItemDef* Def = Catalog.Find(Stack.Item);
-		Lines.Add(FString::Printf(TEXT("%s  x%d"),
-			Def ? *Def->Name : *Stack.Item.ToString(), Stack.Quantity));
-	}
-	return Lines;
+	TArray<FSarkoItemStack> Stacks = Profile.Stash;
+	// Rows with nothing in them would draw as empty cells that are not empty
+	// slots — a hole in the grid the player cannot fill.
+	Stacks.RemoveAll([](const FSarkoItemStack& Stack) { return Stack.Quantity <= 0; });
+	SarkoGrid::SortForStash(Stacks, Catalog);
+	return Stacks;
 }
 
-FString SarkoShelter::UnknownGarageLine()
+FSarkoGarageView SarkoShelter::BuildGarageView(const FSarkoProfile& Profile, bool bProfileLoaded)
 {
-	// An em dash where the count goes. The recipe's entry count is a client-side
-	// constant and stays real; only the held-parts number depends on a stash this
-	// client has not seen.
-	return FString::Printf(TEXT("ГАРАЖ: ВЕЛОСИПЕД —/%d"), BicycleRecipe().Num());
-}
+	const TArray<FSarkoItemStack> Recipe = BicycleRecipe();
+	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
 
-FString SarkoShelter::BuildGarageLine(const FSarkoProfile& Profile)
-{
-	// Anything past the starting tier already owns the bicycle — and the line says
-	// "ВЕЛОСИПЕД" rather than naming the tier, because the ladder is cumulative
-	// (domain.UnlockedMaps walks tierOrder) so "not none" means the bicycle is
-	// built, and the bicycle is the only recipe mirrored here. Compared against the
-	// literal "none" rather than an enum because vehicle_tier is a string on the
-	// wire and an unknown future tier must not crash this readout.
+	FSarkoGarageView View;
+
+	if (!bProfileLoaded)
+	{
+		// An em dash where the count goes. The recipe's entry count is a
+		// client-side constant and stays real; only the held-parts number depends
+		// on a stash this client has not seen. Stating "0/3" as fact under a
+		// "З'ЄДНАННЯ..." status is the bug this branch exists to prevent.
+		View.Title = FString::Printf(TEXT("ГАРАЖ: ВЕЛОСИПЕД —/%d"), Recipe.Num());
+		View.CraftLabel = TEXT("З'ЄДНАННЯ...");
+		return View;
+	}
+
+	// Compared against the literal "none" rather than an enum, because
+	// vehicle_tier is a string on the wire and an unknown future tier must not
+	// crash this readout. The ladder is cumulative, so anything past none already
+	// owns the bicycle — the only recipe this file mirrors.
 	if (!Profile.VehicleTier.IsEmpty() && Profile.VehicleTier != TEXT("none"))
 	{
-		return TEXT("ГАРАЖ: ВЕЛОСИПЕД ГОТОВИЙ");
+		View.bBuilt = true;
+		View.Title = TEXT("ГАРАЖ: ВЕЛОСИПЕД ГОТОВИЙ");
+		View.CraftLabel = TEXT("ВЕЛОСИПЕД ГОТОВИЙ");
+		return View;
 	}
 
-	const TArray<FSarkoItemStack> Recipe = BicycleRecipe();
 	int32 Met = 0;
+	FString FirstMissing;
+	View.PartLines.Reserve(Recipe.Num());
 	for (const FSarkoItemStack& Part : Recipe)
 	{
 		// Linear over both lists: three entries against a stash of at most a few
 		// dozen rows, computed once per profile fetch rather than per frame.
 		const FSarkoItemStack* Held = Profile.Stash.FindByPredicate(
 			[&Part](const FSarkoItemStack& Stack) { return Stack.Item == Part.Item; });
-		if (Held && Held->Quantity >= Part.Quantity)
+		const int32 Have = Held ? Held->Quantity : 0;
+		const FSarkoItemDef* Def = Catalog.Find(Part.Item);
+		// The id is the fallback, not the label: an id on screen means items.json
+		// and the backend have drifted, and that should be visible.
+		const FString Name = Def ? Def->Name : Part.Item.ToString();
+
+		View.PartLines.Add(FString::Printf(TEXT("%s  %d/%d"), *Name, Have, Part.Quantity));
+		if (Have >= Part.Quantity)
 		{
 			++Met;
 		}
+		else if (FirstMissing.IsEmpty())
+		{
+			FirstMissing = Name;
+		}
 	}
-	return FString::Printf(TEXT("ГАРАЖ: ВЕЛОСИПЕД %d/%d"), Met, Recipe.Num());
+
+	View.Title = FString::Printf(TEXT("ГАРАЖ: ВЕЛОСИПЕД %d/%d"), Met, Recipe.Num());
+	View.bCanCraft = (Met == Recipe.Num());
+	// Never a dead button: enabled it says what it builds, disabled it says what
+	// is stopping it, and there is no third state where it says nothing.
+	View.CraftLabel = View.bCanCraft
+		? FString(TEXT("ЗІБРАТИ ВЕЛОСИПЕД"))
+		: FString::Printf(TEXT("НЕ ВИСТАЧАЄ: %s"), *FirstMissing);
+	return View;
+}
+
+TArray<FString> SarkoShelter::NewlyUnlockedMaps(const TArray<FString>& Before, const TArray<FString>& After)
+{
+	TArray<FString> New;
+	for (const FString& Map : After)
+	{
+		if (!Before.Contains(Map))
+		{
+			New.Add(Map);
+		}
+	}
+	return New;
 }
 
 FSarkoShelterView SarkoShelter::BuildView(const FSarkoLastRaid& LastRaid, const FSarkoProfile& Profile,
-	bool bProfileLoaded, const FString& Error, const FSarkoItemCatalog& Catalog)
+	bool bProfileLoaded, const FString& Error, const FString& CraftLine,
+	const FSarkoItemCatalog& Catalog)
 {
 	FSarkoShelterView View;
 	View.Title = TEXT("УКРИТТЯ");
@@ -138,14 +174,16 @@ FSarkoShelterView SarkoShelter::BuildView(const FSarkoLastRaid& LastRaid, const 
 	// bProfileLoaded but deliberately keeps CachedProfile so the screen can draw
 	// immediately, so the player who just extracted the third part read 2/3, and a
 	// failed re-fetch left it that way for the whole visit.
+	View.Garage = BuildGarageView(Profile, bProfileLoaded);
+	View.CraftLine = CraftLine;
+
 	if (bProfileLoaded)
 	{
-		View.GarageLine = BuildGarageLine(Profile);
-		View.StashLines = BuildStashLines(Profile, Catalog);
-	}
-	else
-	{
-		View.GarageLine = UnknownGarageLine();
+		View.StashStacks = BuildStashStacks(Profile, Catalog);
+		if (View.StashStacks.Num() == 0)
+		{
+			View.StashNote = TEXT("СХОВОК ПОРОЖНІЙ");
+		}
 	}
 
 	if (!Error.IsEmpty())

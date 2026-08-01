@@ -46,6 +46,42 @@ public:
 	UFUNCTION(Exec)
 	void SarkoShelterShot(float DelaySeconds = 6.f);
 
+	/**
+	 * Debug only: drops a bicycle's worth of parts into the **cached client-side**
+	 * profile DelaySeconds in, so the craft button's enabled state can be
+	 * photographed.
+	 *
+	 * It writes nothing to the backend and crafts nothing — pressing the button
+	 * afterwards would still go to the real /v1/garage/craft and be refused with
+	 * insufficient_items, which is correct: this fakes the *readout*, never the
+	 * entitlement. ASarkoPlayerController::SarkoDebugLoot is the precedent, and
+	 * the reason is the same one — a headless run has no way to earn a state that
+	 * takes three raids.
+	 *
+	 * Delayed rather than immediate because -ExecCmds is queued at engine init and
+	 * runs before the first /v1/profile lands; applied at t=0 the fetch's
+	 * RecordProfile would overwrite it a second later.
+	 *
+	 * UFUNCTION(Exec) cannot live inside an #if — UHT rejects it — so it is
+	 * declared unconditionally and the body is guarded.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugParts(float DelaySeconds = 4.f);
+
+	/**
+	 * Debug only: drops a MIXED haul into the cached client-side profile so the
+	 * stash grid can be photographed with something in it.
+	 *
+	 * Same shape and the same honesty as SarkoDebugParts above — it writes nothing
+	 * to the backend and entitles nothing; it fakes the readout so a headless run
+	 * can answer "does this grid look like the crate panel's grid", which is a
+	 * question only a frame someone reads can settle. Deliberately spans every
+	 * category the palette has a hue for and includes 2x1, 2x2 and 3x2 items, so
+	 * the frame also answers whether a multi-cell item draws as ONE box.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugStash(float DelaySeconds = 4.f);
+
 private:
 	/** Rebuilds the view from the game instance's state and hands it to the widget. */
 	void RefreshWidget();
@@ -54,6 +90,11 @@ private:
 	void FetchProfile();
 
 	void EnterRaid();
+
+	/** POST /v1/garage/craft, then refetch the profile. The server decides which
+	 *  tier is next and debits the parts in one transaction, so there is nothing
+	 *  for this side to compute and nothing to patch into the cached profile. */
+	void Craft();
 
 #if !UE_BUILD_SHIPPING
 	/**
@@ -79,4 +120,10 @@ private:
 
 	/** The last failure, shown verbatim. Empty when everything is current. */
 	FString LastError;
+
+	/** "ЗІБРАНО. ВІДКРИТО: SWAMP", kept for the rest of this shelter visit. */
+	FString LastCraftLine;
+
+	/** True between the press and the answer. A second debit is not undoable. */
+	bool bCraftInFlight = false;
 };

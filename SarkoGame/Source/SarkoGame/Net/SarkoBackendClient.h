@@ -141,6 +141,19 @@ namespace SarkoBackend
 	 */
 	bool ParseProfileResponse(const FString& Json, FSarkoProfile& OutProfile, FString& OutError);
 
+	/**
+	 * Reads `{"vehicle_tier":"bicycle","unlocked_maps":["bridge","swamp"]}` — the
+	 * shape api/garage_handler.go's craftResponse marshals.
+	 *
+	 * `vehicle_tier` is required and a missing one fails the parse: the whole
+	 * point of the call is which vehicle now exists, and an empty string shown to
+	 * the player as their garage would be worse than an error. `unlocked_maps` is
+	 * optional — it is derived server-side from the tier (domain.UnlockedMaps) and
+	 * is only used for one sentence.
+	 */
+	bool ParseCraftResponse(const FString& Json, FString& OutTier,
+		TArray<FString>& OutUnlockedMaps, FString& OutError);
+
 	/** True when the body is an error envelope. Never treats a success body as an error. */
 	bool ParseErrorResponse(const FString& Json, FSarkoBackendError& OutError);
 
@@ -278,6 +291,8 @@ public:
 	using FOnSession = TFunction<void(bool bSuccess, const FSarkoRaidSession& Session, const FString& Error)>;
 	using FOnDeadline = TFunction<void(bool bSuccess, const FDateTime& ExpiresAt, const FString& Error)>;
 	using FOnProfile = TFunction<void(bool bSuccess, const FSarkoProfile& Profile, const FString& Error)>;
+	using FOnCraft = TFunction<void(bool bSuccess, const FString& Tier,
+		const TArray<FString>& UnlockedMaps, const FString& Error)>;
 
 	bool IsAuthenticated() const { return !Jwt.IsEmpty(); }
 
@@ -286,6 +301,17 @@ public:
 
 	/** GET /v1/profile. The only GET this client makes. */
 	void FetchProfile(FOnProfile OnDone);
+
+	/**
+	 * POST /v1/garage/craft. **No request body** — the server reads the player id
+	 * from the JWT and crafts the NEXT tier itself (store.CraftNextVehicle); a
+	 * client that named a tier would be naming one it does not get to choose.
+	 *
+	 * 409 insufficient_items and 409 max_tier arrive here as ordinary failures
+	 * with the envelope's message in Error, which the shelter shows verbatim: the
+	 * only thing worse than a refused craft is a refused craft with no reason.
+	 */
+	void CraftVehicle(FOnCraft OnDone);
 
 	/** POST /v1/raid/start. Debits the loadout. */
 	void StartRaid(const FString& MapId, const TArray<FSarkoItemStack>& Loadout, FOnSession OnDone);

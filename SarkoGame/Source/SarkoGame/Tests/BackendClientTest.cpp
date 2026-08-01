@@ -7,6 +7,7 @@
 #include "Net/SarkoBackendClient.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "Shelter/SarkoShelterView.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -628,6 +629,49 @@ bool FSarkoARejectedTokenIsDropped::RunTest(const FString& Parameters)
 	// could only ever throw away a token that had just arrived.
 	TestFalse(TEXT("an unauthenticated request never drops a token"),
 		SarkoBackend::ShouldDropTokenOnResponse(/*bAuthenticatedRequest*/ false, 401, TEXT("unauthorized")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoCraftResponseIsParsed,
+	"Sarko.Backend.CraftResponseIsParsed",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoCraftResponseIsParsed::RunTest(const FString& Parameters)
+{
+	// The exact shape api/garage_handler.go's craftResponse marshals: the tier the
+	// player now owns, and every map that tier unlocks (cumulatively — see
+	// domain.UnlockedMaps).
+	FString Tier;
+	TArray<FString> Maps;
+	FString Error;
+	const bool bOk = SarkoBackend::ParseCraftResponse(
+		TEXT("{\"vehicle_tier\":\"bicycle\",\"unlocked_maps\":[\"bridge\",\"swamp\"]}"), Tier, Maps, Error);
+	TestTrue(TEXT("a well-formed craft response parses"), bOk);
+	TestEqual(TEXT("the new tier"), Tier, FString(TEXT("bicycle")));
+	TestEqual(TEXT("two maps"), Maps.Num(), 2);
+	TestEqual(TEXT("the one it just opened"), Maps[1], FString(TEXT("swamp")));
+
+	// A missing tier is a failed parse, not an empty string quietly shown to the
+	// player as "your garage is now ''".
+	TestFalse(TEXT("a response with no vehicle_tier fails"),
+		SarkoBackend::ParseCraftResponse(TEXT("{\"unlocked_maps\":[\"bridge\"]}"), Tier, Maps, Error));
+	TestFalse(TEXT("and says why"), Error.IsEmpty());
+
+	// An absent unlocked_maps is tolerated: the tier is the fact that matters and
+	// the map list is a courtesy the shelter uses for one sentence.
+	TestTrue(TEXT("a response with no unlocked_maps still parses"),
+		SarkoBackend::ParseCraftResponse(TEXT("{\"vehicle_tier\":\"bicycle\"}"), Tier, Maps, Error));
+	TestEqual(TEXT("with no maps"), Maps.Num(), 0);
+
+	// What the shelter says afterwards is a set difference, not a guess.
+	const TArray<FString> Before = { TEXT("bridge") };
+	const TArray<FString> After = { TEXT("bridge"), TEXT("swamp") };
+	const TArray<FString> New = SarkoShelter::NewlyUnlockedMaps(Before, After);
+	TestEqual(TEXT("exactly one map is new"), New.Num(), 1);
+	TestEqual(TEXT("and it is the swamp"), New[0], FString(TEXT("swamp")));
+	TestEqual(TEXT("crafting nothing new opens nothing"),
+		SarkoShelter::NewlyUnlockedMaps(After, After).Num(), 0);
 	return true;
 }
 

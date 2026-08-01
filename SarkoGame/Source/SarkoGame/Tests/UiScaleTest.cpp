@@ -58,7 +58,7 @@ bool FSarkoPointScaleIsOneRuleForEveryScreen::RunTest(const FString& Parameters)
 	for (const FVector2D Viewport : { FVector2D(2556.f, 1179.f), FVector2D(1560.f, 720.f), FVector2D(1280.f, 720.f) })
 	{
 		const float Scale = SarkoUI::PointScaleForViewport(Viewport);
-		const FBox2D Rect = SarkoInput::InteractButtonRect(SarkoInput::SafeFrame(Viewport));
+		const FBox2D Rect = SarkoInput::InteractButtonRect(SarkoInput::SafeFrame(Viewport), Scale);
 		TestTrue(FString::Printf(TEXT("the interact button is at least 44 pt on %.0fx%.0f"), Viewport.X, Viewport.Y),
 			Rect.GetSize().X / Scale >= 44.f && Rect.GetSize().Y / Scale >= 44.f);
 	}

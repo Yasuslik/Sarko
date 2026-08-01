@@ -1,7 +1,11 @@
 #include "Misc/AutomationTest.h"
 
+#include "Algo/AnyOf.h"
+#include "Algo/Reverse.h"
+
 #include "Loot/SarkoBackpack.h"
 #include "Loot/SarkoItemCatalog.h"
+#include "Loot/SarkoItemGrid.h"
 #include "Loot/SarkoLootContainer.h"
 #include "Loot/SarkoLootTable.h"
 #include "Map/SarkoMapDefinition.h"
@@ -12,11 +16,11 @@ namespace
 {
 	const FString GoodCatalogJson = TEXT(R"({
 		"items": [
-			{ "id": "pistol",      "name": "Пістолет",     "stackSize": 1,  "category": "weapon" },
-			{ "id": "ammo_9mm",    "name": "Патрони 9мм",   "stackSize": 60, "category": "ammo" },
-			{ "id": "medkit",      "name": "Аптечка",       "stackSize": 3,  "category": "med" },
-			{ "id": "scrap_metal", "name": "Металолом",     "stackSize": 10, "category": "junk" },
-			{ "id": "chain",       "name": "Ланцюг",        "stackSize": 1,  "category": "vehicle_part" }
+			{ "id": "pistol",      "name": "Пістолет",     "stackSize": 1,  "size": [2, 1], "category": "weapon" },
+			{ "id": "ammo_9mm",    "name": "Патрони 9мм",   "stackSize": 60, "size": [1, 1], "category": "ammo" },
+			{ "id": "medkit",      "name": "Аптечка",       "stackSize": 3,  "size": [1, 1], "category": "med" },
+			{ "id": "scrap_metal", "name": "Металолом",     "stackSize": 10, "size": [1, 1], "category": "junk" },
+			{ "id": "chain",       "name": "Ланцюг",        "stackSize": 1,  "size": [1, 1], "category": "vehicle_part" }
 		]
 	})");
 }
@@ -42,6 +46,10 @@ bool FSarkoItemCatalogParses::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("the UA display name survives"), Ammo->Name, FString(TEXT("Патрони 9мм")));
 	TestEqual(TEXT("stack size survives"), Ammo->StackSize, 60);
+	TestEqual(TEXT("size is read, not defaulted"), Ammo->Width, 1);
+	TestEqual(TEXT("size is read, not defaulted"), Ammo->Height, 1);
+	TestTrue(TEXT("and a two-wide item keeps its width"),
+		Catalog.Find(TEXT("pistol")) && Catalog.Find(TEXT("pistol"))->Width == 2);
 	TestTrue(TEXT("category is read, not defaulted"), Ammo->Category == ESarkoItemCategory::Ammo);
 
 	TestTrue(TEXT("a vehicle part is categorised as one"),
@@ -69,8 +77,13 @@ bool FSarkoItemCatalogRejectsBadInput::RunTest(const FString& Parameters)
 		{ TEXT("empty id"),           TEXT(R"({"items":[{"id":"","name":"x","stackSize":1,"category":"junk"}]})") },
 		{ TEXT("missing name"),       TEXT(R"({"items":[{"id":"x","stackSize":1,"category":"junk"}]})") },
 		{ TEXT("zero stack size"),    TEXT(R"({"items":[{"id":"x","name":"x","stackSize":0,"category":"junk"}]})") },
-		{ TEXT("unknown category"),   TEXT(R"({"items":[{"id":"x","name":"x","stackSize":1,"category":"cheese"}]})") },
-		{ TEXT("duplicate id"),       TEXT(R"({"items":[{"id":"x","name":"x","stackSize":1,"category":"junk"},{"id":"x","name":"y","stackSize":1,"category":"junk"}]})") },
+		{ TEXT("unknown category"),   TEXT(R"({"items":[{"id":"x","name":"x","stackSize":1,"size":[1,1],"category":"cheese"}]})") },
+		{ TEXT("duplicate id"),       TEXT(R"({"items":[{"id":"x","name":"x","stackSize":1,"size":[1,1],"category":"junk"},{"id":"x","name":"y","stackSize":1,"size":[1,1],"category":"junk"}]})") },
+		// size is REQUIRED, and an omitted one is the exact failure spec §5 names:
+		// a 1x1 default is an item nobody sized deliberately.
+		{ TEXT("missing size"),       TEXT(R"({"items":[{"id":"x","name":"x","stackSize":1,"category":"junk"}]})") },
+		{ TEXT("one-element size"),   TEXT(R"({"items":[{"id":"x","name":"x","stackSize":1,"size":[2],"category":"junk"}]})") },
+		{ TEXT("zero-width size"),    TEXT(R"({"items":[{"id":"x","name":"x","stackSize":1,"size":[0,1],"category":"junk"}]})") },
 	};
 
 	for (const TPair<FString, FString>& Case : BadCases)
@@ -477,34 +490,39 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FSarkoBackpackStacksAndOverflows::RunTest(const FString& Parameters)
 {
 	const FSarkoItemCatalog Catalog = FixtureCatalog(); // pistol/1, ammo_9mm/60, medkit/3, scrap_metal/10, chain/1
+	// Twelve cells (2x2 pockets + a worn 4x2 bag) and four (pockets alone), which
+	// is what the old 12 and 2 slot limits mean now that space is an area.
+	const TArray<FSarkoGridPage> Twelve = SarkoGrid::CarryPages(true, FIntPoint(2, 2), FIntPoint(4, 2));
+	const TArray<FSarkoGridPage> Pockets = SarkoGrid::CarryPages(false, FIntPoint(2, 2), FIntPoint(4, 2));
 	TArray<FSarkoItemStack> Slots;
 
 	// Stacking: 25 rounds of ammo (stackSize 60) is one slot, not 25.
-	TestEqual(TEXT("25 ammo all fits"), SarkoLoot::AddToBackpack(Slots, Catalog, 12, TEXT("ammo_9mm"), 25), 0);
+	TestEqual(TEXT("25 ammo all fits"), SarkoGrid::AddToGrid(Slots, Catalog, Twelve, TEXT("ammo_9mm"), 25), 0);
 	TestEqual(TEXT("and occupies one slot"), Slots.Num(), 1);
 	TestEqual(TEXT("with the right quantity"), Slots[0].Quantity, 25);
 
 	// Topping up the same stack does not open a second slot.
-	TestEqual(TEXT("30 more ammo fits"), SarkoLoot::AddToBackpack(Slots, Catalog, 12, TEXT("ammo_9mm"), 30), 0);
+	TestEqual(TEXT("30 more ammo fits"), SarkoGrid::AddToGrid(Slots, Catalog, Twelve, TEXT("ammo_9mm"), 30), 0);
 	TestEqual(TEXT("still one slot"), Slots.Num(), 1);
 	TestEqual(TEXT("55 rounds"), Slots[0].Quantity, 55);
 
 	// Past the stack size, a second slot opens and carries the remainder.
 	TestEqual(TEXT("20 more ammo fits, spilling into a new stack"),
-		SarkoLoot::AddToBackpack(Slots, Catalog, 12, TEXT("ammo_9mm"), 20), 0);
+		SarkoGrid::AddToGrid(Slots, Catalog, Twelve, TEXT("ammo_9mm"), 20), 0);
 	TestEqual(TEXT("two slots now"), Slots.Num(), 2);
 	TestEqual(TEXT("the first is full"), Slots[0].Quantity, 60);
 	TestEqual(TEXT("the second holds the rest"), Slots[1].Quantity, 15);
 
 	// A non-stacking item takes one whole slot each.
 	TArray<FSarkoItemStack> Pistols;
-	TestEqual(TEXT("three pistols fit"), SarkoLoot::AddToBackpack(Pistols, Catalog, 12, TEXT("pistol"), 3), 0);
+	TestEqual(TEXT("three pistols fit"), SarkoGrid::AddToGrid(Pistols, Catalog, Twelve, TEXT("pistol"), 3), 0);
 	TestEqual(TEXT("in three slots (stackSize 1)"), Pistols.Num(), 3);
 
 	// Overflow: what does not fit is reported, and nothing is invented.
 	TArray<FSarkoItemStack> Small;
-	const int32 Leftover = SarkoLoot::AddToBackpack(Small, Catalog, 2, TEXT("pistol"), 5);
-	TestEqual(TEXT("only two pistols fit in two slots"), Small.Num(), 2);
+	// Two 2x1 pistols fill a 2x2 pocket grid exactly, by shape rather than by count.
+	const int32 Leftover = SarkoGrid::AddToGrid(Small, Catalog, Pockets, TEXT("pistol"), 5);
+	TestEqual(TEXT("only two pistols fit the 2x2 pockets"), Small.Num(), 2);
 	TestEqual(TEXT("three are reported as leftover"), Leftover, 3);
 
 	// Spec §4.3: overflow stays in the container, so the caller must be able to
@@ -519,10 +537,10 @@ bool FSarkoBackpackStacksAndOverflows::RunTest(const FString& Parameters)
 
 	// A quantity that is zero or negative changes nothing, and an unknown item
 	// is refused whole rather than added with a guessed stack size.
-	TestEqual(TEXT("zero quantity is a no-op"), SarkoLoot::AddToBackpack(Small, Catalog, 2, TEXT("pistol"), 0), 0);
-	TestEqual(TEXT("negative quantity is a no-op"), SarkoLoot::AddToBackpack(Small, Catalog, 2, TEXT("pistol"), -4), 0);
+	TestEqual(TEXT("zero quantity is a no-op"), SarkoGrid::AddToGrid(Small, Catalog, Pockets, TEXT("pistol"), 0), 0);
+	TestEqual(TEXT("negative quantity is a no-op"), SarkoGrid::AddToGrid(Small, Catalog, Pockets, TEXT("pistol"), -4), 0);
 	TestEqual(TEXT("an unknown item is refused entirely"),
-		SarkoLoot::AddToBackpack(Small, Catalog, 12, TEXT("plutonium"), 3), 3);
+		SarkoGrid::AddToGrid(Small, Catalog, Twelve, TEXT("plutonium"), 3), 3);
 	TestEqual(TEXT("and did not touch the slots"), Small.Num(), 2);
 	return true;
 }
@@ -535,6 +553,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FSarkoBackpackFillsPartialStacksBeforeOpeningSlots::RunTest(const FString& Parameters)
 {
 	const FSarkoItemCatalog Catalog = FixtureCatalog();
+	const TArray<FSarkoGridPage> Twelve = SarkoGrid::CarryPages(true, FIntPoint(2, 2), FIntPoint(4, 2));
+	// One cell, which is what the old one-slot backpack means as an area.
+	const TArray<FSarkoGridPage> OneCell = SarkoGrid::CarryPages(false, FIntPoint(1, 1), FIntPoint(0, 0));
 
 	// Two partial medkit stacks (stackSize 3) plus one more medkit must top up
 	// an existing stack rather than open a third slot — otherwise a 12-slot
@@ -543,21 +564,21 @@ bool FSarkoBackpackFillsPartialStacksBeforeOpeningSlots::RunTest(const FString& 
 	Slots.Add(FSarkoItemStack{ TEXT("medkit"), 1 });
 	Slots.Add(FSarkoItemStack{ TEXT("scrap_metal"), 2 });
 
-	TestEqual(TEXT("one medkit fits"), SarkoLoot::AddToBackpack(Slots, Catalog, 12, TEXT("medkit"), 1), 0);
+	TestEqual(TEXT("one medkit fits"), SarkoGrid::AddToGrid(Slots, Catalog, Twelve, TEXT("medkit"), 1), 0);
 	TestEqual(TEXT("no new slot was opened"), Slots.Num(), 2);
 	TestEqual(TEXT("the partial medkit stack grew"), Slots[0].Quantity, 2);
 
-	// A full backpack of partial stacks still accepts a top-up: the limit is
-	// slots, not items.
+	// A full backpack of partial stacks still accepts a top-up: a stack occupies
+	// one rectangle regardless of count, so a top-up costs no space at all.
 	TArray<FSarkoItemStack> Full;
 	Full.Add(FSarkoItemStack{ TEXT("ammo_9mm"), 10 });
-	TestEqual(TEXT("a one-slot backpack still accepts more ammo"),
-		SarkoLoot::AddToBackpack(Full, Catalog, 1, TEXT("ammo_9mm"), 40), 0);
+	TestEqual(TEXT("a one-cell backpack still accepts more ammo"),
+		SarkoGrid::AddToGrid(Full, Catalog, OneCell, TEXT("ammo_9mm"), 40), 0);
 	TestEqual(TEXT("still one slot"), Full.Num(), 1);
 	TestEqual(TEXT("50 rounds"), Full[0].Quantity, 50);
 	// But it refuses a different item, because that would need a second slot.
-	TestEqual(TEXT("a one-slot backpack refuses a different item"),
-		SarkoLoot::AddToBackpack(Full, Catalog, 1, TEXT("medkit"), 1), 1);
+	TestEqual(TEXT("a one-cell backpack refuses a different item"),
+		SarkoGrid::AddToGrid(Full, Catalog, OneCell, TEXT("medkit"), 1), 1);
 	return true;
 }
 
@@ -801,16 +822,20 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSarkoCapacityIsPocketsPlusAWornBackpack::RunTest(const FString& Parameters)
 {
-	// Spec §2.3: four pocket cells, +8 for a found backpack, twelve total. The
-	// twelve is deliberately today's number — the equipped case is the old
-	// constant, so nothing about a full haul's plausibility changes at the
-	// backend, and only the *start* of a raid got harder.
-	TestEqual(TEXT("pockets alone"), SarkoLoot::CapacityFor(false, 4, 8), 4);
-	TestEqual(TEXT("pockets plus a worn bag"), SarkoLoot::CapacityFor(true, 4, 8), 12);
+	// Spec §1.2: a 2x2 pocket grid, plus a separate 4x2 for a found backpack —
+	// four cells and twelve. The twelve is deliberately still today's number, so
+	// nothing about a full haul's plausibility changes at the backend, and only
+	// the *shape* of what fits got harder.
+	TestEqual(TEXT("pockets alone"),
+		SarkoGrid::TotalCells(SarkoGrid::CarryPages(false, FIntPoint(2, 2), FIntPoint(4, 2))), 4);
+	TestEqual(TEXT("pockets plus a worn bag"),
+		SarkoGrid::TotalCells(SarkoGrid::CarryPages(true, FIntPoint(2, 2), FIntPoint(4, 2))), 12);
 	// Hostile config, not hostile input, but the arithmetic must not go negative:
-	// a capacity below zero makes AddToBackpack's `Slots.Num() < SlotLimit` loop
-	// condition trivially false in one place and trivially true in another.
-	TestEqual(TEXT("negative settings floor at zero"), SarkoLoot::CapacityFor(true, -4, -8), 0);
+	// a page with a negative column count would make FirstFit's bounds checks
+	// inconsistent with the occupancy it indexes into, which is a haul that
+	// half-fits.
+	TestEqual(TEXT("negative settings floor at zero"),
+		SarkoGrid::TotalCells(SarkoGrid::CarryPages(true, FIntPoint(-4, -4), FIntPoint(-8, -8))), 0);
 	return true;
 }
 
@@ -854,7 +879,8 @@ bool FSarkoTransferMovesWhatFitsAndLeavesTheRest::RunTest(const FString& Paramet
 	// container was marked looted whether or not the haul fitted.
 	TArray<FSarkoItemStack> Container = { FSarkoItemStack{ TEXT("ammo_9mm"), 100 } };
 	TArray<FSarkoItemStack> Bag;
-	const int32 Moved = SarkoLoot::TransferOne(Container, 0, Bag, Catalog, /*BagLimit*/ 1);
+	const int32 Moved = SarkoLoot::TransferOne(Container, 0, Bag, Catalog,
+		SarkoGrid::CarryPages(false, FIntPoint(1, 1), FIntPoint(0, 0)));
 
 	TestEqual(TEXT("one full stack moved"), Moved, 60);
 	TestEqual(TEXT("the bag holds it"), Bag.Num(), 1);
@@ -882,7 +908,8 @@ bool FSarkoTransferEmptiesTheSlotItDrains::RunTest(const FString& Parameters)
 		FSarkoItemStack{ TEXT("pistol"), 1 },
 	};
 	TArray<FSarkoItemStack> Bag;
-	TestEqual(TEXT("the medkit moves whole"), SarkoLoot::TransferOne(Container, 0, Bag, Catalog, 4), 1);
+	TestEqual(TEXT("the medkit moves whole"), SarkoLoot::TransferOne(Container, 0, Bag, Catalog,
+			SarkoGrid::CarryPages(false, FIntPoint(2, 2), FIntPoint(4, 2))), 1);
 	TestEqual(TEXT("one slot left"), Container.Num(), 1);
 	TestTrue(TEXT("and it is the pistol — indices shift, so the panel rebuilds from the new array"),
 		Container[0].Item == FName(TEXT("pistol")));
@@ -906,13 +933,14 @@ bool FSarkoTransferRefusesRatherThanEatsInput::RunTest(const FString& Parameters
 	// Zero moved is the signal the refusal animation reads. Both sides must be
 	// byte-identical afterwards — a "refusal" that quietly moved one unit is
 	// worse than one that moved none.
-	TestEqual(TEXT("a full bag refuses"), SarkoLoot::TransferOne(Container, 0, Full, Catalog, 1), 0);
+	const TArray<FSarkoGridPage> OneCell = SarkoGrid::CarryPages(false, FIntPoint(1, 1), FIntPoint(0, 0));
+	TestEqual(TEXT("a full bag refuses"), SarkoLoot::TransferOne(Container, 0, Full, Catalog, OneCell), 0);
 	TestEqual(TEXT("the container is untouched"), Container.Num(), 1);
 	TestEqual(TEXT("the bag is untouched"), Full.Num(), 1);
 
 	// Hostile indices. This function is one call away from an RPC parameter.
-	TestEqual(TEXT("negative index"), SarkoLoot::TransferOne(Container, -1, Full, Catalog, 8), 0);
-	TestEqual(TEXT("out of range"), SarkoLoot::TransferOne(Container, 99, Full, Catalog, 8), 0);
+	TestEqual(TEXT("negative index"), SarkoLoot::TransferOne(Container, -1, Full, Catalog, OneCell), 0);
+	TestEqual(TEXT("out of range"), SarkoLoot::TransferOne(Container, 99, Full, Catalog, OneCell), 0);
 	return true;
 }
 
@@ -953,6 +981,348 @@ bool FSarkoEveryTierFitsTheContainerGrid::RunTest(const FString& Parameters)
 				*Table.Tier.ToString(), Table.MaxRolls, SarkoLoot::ContainerCells),
 			Table.MaxRolls <= SarkoLoot::ContainerCells);
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoItemSizesMatchTheDesignTable,
+	"Sarko.Loot.ItemSizesMatchTheDesignTable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoItemSizesMatchTheDesignTable::RunTest(const FString& Parameters)
+{
+	// THIS IS THE BALANCE GUARD. Spec §5: "Sizes are balance, not decoration.
+	// Making the rifle 3 wide is what makes backpacks matter; if a later item is
+	// sized carelessly the rule quietly stops holding." The size table lives in
+	// Data/Items/items.json; this is what stops it drifting. The literals below
+	// are spec §1.1 copied verbatim, and the check runs in BOTH directions, so
+	// adding an item without a row here fails just as loudly as resizing one.
+	struct FRow { const TCHAR* Id; int32 W; int32 H; };
+	static const FRow Table[] = {
+		{ TEXT("pistol"),       2, 1 },
+		{ TEXT("ammo_9mm"),     1, 1 },
+		{ TEXT("medkit"),       1, 1 },
+		{ TEXT("bandage"),      1, 1 },
+		{ TEXT("painkillers"),  1, 1 },
+		{ TEXT("scrap_metal"),  1, 1 },
+		{ TEXT("copper_wire"),  1, 1 },
+		{ TEXT("duct_tape"),    1, 1 },
+		{ TEXT("canned_food"),  1, 1 },
+		{ TEXT("vodka"),        1, 1 },
+		{ TEXT("cigarettes"),   1, 1 },
+		{ TEXT("toolbox"),      2, 1 },
+		{ TEXT("backpack"),     2, 2 },
+		{ TEXT("bike_frame"),   3, 2 },
+		{ TEXT("wheel_small"),  2, 2 },
+		{ TEXT("chain"),        1, 1 },
+	};
+
+	FSarkoItemCatalog Catalog;
+	FString Error;
+	if (!TestTrue(TEXT("the shipped catalog loads"), SarkoLoot::LoadItemCatalogFromDisk(Catalog, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	for (const FRow& Row : Table)
+	{
+		const FSarkoItemDef* Def = Catalog.Find(FName(Row.Id));
+		if (!Def)
+		{
+			AddError(FString::Printf(TEXT("the design table has '%s' and items.json does not"), Row.Id));
+			continue;
+		}
+		TestEqual(*FString::Printf(TEXT("%s width"), Row.Id), Def->Width, Row.W);
+		TestEqual(*FString::Printf(TEXT("%s height"), Row.Id), Def->Height, Row.H);
+	}
+	for (const FSarkoItemDef& Def : Catalog.Items)
+	{
+		const bool bListed = Algo::AnyOf(Table, [&Def](const FRow& Row) { return FName(Row.Id) == Def.Id; });
+		TestTrue(*FString::Printf(
+				TEXT("'%s' has a row in the design table — a new item must be sized deliberately, in the spec"),
+				*Def.Id.ToString()),
+			bListed);
+
+		// Structural, not editorial: nothing may be bigger than the largest page
+		// the game has, or it is an item no player could ever pick up.
+		TestTrue(*FString::Printf(TEXT("'%s' fits the backpack page"), *Def.Id.ToString()),
+			Def.Width >= 1 && Def.Height >= 1 && Def.Width <= 4 && Def.Height <= 2);
+	}
+
+	// The two promises spec §1.1/§1.2 make about the shape of the game.
+	const FSarkoItemDef* Pistol = Catalog.Find(TEXT("pistol"));
+	TestTrue(TEXT("the pistol is the weapon you can always carry: it fits 2x2 pockets"),
+		Pistol && Pistol->Width <= 2 && Pistol->Height <= 2);
+	const bool bSomethingNeedsABag = Catalog.Items.ContainsByPredicate(
+		[](const FSarkoItemDef& Def) { return Def.Width > 2; });
+	TestTrue(TEXT("at least one item is wider than the pockets, or the backpack means nothing"),
+		bSomethingNeedsABag);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoFirstFitPlacesAndRefusesByShape,
+	"Sarko.Loot.FirstFitPlacesAndRefusesByShape",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoFirstFitPlacesAndRefusesByShape::RunTest(const FString& Parameters)
+{
+	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+
+	// Pockets alone: 2x2. A 2x1 pistol fits; a second 2x1 fits under it; a third
+	// does not, and — the load-bearing case — a 3-wide item NEVER fits, whatever
+	// the pockets are holding. That is spec §1.2's whole argument, as an assert.
+	const TArray<FSarkoGridPage> Pockets = SarkoGrid::CarryPages(false, FIntPoint(2, 2), FIntPoint(4, 2));
+	TestEqual(TEXT("without a bag there is exactly one page"), Pockets.Num(), 1);
+
+	TArray<FSarkoItemStack> Bag;
+	TestEqual(TEXT("a pistol fits the pockets"),
+		SarkoGrid::AddToGrid(Bag, Catalog, Pockets, TEXT("pistol"), 1), 0);
+	TestEqual(TEXT("a toolbox fits under it"),
+		SarkoGrid::AddToGrid(Bag, Catalog, Pockets, TEXT("toolbox"), 1), 0);
+	TestEqual(TEXT("a bandage does not — the pockets are full by shape, not by count"),
+		SarkoGrid::AddToGrid(Bag, Catalog, Pockets, TEXT("bandage"), 1), 1);
+
+	TArray<FSarkoItemStack> Empty;
+	TestEqual(TEXT("a 3x2 frame cannot enter empty 2x2 pockets at all"),
+		SarkoGrid::AddToGrid(Empty, Catalog, Pockets, TEXT("bike_frame"), 1), 1);
+
+	// With a bag: two pages, and the wide thing lands on the second one.
+	const TArray<FSarkoGridPage> Worn = SarkoGrid::CarryPages(true, FIntPoint(2, 2), FIntPoint(4, 2));
+	TestEqual(TEXT("wearing a bag there are two pages"), Worn.Num(), 2);
+	TestEqual(TEXT("twelve cells with a bag"), SarkoGrid::TotalCells(Worn), 12);
+	TestEqual(TEXT("four without"), SarkoGrid::TotalCells(Pockets), 4);
+
+	TArray<FSarkoItemStack> Deep;
+	TestEqual(TEXT("a frame fits once a bag is worn"),
+		SarkoGrid::AddToGrid(Deep, Catalog, Worn, TEXT("bike_frame"), 1), 0);
+	const TArray<FSarkoGridSlot> Where = SarkoGrid::Place(Deep, Catalog, Worn);
+	TestEqual(TEXT("and it is on the backpack page, not in the pockets"), Where[0].Page, 1);
+	TestEqual(TEXT("at the top-left of it"), Where[0].X, 0);
+	TestEqual(TEXT("at the top-left of it"), Where[0].Y, 0);
+	TestEqual(TEXT("occupying three by two"), Where[0].W, 3);
+	TestEqual(TEXT("occupying three by two"), Where[0].H, 2);
+
+	// First fit is left-to-right, top-to-bottom, page 0 first — and it BACKFILLS:
+	// a 1x1 arriving after a 2x1 skipped a single trailing cell must land in that
+	// cell. Without backfill an exactly-packed bag strands its last item.
+	TArray<FSarkoItemStack> Order;
+	SarkoGrid::AddToGrid(Order, Catalog, Worn, TEXT("bandage"), 1);      // pockets (0,0)
+	SarkoGrid::AddToGrid(Order, Catalog, Worn, TEXT("toolbox"), 1);      // 2 wide: skips to (0,1)
+	SarkoGrid::AddToGrid(Order, Catalog, Worn, TEXT("medkit"), 1);       // backfills pockets (1,0)
+	const TArray<FSarkoGridSlot> Back = SarkoGrid::Place(Order, Catalog, Worn);
+	TestEqual(TEXT("the bandage takes the first cell"), Back[0].X, 0);
+	TestEqual(TEXT("the bandage takes the first cell"), Back[0].Y, 0);
+	TestEqual(TEXT("the toolbox needs two abreast, so it drops a row"), Back[1].Y, 1);
+	TestEqual(TEXT("the medkit backfills the hole the toolbox skipped"), Back[2].X, 1);
+	TestEqual(TEXT("the medkit backfills the hole the toolbox skipped"), Back[2].Y, 0);
+
+	// An unplaceable stack is reported, never silently dropped: the panel has to
+	// be able to say which one failed.
+	TArray<FSarkoItemStack> TooMuch = { FSarkoItemStack{ TEXT("bike_frame"), 1 } };
+	const TArray<FSarkoGridSlot> Refused = SarkoGrid::Place(TooMuch, Catalog, Pockets);
+	TestEqual(TEXT("one slot per stack, always"), Refused.Num(), 1);
+	TestEqual(TEXT("and an unplaceable one says so"), Refused[0].Page, INDEX_NONE);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoAddToGridTopsUpBeforeItOpensARectangle,
+	"Sarko.Loot.AddToGridTopsUpBeforeItOpensARectangle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoAddToGridTopsUpBeforeItOpensARectangle::RunTest(const FString& Parameters)
+{
+	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+	const TArray<FSarkoGridPage> Pockets = SarkoGrid::CarryPages(false, FIntPoint(2, 2), FIntPoint(4, 2));
+
+	// A stack occupies one rectangle regardless of count (spec §1.1). Topping up
+	// an existing partial stack costs no space at all, which is why it must be
+	// tried before a new rectangle is opened — otherwise four cells fill with
+	// half-empty stacks and the grid stops meaning anything.
+	TArray<FSarkoItemStack> Bag;
+	TestEqual(TEXT("thirty rounds open one rectangle"),
+		SarkoGrid::AddToGrid(Bag, Catalog, Pockets, TEXT("ammo_9mm"), 30), 0);
+	TestEqual(TEXT("one rectangle"), Bag.Num(), 1);
+	TestEqual(TEXT("thirty more top it up to the 60-round cap and open a second"),
+		SarkoGrid::AddToGrid(Bag, Catalog, Pockets, TEXT("ammo_9mm"), 30), 0);
+	TestEqual(TEXT("still one rectangle, now full"), Bag.Num(), 1);
+	TestEqual(TEXT("sixty rounds in it"), Bag[0].Quantity, 60);
+	TestEqual(TEXT("one used cell"), SarkoGrid::UsedCells(Bag, Catalog), 1);
+
+	// An unknown id is refused whole, exactly as AddToBackpack refused it: a
+	// guessed size would put an id the backend rejects into a raid result.
+	TestEqual(TEXT("an unknown item is refused whole"),
+		SarkoGrid::AddToGrid(Bag, Catalog, Pockets, TEXT("not_a_real_item"), 5), 5);
+
+	// A partial fit is allowed and reports the remainder — the vanishing-loot
+	// rule: what does not fit stays in the crate.
+	TArray<FSarkoItemStack> Nearly;
+	SarkoGrid::AddToGrid(Nearly, Catalog, Pockets, TEXT("toolbox"), 1);   // 2x1 at (0,0)
+	SarkoGrid::AddToGrid(Nearly, Catalog, Pockets, TEXT("bandage"), 5);   // 1x1 at (0,1)
+	TestEqual(TEXT("one cell left, so 60 of 120 rounds fit and 60 do not"),
+		SarkoGrid::AddToGrid(Nearly, Catalog, Pockets, TEXT("ammo_9mm"), 120), 60);
+	TestEqual(TEXT("the grid is now full by area"), SarkoGrid::UsedCells(Nearly, Catalog), 4);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoCarryPagesFollowTheWornBag,
+	"Sarko.Loot.CarryPagesFollowTheWornBag",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoCarryPagesFollowTheWornBag::RunTest(const FString& Parameters)
+{
+	// Two grids, not one growing grid (spec §1.2): the player must be able to see
+	// at a glance what survives losing the bag.
+	const TArray<FSarkoGridPage> None = SarkoGrid::CarryPages(false, FIntPoint(2, 2), FIntPoint(4, 2));
+	TestEqual(TEXT("pockets are page 0 and are 2x2"), None[0].Columns, 2);
+	TestEqual(TEXT("pockets are page 0 and are 2x2"), None[0].Rows, 2);
+
+	const TArray<FSarkoGridPage> Worn = SarkoGrid::CarryPages(true, FIntPoint(2, 2), FIntPoint(4, 2));
+	TestEqual(TEXT("the pockets are still page 0, unchanged"), Worn[0].Columns, 2);
+	TestEqual(TEXT("the bag is page 1 and is 4x2"), Worn[1].Columns, 4);
+	TestEqual(TEXT("the bag is page 1 and is 4x2"), Worn[1].Rows, 2);
+
+	// A nonsense configuration must not produce a negative-area page that Place
+	// would then index into.
+	const TArray<FSarkoGridPage> Broken = SarkoGrid::CarryPages(true, FIntPoint(-3, 0), FIntPoint(0, -1));
+	TestEqual(TEXT("a broken configuration yields no usable cells, not a crash"),
+		SarkoGrid::TotalCells(Broken), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoTutorialGrantsABagBeforeItNeedsOne,
+	"Sarko.Loot.TutorialGrantsABagBeforeItNeedsOne",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoTutorialGrantsABagBeforeItNeedsOne::RunTest(const FString& Parameters)
+{
+	// Over the REAL map file. Pocket capacity is a 2x2 grid — four cells, two of
+	// them eaten by the first 2x1 the player finds — and the authored tutorial
+	// yields twelve cells' worth of loot. Without a bag in the FIRST crate the
+	// tutorial teaches "everything you find is refused", which is a lesson, but
+	// not the one spec §6.5 is sequencing.
+	FSarkoMapDefinition Definition;
+	FString Error;
+	if (!SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Definition, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json did not load: %s"), *Error));
+		return false;
+	}
+	if (Definition.Containers.Num() == 0)
+	{
+		AddError(TEXT("bridge.json has no containers"));
+		return false;
+	}
+
+	const auto HasBag = [](const FSarkoLootContainerSpot& Spot)
+	{
+		return Spot.FixedItems.ContainsByPredicate(
+			[](const FSarkoItemStack& Stack) { return Stack.Item == SarkoLoot::BackpackItemId; });
+	};
+
+	TestTrue(TEXT("the spawn crate carries a backpack"), HasBag(Definition.Containers[0]));
+	TestTrue(TEXT("and it is FIRST in the list, so ЗАБРАТИ ВСЕ equips it before it takes anything else"),
+		Definition.Containers[0].FixedItems.Num() > 0
+			&& Definition.Containers[0].FixedItems[0].Item == SarkoLoot::BackpackItemId);
+
+	int32 BagCrates = 0;
+	for (const FSarkoLootContainerSpot& Spot : Definition.Containers)
+	{
+		BagCrates += HasBag(Spot) ? 1 : 0;
+	}
+	TestEqual(TEXT("and only that one, or the lesson is 'bags are everywhere'"), BagCrates, 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoTutorialHaulStillFitsTheGrid,
+	"Sarko.Loot.TutorialHaulStillFitsTheGrid",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoTutorialHaulStillFitsTheGrid::RunTest(const FString& Parameters)
+{
+	// Every authored fixedItems entry, poured into one bag, must still fit
+	// 2x2 pockets plus a worn 4x2 backpack — INCLUDING the bag itself, which is
+	// worn and therefore costs no cell.
+	//
+	// Not an area sum. Area proves a bound, not a packing: the player chooses
+	// which crate to open, so the acquisition order varies, and first fit with
+	// mixed 1x1 and 2x1 shapes can in principle strand a wide item behind two
+	// non-adjacent holes. So the REAL placer is run over the REAL data in four
+	// different orders, and every one of them has to take everything.
+	FSarkoMapDefinition Definition;
+	FString Error;
+	if (!SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Definition, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json did not load: %s"), *Error));
+		return false;
+	}
+
+	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+	const TArray<FSarkoGridPage> Pages =
+		SarkoGrid::CarryPages(true, FIntPoint(2, 2), FIntPoint(4, 2));
+
+	// Flattened once, in the authored order, minus the worn bag.
+	TArray<FSarkoItemStack> Authored;
+	for (const FSarkoLootContainerSpot& Spot : Definition.Containers)
+	{
+		for (const FSarkoItemStack& Stack : Spot.FixedItems)
+		{
+			if (Stack.Item != SarkoLoot::BackpackItemId)
+			{
+				Authored.Add(Stack);
+			}
+		}
+	}
+
+	const auto PourIn = [&](const TArray<FSarkoItemStack>& Order, const TCHAR* What)
+	{
+		TArray<FSarkoItemStack> Bag;
+		int32 Refused = 0;
+		for (const FSarkoItemStack& Stack : Order)
+		{
+			Refused += SarkoGrid::AddToGrid(Bag, Catalog, Pages, Stack.Item, Stack.Quantity);
+		}
+		TestEqual(*FString::Printf(
+				TEXT("%s: nothing is refused. If this is red, an authored item was ADDED or grew — ")
+				TEXT("the layout fits 12 of 12 cells with NOTHING to spare, so something must come out"),
+				What),
+			Refused, 0);
+		TestTrue(*FString::Printf(TEXT("%s: %d of %d cells"), What,
+				SarkoGrid::UsedCells(Bag, Catalog), SarkoGrid::TotalCells(Pages)),
+			SarkoGrid::UsedCells(Bag, Catalog) <= SarkoGrid::TotalCells(Pages));
+	};
+
+	PourIn(Authored, TEXT("the authored route"));
+
+	TArray<FSarkoItemStack> Reversed = Authored;
+	Algo::Reverse(Reversed);
+	PourIn(Reversed, TEXT("the route walked backwards"));
+
+	// The two adversarial orders for first fit: every wide item first (it claims
+	// whole rows), and every wide item last (it has to squeeze into what the
+	// one-cell items left).
+	const auto ByWidth = [&Catalog](bool bWideFirst)
+	{
+		return [&Catalog, bWideFirst](const FSarkoItemStack& A, const FSarkoItemStack& B)
+		{
+			const int32 WA = SarkoGrid::SizeOf(Catalog, A.Item).X;
+			const int32 WB = SarkoGrid::SizeOf(Catalog, B.Item).X;
+			return bWideFirst ? WA > WB : WA < WB;
+		};
+	};
+
+	TArray<FSarkoItemStack> WideFirst = Authored;
+	WideFirst.StableSort(ByWidth(true));
+	PourIn(WideFirst, TEXT("the widest things first"));
+
+	TArray<FSarkoItemStack> WideLast = Authored;
+	WideLast.StableSort(ByWidth(false));
+	PourIn(WideLast, TEXT("the widest things last"));
 	return true;
 }
 

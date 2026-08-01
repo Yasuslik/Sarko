@@ -5,60 +5,6 @@
 
 const FName SarkoLoot::BackpackItemId(TEXT("backpack"));
 
-int32 SarkoLoot::CapacityFor(bool bBackpackWorn, int32 BaseCells, int32 BonusCells)
-{
-	const int32 Base = FMath::Max(0, BaseCells);
-	const int32 Bonus = bBackpackWorn ? FMath::Max(0, BonusCells) : 0;
-	return Base + Bonus;
-}
-
-int32 SarkoLoot::AddToBackpack(TArray<FSarkoItemStack>& Slots, const FSarkoItemCatalog& Catalog,
-	int32 SlotLimit, FName Item, int32 Quantity)
-{
-	if (Quantity <= 0)
-	{
-		return 0;
-	}
-
-	const FSarkoItemDef* Def = Catalog.Find(Item);
-	if (!Def)
-	{
-		// Refused whole. The alternative — a guessed stack size — puts an id the
-		// backend will reject into the raid result, and the whole haul dies with it.
-		return Quantity;
-	}
-
-	const int32 StackSize = FMath::Max(1, Def->StackSize);
-	int32 Remaining = Quantity;
-
-	// Top up existing partial stacks first.
-	for (FSarkoItemStack& Stack : Slots)
-	{
-		if (Remaining <= 0)
-		{
-			break;
-		}
-		if (Stack.Item != Item || Stack.Quantity >= StackSize)
-		{
-			continue;
-		}
-		const int32 Room = StackSize - Stack.Quantity;
-		const int32 Moved = FMath::Min(Room, Remaining);
-		Stack.Quantity += Moved;
-		Remaining -= Moved;
-	}
-
-	// Then open new slots, while there are slots to open.
-	while (Remaining > 0 && Slots.Num() < FMath::Max(0, SlotLimit))
-	{
-		const int32 Moved = FMath::Min(StackSize, Remaining);
-		Slots.Add(FSarkoItemStack{ Item, Moved });
-		Remaining -= Moved;
-	}
-
-	return Remaining;
-}
-
 USarkoBackpackComponent::USarkoBackpackComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
@@ -77,10 +23,20 @@ void USarkoBackpackComponent::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	DOREPLIFETIME_CONDITION(USarkoBackpackComponent, EquippedBackpack, COND_OwnerOnly);
 }
 
-int32 USarkoBackpackComponent::GetSlotLimit() const
+TArray<FSarkoGridPage> USarkoBackpackComponent::GetCarryPages() const
 {
 	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
-	return SarkoLoot::CapacityFor(IsWearingBackpack(), Settings.BasePocketCells, Settings.BackpackBonusCells);
+	return SarkoGrid::CarryPages(IsWearingBackpack(), Settings.PocketGrid, Settings.BackpackGrid);
+}
+
+int32 USarkoBackpackComponent::GetUsedCells() const
+{
+	return SarkoGrid::UsedCells(Slots, SarkoLoot::GetItemCatalog());
+}
+
+int32 USarkoBackpackComponent::GetCellCount() const
+{
+	return SarkoGrid::TotalCells(GetCarryPages());
 }
 
 void USarkoBackpackComponent::EquipBackpack(FName Item)
@@ -114,7 +70,7 @@ int32 USarkoBackpackComponent::AddItem(FName Item, int32 Quantity)
 		UE_LOG(LogTemp, Warning, TEXT("SarkoBackpack: AddItem called without authority; ignored"));
 		return Quantity;
 	}
-	return SarkoLoot::AddToBackpack(Slots, SarkoLoot::GetItemCatalog(), GetSlotLimit(), Item, Quantity);
+	return SarkoGrid::AddToGrid(Slots, SarkoLoot::GetItemCatalog(), GetCarryPages(), Item, Quantity);
 }
 
 void USarkoBackpackComponent::ClearOnDeath()

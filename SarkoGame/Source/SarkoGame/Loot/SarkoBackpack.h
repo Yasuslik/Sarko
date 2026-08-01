@@ -4,41 +4,15 @@
 #include "Components/ActorComponent.h"
 
 #include "Loot/SarkoItemCatalog.h"
+#include "Loot/SarkoItemGrid.h"
 
 #include "SarkoBackpack.generated.h"
 
 namespace SarkoLoot
 {
-	/**
-	 * Adds Quantity of Item to Slots, stacking by the catalog's stackSize, and
-	 * returns how much did **not** fit.
-	 *
-	 * Pure: it takes the slots by reference and the limit as an argument rather
-	 * than reading a component or the settings, so the whole stacking rule — the
-	 * thing that decides whether a haul survives a raid — is unit tested with no
-	 * world, no actor and no config.
-	 *
-	 * Partial stacks are topped up before a new slot is opened, or a 12-slot
-	 * backpack fills with half-empty stacks and the limit stops meaning
-	 * anything. An unknown item is refused whole: guessing a stack size would
-	 * put an id the backend rejects into a raid result.
-	 */
-	int32 AddToBackpack(TArray<FSarkoItemStack>& Slots, const FSarkoItemCatalog& Catalog,
-		int32 SlotLimit, FName Item, int32 Quantity);
-
 	/** The one gear id that grants capacity. Named once, because it is compared
 	 *  against on the take path and must never be a loose literal. */
 	extern const FName BackpackItemId;
-
-	/**
-	 * How many cells a pawn has. Pure, so the single number the whole economy
-	 * turns on is unit tested with no world and no settings object.
-	 *
-	 * Clamped at zero: a negative capacity makes AddToBackpack's
-	 * `Slots.Num() < SlotLimit` loop guard behave inconsistently across the two
-	 * places capacity is read, which is a haul that half-fits.
-	 */
-	int32 CapacityFor(bool bBackpackWorn, int32 BaseCells, int32 BonusCells);
 }
 
 /**
@@ -66,8 +40,15 @@ public:
 
 	int32 GetUsedSlots() const { return Slots.Num(); }
 
-	/** SarkoLoot::CapacityFor over USarkoRaidSettings' two cell dials. */
-	int32 GetSlotLimit() const;
+	/** The pages this pawn carries right now: pockets, plus the bag if one is
+	 *  worn. USarkoRaidSettings' two grid dials, through SarkoGrid::CarryPages. */
+	TArray<FSarkoGridPage> GetCarryPages() const;
+
+	/** Cells occupied, by area. What the HUD's n/m now counts. */
+	int32 GetUsedCells() const;
+
+	/** Cells available, by area: 4 without a bag, 12 with one. */
+	int32 GetCellCount() const;
 
 	bool IsWearingBackpack() const { return EquippedBackpack != NAME_None; }
 

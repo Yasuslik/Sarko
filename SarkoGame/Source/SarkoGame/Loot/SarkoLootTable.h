@@ -4,6 +4,7 @@
 #include "Templates/Function.h"
 
 #include "Loot/SarkoItemCatalog.h"
+#include "Loot/SarkoItemGrid.h"
 
 #include "SarkoLootTable.generated.h"
 
@@ -194,7 +195,7 @@ namespace SarkoLoot
 	 *    because there is nothing left to credit;
 	 *  - **a partial move leaves the remainder in the slot.** This is the fix for
 	 *    the vanishing-loot defect: CompleteLootChannel marked a container looted
-	 *    unconditionally, so whatever AddToBackpack refused was destroyed.
+	 *    unconditionally, so whatever the grid refused was destroyed.
 	 *    Nothing here destroys anything; the container is marked emptied only
 	 *    when its last slot is actually gone;
 	 *  - a drained slot is removed rather than left at quantity zero, so the
@@ -204,5 +205,6 @@ namespace SarkoLoot
 	 * well as at the call site — the call site can be forgotten; this cannot.
 	 */
 	int32 TransferOne(TArray<FSarkoItemStack>& Container, int32 SlotIndex,
-		TArray<FSarkoItemStack>& Bag, const FSarkoItemCatalog& Catalog, int32 BagLimit);
+		TArray<FSarkoItemStack>& Bag, const FSarkoItemCatalog& Catalog,
+		const TArray<FSarkoGridPage>& Pages);
 }
