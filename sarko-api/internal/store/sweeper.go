@@ -112,22 +112,80 @@ func closeExpiredSessionTx(ctx context.Context, tx pgx.Tx, e expiredSession) err
 	return nil
 }
 
+// SweepBatchSize is how many expired sessions one sweep transaction closes.
+//
+// The sweep used to be a single unbounded transaction, which is fine at a
+// steady state (a handful of rows) and pathological after one: closing a
+// pending session issues one statement per loadout stack plus the state update,
+// so a thousand-row backlog was ~14 000 sequential statements holding a
+// thousand row locks for seconds — while sweepPlayerTx, which every
+// /v1/raid/start runs with a plain FOR UPDATE and no SKIP LOCKED, queued behind
+// it holding each player's garage_progress lock. One failing row also rolled
+// back the whole batch, and a deterministic batch means one poison row stalls
+// expiry cleanup forever.
+//
+// 200 keeps a pass at a few thousand statements and, more to the point, keeps
+// the locks a pass holds bounded by a constant instead of by how bad the outage
+// was. Committed passes also survive a later failure, so a pass that dies takes
+// its own batch down and not the work already done.
+//
+// What this does NOT fix: a genuinely poisonous row still stalls the passes
+// behind it, because the oldest expired rows are swept first and a poison row
+// is by definition old. That is the audit's separate item (a last-success
+// timestamp and a way past a bad row), and it was no better before.
+const SweepBatchSize = 200
+
 // SweepExpired closes every raid past its deadline, across all players.
 // Pending sessions are voided and their loadout returned; active sessions
 // are closed as died (§11: leaving the app counts as death).
+//
+// It runs bounded passes until one comes back short, each in its own
+// transaction. Termination is not a matter of trust: every row a pass commits
+// leaves the 'pending'/'active' predicate, so the candidate set strictly
+// shrinks, and a pass that returns fewer rows than it asked for is the last
+// one. Counts accumulated before an error are still returned — those passes
+// committed.
 func (s *Store) SweepExpired(ctx context.Context) (voided int, died int, err error) {
+	for {
+		v, d, err := s.SweepExpiredBatch(ctx, SweepBatchSize)
+		voided += v
+		died += d
+		if err != nil {
+			return voided, died, err
+		}
+		if v+d < SweepBatchSize {
+			return voided, died, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return voided, died, err
+		}
+	}
+}
+
+// SweepExpiredBatch closes at most limit expired sessions in one transaction.
+// It is one pass of SweepExpired, exported so a test can pin the bound itself
+// rather than only the end state — which is identical either way.
+func (s *Store) SweepExpiredBatch(ctx context.Context, limit int) (voided int, died int, err error) {
+	if limit <= 0 {
+		return 0, 0, nil
+	}
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, 0, fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// SKIP LOCKED lets a second instance sweep concurrently without blocking.
+	// SKIP LOCKED lets a second instance sweep concurrently without blocking;
+	// with the LIMIT it also means a pass can come back short because another
+	// replica holds the rows, which correctly ends this instance's loop.
 	// state is read as text for the same reason as everywhere else in this package.
 	voided, died, err = closeExpiredTx(ctx, tx,
 		`SELECT id, player_id, state::text, loadout FROM raid_sessions
 		 WHERE state IN ('pending', 'active') AND expires_at <= now()
-		 FOR UPDATE SKIP LOCKED`)
+		 ORDER BY expires_at
+		 LIMIT $1
+		 FOR UPDATE SKIP LOCKED`, limit)
 	if err != nil {
 		return 0, 0, err
 	}
