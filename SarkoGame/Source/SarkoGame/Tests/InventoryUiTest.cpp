@@ -1,6 +1,8 @@
 #include "Misc/AutomationTest.h"
 
+#include "Core/SarkoPlayerController.h"
 #include "Loot/SarkoItemCatalog.h"
+#include "UI/SarkoInventoryPanel.h"
 #include "UI/SarkoInventoryStyle.h"
 #include "UI/SarkoUiScale.h"
 
@@ -129,6 +131,82 @@ bool FSarkoOverlayScaleDividesOutTheLayerManager::RunTest(const FString& Paramet
 	const float LayerScale = SarkoUI::GameLayerDpiScale(Phone);
 	TestTrue(TEXT("overlay x layer == raw, so the compounding cancels"),
 		FMath::IsNearlyEqual(Overlay * LayerScale, Raw, 0.001f));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoPanelLeavesTheApproachVisible,
+	"Sarko.UI.PanelLeavesTheApproachVisible",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoPanelLeavesTheApproachVisible::RunTest(const FString& Parameters)
+{
+	// Spec §5: looting does not pause the world, so a panel that covers the
+	// approach is how a player dies. That is a layout requirement, and this is
+	// where it is enforced — a screenshot proves it looks right, this proves it
+	// STAYS right when someone edits a constant.
+	const FBox2D Safe(FVector2D::ZeroVector, FVector2D(844.f, 390.f));   // 1 px/pt
+	const FBox2D Panel = SarkoUI::InventoryPanelRect(Safe, /*PlayerCells*/ 12, /*PointScale*/ 1.f);
+
+	TestTrue(TEXT("the panel takes at most a third of the width"),
+		Panel.GetSize().X <= Safe.GetSize().X * 0.34f);
+	// The pawn is at the centre of a top-down camera. If the panel's left edge
+	// reached it, the player would be looting blind at their own feet.
+	TestTrue(TEXT("the pawn at screen centre is clear of the panel by 150 pt or more"),
+		Panel.Min.X - Safe.GetCenter().X >= 150.f);
+	TestTrue(TEXT("it stays inside the safe frame's right edge"), Panel.Max.X <= Safe.Max.X);
+	TestTrue(TEXT("and above its bottom edge, where the sticks live"), Panel.Max.Y < Safe.Max.Y);
+	// The HUD's health bar occupies y 14..29 at the top right. Overlapping it
+	// would hide the one readout that says you are dying while you stand still.
+	TestTrue(TEXT("it clears the health bar's row"), Panel.Min.Y > 40.f);
+
+	// Four pocket cells is a SHORTER panel, not a differently-shaped one: a panel
+	// that changed width when you found a bag would reflow the screen mid-raid.
+	const FBox2D Pockets = SarkoUI::InventoryPanelRect(Safe, /*PlayerCells*/ 4, 1.f);
+	TestTrue(TEXT("width does not change with capacity"),
+		FMath::IsNearlyEqual(Pockets.GetSize().X, Panel.GetSize().X, 0.01f));
+	TestTrue(TEXT("a four-cell bag makes a shorter panel"), Pockets.GetSize().Y < Panel.GetSize().Y);
+	TestTrue(TEXT("and it stays bottom-anchored"),
+		FMath::IsNearlyEqual(Pockets.Max.Y, Panel.Max.Y, 0.01f));
+
+	// The specified height, to the point. 292 is not a round number anybody
+	// would land on twice: it is the vertical stack added up, and the reason the
+	// panel clears the health bar at full capacity by exactly the margin above.
+	TestEqual(TEXT("a twelve-cell panel is 292 pt tall"),
+		SarkoUI::InventoryPanelHeightPt(12), 292.f);
+
+	// The close button has to end up somewhere a thumb can reach and NOT under
+	// the plate it is supposed to dismiss.
+	const FBox2D Close = SarkoInput::InteractButtonRectBesidePanel(Safe, Panel);
+	TestTrue(TEXT("the close button clears the panel's left edge"), Close.Max.X <= Panel.Min.X);
+	TestTrue(TEXT("and stays on screen"), Close.Min.X >= Safe.Min.X);
+	TestTrue(TEXT("and keeps its tap-target size"), Close.GetSize().X >= 44.f && Close.GetSize().Y >= 44.f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoPanelCellsClearTheTapTargetMinimum,
+	"Sarko.UI.PanelCellsClearTheTapTargetMinimum",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoPanelCellsClearTheTapTargetMinimum::RunTest(const FString& Parameters)
+{
+	// The project's touch rule is written in points, which is exactly why the
+	// whole layout is authored in points. 44 is the floor and there is no
+	// rounding slack below it.
+	TestTrue(TEXT("a cell is at least 44 pt"), SarkoUI::CellSizePt >= 44.f);
+	TestTrue(TEXT("the take-all row is at least 44 pt"), SarkoUI::TakeAllRowPt >= 44.f);
+	// The grid must actually fit the panel it is padded inside, or the last
+	// column is drawn off the edge and cannot be tapped at all.
+	TestEqual(TEXT("four columns plus gutters plus padding is the panel width"),
+		SarkoUI::CellSizePt * 4.f + SarkoUI::CellGutterPt * 3.f + SarkoUI::PanelPadPt * 2.f,
+		SarkoUI::PanelWidthPt);
+	// Capacity divides into whole rows of four, both of the two capacities the
+	// game can produce. A capacity that did not would draw a ragged last row.
+	TestEqual(TEXT("four pocket cells is one row"), SarkoUI::PlayerGridRows(4), 1);
+	TestEqual(TEXT("twelve cells is three"), SarkoUI::PlayerGridRows(12), 3);
+	TestEqual(TEXT("and a zero-capacity pawn still gets a row rather than a sliver"),
+		SarkoUI::PlayerGridRows(0), 1);
 	return true;
 }
 

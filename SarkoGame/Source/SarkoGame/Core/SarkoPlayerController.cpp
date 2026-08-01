@@ -2,13 +2,18 @@
 
 #include "Application/SlateApplicationBase.h"
 #include "Combat/SarkoWeapon.h"
+#include "Core/SarkoRaidGameMode.h"
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Debug/SarkoOverviewShot.h"
+#include "Engine/GameViewportClient.h"
 #include "HAL/IConsoleManager.h"
+#include "Loot/SarkoBackpack.h"
 #include "Loot/SarkoLootContainer.h"
 #include "Pawn/SarkoCharacter.h"
 #include "Pawn/SarkoHealthComponent.h"
+#include "UI/SarkoInventoryPanel.h"
+#include "UI/SarkoUiScale.h"
 
 bool SarkoInput::IsLeftHalf(FVector2D ScreenPosition, FVector2D ViewportSize)
 {
@@ -78,6 +83,21 @@ FBox2D SarkoInput::InteractButtonRect(FVector2D ViewportSize)
 	return InteractButtonRect(FBox2D(FVector2D::ZeroVector, ViewportSize));
 }
 
+FBox2D SarkoInput::InteractButtonRectBesidePanel(FBox2D Frame, FBox2D PanelRect)
+{
+	// Same size and the same vertical band as the ordinary rect: the thumb
+	// already knows where this control is, and moving it vertically as well
+	// would make finding it a search rather than a reach.
+	const FBox2D Ordinary = InteractButtonRect(Frame);
+	const FVector2D Size = Ordinary.GetSize();
+
+	// Left of the panel, with the button's own 0.3 as the gap — see the header
+	// for why that is a fraction and not 16 points. Clamped to the frame so a
+	// narrow window cannot push it off the leading edge.
+	const float Left = FMath::Max(Frame.Min.X, PanelRect.Min.X - Size.X * 0.3f - Size.X);
+	return FBox2D(FVector2D(Left, Ordinary.Min.Y), FVector2D(Left + Size.X, Ordinary.Max.Y));
+}
+
 ASarkoPlayerController::ASarkoPlayerController()
 {
 	bShowMouseCursor = false;
@@ -104,10 +124,20 @@ void ASarkoPlayerController::BeginPlay()
 	}
 }
 
+void ASarkoPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	// Before Super, and unconditionally. A viewport widget is not an actor and is
+	// not destroyed with the level: left added, the container panel would still be
+	// drawn over the shelter menu the raid travels back to.
+	RemoveInventoryPanel();
+	Super::EndPlay(EndPlayReason);
+}
+
 void ASarkoPlayerController::PlayerTick(float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);
 
+	UpdatePanelBinding();
 	UpdateSticks();
 	UpdateInteract();
 
@@ -211,8 +241,11 @@ void ASarkoPlayerController::UpdateSticks()
 	bool bAimTouchStillDown = false;
 
 	// The same rect the HUD draws, safe area and all — a button hit-tested where
-	// it is not drawn is a button that misses.
-	const FBox2D InteractRect = SarkoInput::InteractButtonRect(SarkoInput::SafeFrame(Viewport));
+	// it is not drawn is a button that misses. InteractButtonRectFor is the ONE
+	// place that decides whether the button is in its usual spot or shifted left
+	// of an open container panel, and both the drawing and this hit test ask it.
+	const FBox2D InteractRect = SarkoUI::InteractButtonRectFor(Cast<ASarkoCharacter>(GetPawn()),
+		SarkoInput::SafeFrame(Viewport), SarkoUI::PointScaleForViewport(Viewport));
 	bool bInteractTouchStillDown = false;
 
 	// Three fingers now, not two: movement, aim and the interact button are
@@ -397,6 +430,20 @@ void ASarkoPlayerController::UpdateInteract()
 	bHeld = bHeld || IsInputKeyDown(EKeys::E);
 #endif
 
+	// A panel is open: the interact button is the CLOSE button now, so a press
+	// closes rather than starting a channel on whatever crate is nearest. One
+	// control, two jobs, and the thumb already knows where it is.
+	if (Pawn->GetOpenContainerIndex() != INDEX_NONE)
+	{
+		if (bHeld && !bInteractHeld)
+		{
+			Pawn->RequestCloseContainer();
+		}
+		bInteractHeld = bHeld;
+		HeldContainerIndex = INDEX_NONE;
+		return;
+	}
+
 	const int32 BestIndex = Best ? Best->ContainerIndex : INDEX_NONE;
 	if (!bHeld || BestIndex == INDEX_NONE)
 	{
@@ -453,6 +500,275 @@ bool ASarkoPlayerController::ApplyDesktopTestInput(ASarkoCharacter& Pawn, float 
 	return bMoved;
 }
 #endif
+
+void ASarkoPlayerController::UpdatePanelBinding()
+{
+	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	if (Pawn == BoundPawn.Get())
+	{
+		return;
+	}
+
+	// Unbind the old pawn before binding the new one. A multicast delegate on a
+	// destroyed actor is gone with it, but a *possession change* between two live
+	// pawns would otherwise leave this controller refreshing a panel from a pawn
+	// it no longer drives.
+	if (ASarkoCharacter* Previous = BoundPawn.Get())
+	{
+		Previous->OnContainerViewChanged.Remove(ContainerViewHandle);
+		Previous->OnTakeRefused.Remove(TakeRefusedHandle);
+	}
+	ContainerViewHandle.Reset();
+	TakeRefusedHandle.Reset();
+	BoundPawn = Pawn;
+
+	// A pawn swap is also a panel that is now about somebody else's crate.
+	RemoveInventoryPanel();
+
+	if (!Pawn)
+	{
+		return;
+	}
+	ContainerViewHandle = Pawn->OnContainerViewChanged.AddUObject(
+		this, &ASarkoPlayerController::HandleContainerViewChanged);
+	TakeRefusedHandle = Pawn->OnTakeRefused.AddUObject(
+		this, &ASarkoPlayerController::HandleTakeRefused);
+
+	// The contents may already have arrived — the first RPC can beat the first
+	// tick after possession — so ask once rather than waiting for a change.
+	HandleContainerViewChanged();
+}
+
+void ASarkoPlayerController::HandleContainerViewChanged()
+{
+	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	if (!Pawn)
+	{
+		RemoveInventoryPanel();
+		return;
+	}
+
+	if (Pawn->GetOpenContainerIndex() == INDEX_NONE)
+	{
+		// Closed. 90 ms of fade and then gone — the widget cannot remove itself,
+		// because the thing being removed is the thing that is animating.
+		if (InventoryPanel.IsValid() && !bPanelExiting)
+		{
+			bPanelExiting = true;
+			InventoryPanel->PlayExit();
+			GetWorldTimerManager().SetTimer(PanelExitTimer, this,
+				&ASarkoPlayerController::RemoveInventoryPanel, 0.12f, false);
+		}
+		return;
+	}
+
+	// Opening. A panel caught mid-fade is rebuilt rather than revived: its exit
+	// curve has already run and reviving it would leave it permanently invisible.
+	if (bPanelExiting)
+	{
+		RemoveInventoryPanel();
+	}
+
+	if (!InventoryPanel.IsValid())
+	{
+		// Local only, and null in a headless run: a widget belongs to a viewport,
+		// and a remote controller has none.
+		UGameViewportClient* Viewport = (IsLocalController() && GetWorld()) ? GetWorld()->GetGameViewport() : nullptr;
+		if (!Viewport)
+		{
+			return;
+		}
+		InventoryPanel = SNew(SSarkoInventoryPanel).Pawn(Pawn);
+		Viewport->AddViewportWidgetContent(InventoryPanel.ToSharedRef());
+
+		// Deliberately NO SetInputMode. See the panel's header: FInputModeUIOnly
+		// would kill every touch, stick, shot and loot press in the raid.
+	}
+	InventoryPanel->Refresh();
+}
+
+void ASarkoPlayerController::HandleTakeRefused(int32 SlotIndex, ESarkoTakeRefusal Reason)
+{
+	if (InventoryPanel.IsValid())
+	{
+		InventoryPanel->PlayRefusal(SlotIndex, Reason);
+	}
+}
+
+void ASarkoPlayerController::RemoveInventoryPanel()
+{
+	GetWorldTimerManager().ClearTimer(PanelExitTimer);
+	bPanelExiting = false;
+	if (!InventoryPanel.IsValid())
+	{
+		return;
+	}
+	if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+	{
+		Viewport->RemoveViewportWidgetContent(InventoryPanel.ToSharedRef());
+	}
+	InventoryPanel.Reset();
+}
+
+void ASarkoPlayerController::SarkoDebugLoot(int32 Count)
+{
+#if !UE_BUILD_SHIPPING
+	// A screenshot of an empty bag proves nothing about a layout whose whole
+	// question is "are twelve cells with counts on them legible or mush". This
+	// puts a mixed haul in, spanning every category the palette has a hue for,
+	// so the frame answers that question instead of dodging it.
+	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	if (!Pawn || !Pawn->BackpackComponent)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoDebugLoot: no possessed pawn with a backpack"));
+		return;
+	}
+
+	// The bag itself first, or the capacity is four and eight of these are
+	// refused — which is a different screenshot from the one being asked for.
+	Pawn->BackpackComponent->EquipBackpack(SarkoLoot::BackpackItemId);
+
+	// Ordered so the first four cells are four different hues: a four-pocket
+	// pawn photographed with Count 4 still shows the palette doing its job.
+	static const FName Mixed[] = {
+		TEXT("pistol"), TEXT("ammo_9mm"), TEXT("medkit"), TEXT("toolbox"),
+		TEXT("scrap_metal"), TEXT("wheel_small"), TEXT("bandage"), TEXT("vodka"),
+		TEXT("copper_wire"), TEXT("chain"), TEXT("painkillers"), TEXT("cigarettes"),
+	};
+	static const int32 Quantities[] = { 1, 47, 3, 1, 9, 2, 5, 2, 12, 1, 4, 6 };
+
+	TArray<FSarkoItemStack> Slots;
+	const int32 Wanted = FMath::Clamp(Count, 0, UE_ARRAY_COUNT(Mixed));
+	for (int32 Index = 0; Index < Wanted; ++Index)
+	{
+		FSarkoItemStack Stack;
+		Stack.Item = Mixed[Index];
+		Stack.Quantity = Quantities[Index];
+		Slots.Add(Stack);
+	}
+	Pawn->BackpackComponent->SetSlots(Slots);
+	UE_LOG(LogTemp, Display, TEXT("SarkoDebugLoot: bag now %d/%d"),
+		Pawn->BackpackComponent->GetUsedSlots(), Pawn->BackpackComponent->GetSlotLimit());
+#endif
+}
+
+void ASarkoPlayerController::SarkoOpenNearestContainer()
+{
+#if !UE_BUILD_SHIPPING
+	// Retried rather than done once: -ExecCmds is queued at engine init, and the
+	// raid's authoritative seed (which gates every loot request) plus the channel
+	// itself both land several frames later. The pump stops as soon as the pawn
+	// reports a container open.
+	GetWorldTimerManager().SetTimer(DebugOpenTimer, this,
+		&ASarkoPlayerController::TickDebugOpen, 0.5f, true, 0.5f);
+#endif
+}
+
+#if !UE_BUILD_SHIPPING
+void ASarkoPlayerController::TickDebugOpen()
+{
+	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	if (!Pawn)
+	{
+		return;
+	}
+	if (Pawn->GetOpenContainerIndex() != INDEX_NONE)
+	{
+		GetWorldTimerManager().ClearTimer(DebugOpenTimer);
+		return;
+	}
+	// Already channelling: re-requesting would reset the channel's start time
+	// every half second and it would never complete.
+	if (Pawn->GetLootChannelIndex() != INDEX_NONE)
+	{
+		return;
+	}
+
+	ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
+	if (!RaidState || !RaidState->IsLootable())
+	{
+		return;
+	}
+
+	const FVector PawnLocation = Pawn->GetActorLocation();
+	int32 BestIndex = INDEX_NONE;
+	float BestDistanceSquared = TNumericLimits<float>::Max();
+	for (const TWeakObjectPtr<ASarkoLootContainer>& Weak : RaidState->GetContainers())
+	{
+		const ASarkoLootContainer* Container = Weak.Get();
+		if (!Container || RaidState->IsContainerEmptied(Container->ContainerIndex))
+		{
+			continue;
+		}
+		const float DistanceSquared = FVector::DistSquared(PawnLocation, Container->GetActorLocation());
+		if (DistanceSquared < BestDistanceSquared)
+		{
+			BestDistanceSquared = DistanceSquared;
+			BestIndex = Container->ContainerIndex;
+		}
+	}
+	if (BestIndex == INDEX_NONE)
+	{
+		return;
+	}
+
+	// The crate's contents are overwritten with four different categories so the
+	// frame answers "are these hues distinguishable at cell size" rather than
+	// whatever one tier's roll happened to produce. Server-side and through the
+	// game mode's own store, so the take path afterwards is the real one.
+	if (ASarkoRaidGameMode* GameMode = GetWorld()->GetAuthGameMode<ASarkoRaidGameMode>())
+	{
+		if (TArray<FSarkoItemStack>* Inventory = GameMode->OpenContainerAt(BestIndex))
+		{
+			static const FName Contents[] = { TEXT("pistol"), TEXT("ammo_9mm"), TEXT("medkit"), TEXT("toolbox") };
+			static const int32 Amounts[] = { 1, 24, 2, 1 };
+			Inventory->Reset();
+			for (int32 Index = 0; Index < UE_ARRAY_COUNT(Contents); ++Index)
+			{
+				FSarkoItemStack Stack;
+				Stack.Item = Contents[Index];
+				Stack.Quantity = Amounts[Index];
+				Inventory->Add(Stack);
+			}
+		}
+	}
+
+	Pawn->RequestBeginLoot(BestIndex);
+}
+
+void ASarkoPlayerController::TickDebugTap()
+{
+	if (InventoryPanel.IsValid() && InventoryPanel->SimulateTapContainerCell(DebugTapSlot))
+	{
+		GetWorldTimerManager().ClearTimer(DebugTapTimer);
+	}
+}
+#endif
+
+void ASarkoPlayerController::SarkoTapContainerCell(int32 SlotIndex)
+{
+#if !UE_BUILD_SHIPPING
+	// A headless run has no fingers, and the panel does not exist yet when this
+	// command is queued. Retried until the cell is there and enabled.
+	DebugTapSlot = SlotIndex;
+	GetWorldTimerManager().SetTimer(DebugTapTimer, this,
+		&ASarkoPlayerController::TickDebugTap, 0.5f, true, 0.5f);
+#endif
+}
+
+void ASarkoPlayerController::SarkoInventoryShot(float Delay)
+{
+#if !UE_BUILD_SHIPPING
+	// `Shot showui` and NOT HighResShot: HighResShot goes through the scene
+	// renderer and captures no Slate at all, so the PNG comes out with no panel
+	// on it — which looks exactly like a panel that failed to draw.
+	FTimerDelegate Shot = FTimerDelegate::CreateWeakLambda(this, [this]()
+	{
+		ConsoleCommand(TEXT("Shot showui"), /*bWriteToLog*/ true);
+	});
+	GetWorldTimerManager().SetTimer(DebugShotTimer, Shot, FMath::Max(0.1f, Delay), false);
+#endif
+}
 
 void ASarkoPlayerController::SarkoOverview()
 {

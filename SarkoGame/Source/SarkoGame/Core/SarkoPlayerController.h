@@ -47,7 +47,25 @@ namespace SarkoInput
 
 	/** As above, on a screen with no cutouts: the frame is the whole viewport. */
 	FBox2D InteractButtonRect(FVector2D ViewportSize);
+
+	/**
+	 * Where the interact button sits while a container panel covers its usual
+	 * place. Same size and same vertical band, moved left of the panel — a button
+	 * drawn in one place and pressed in another is the one thing about this
+	 * control that must never happen.
+	 *
+	 * The gap is a fraction of the button rather than a point constant because
+	 * this function is handed pixels and has no scale to convert with; 0.3 of a
+	 * 52 pt button is ~16 pt, which is the number the Visual design asks for and
+	 * stays that on every density, since the button itself is density-derived.
+	 *
+	 * Callers use SarkoUI::InteractButtonRectFor rather than this directly: that
+	 * is the one place that decides WHICH of the two rects is live.
+	 */
+	FBox2D InteractButtonRectBesidePanel(FBox2D Frame, FBox2D PanelRect);
 }
+
+enum class ESarkoTakeRefusal : uint8;
 
 /** One floating virtual stick, anchored wherever the thumb first touched. */
 USTRUCT()
@@ -118,6 +136,15 @@ public:
 
 	virtual void PlayerTick(float DeltaTime) override;
 
+	/**
+	 * Removes the container panel, before Super and unconditionally.
+	 *
+	 * A viewport widget is not an actor and is not destroyed with the level —
+	 * the same reason ASarkoShelterPlayerController::EndPlay exists. Left added,
+	 * the panel would still be on screen after the raid, over the shelter menu.
+	 */
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
 	const FSarkoTouchStick& GetMoveStick() const { return MoveStick; }
 	const FSarkoTouchStick& GetAimStick() const { return AimStick; }
 
@@ -154,8 +181,77 @@ public:
 	UFUNCTION(Exec)
 	void SarkoOverview();
 
+	/**
+	 * The headless verification set for the container panel. A -RenderOffscreen
+	 * run has no fingers: it cannot hold the interact button for a channel, tap a
+	 * Slate cell, or fill a backpack by playing the game — and every visual claim
+	 * this panel makes has to be settled by a frame someone reads, because
+	 * automation runs -nullrhi and can see nothing.
+	 *
+	 * Bodies are `#if !UE_BUILD_SHIPPING` in the .cpp; the declarations cannot be,
+	 * because UHT rejects a UFUNCTION inside a preprocessor block. Same shape as
+	 * SarkoOverview above.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugLoot(int32 Count);
+
+	UFUNCTION(Exec)
+	void SarkoOpenNearestContainer();
+
+	UFUNCTION(Exec)
+	void SarkoTapContainerCell(int32 SlotIndex);
+
+	UFUNCTION(Exec)
+	void SarkoInventoryShot(float Delay);
+
 private:
 	void UpdateSticks();
+
+	/**
+	 * The container panel, owned here because a Slate widget belongs to a
+	 * viewport and the HUD is not one.
+	 *
+	 * **Never with FInputModeUIOnly.** That mode sets
+	 * UGameViewportClient::SetIgnoreInput(true) on a viewport client that belongs
+	 * to the ULocalPlayer and outlives the level, which is the scar this class's
+	 * BeginPlay already carries from the shelter. The panel routes taps by Slate
+	 * hit-testing instead, and its root is SelfHitTestInvisible so everything that
+	 * is not a cell falls through to the sticks.
+	 */
+	TSharedPtr<class SSarkoInventoryPanel> InventoryPanel;
+
+	/** True between PlayExit and the widget actually being removed. A reopen
+	 *  during that window rebuilds rather than reviving a fading widget. */
+	bool bPanelExiting = false;
+
+	FTimerHandle PanelExitTimer;
+
+	/** Which pawn's delegates are currently bound, and the handles to undo it.
+	 *  Possession can change mid-raid, and a binding left on a dead pawn is a
+	 *  panel that never refreshes again. */
+	TWeakObjectPtr<class ASarkoCharacter> BoundPawn;
+	FDelegateHandle ContainerViewHandle;
+	FDelegateHandle TakeRefusedHandle;
+
+	/** Rebinds when the possessed pawn changes. Called once per tick; it compares
+	 *  two pointers and does nothing on all but the first frame. */
+	void UpdatePanelBinding();
+
+	void HandleContainerViewChanged();
+	void HandleTakeRefused(int32 SlotIndex, ESarkoTakeRefusal Reason);
+	void RemoveInventoryPanel();
+
+#if !UE_BUILD_SHIPPING
+	/** Retry pumps for the headless execs above: the raid's authoritative seed,
+	 *  the loot channel and the panel's construction all land on later frames
+	 *  than the -ExecCmds line that asked for them. */
+	FTimerHandle DebugOpenTimer;
+	FTimerHandle DebugTapTimer;
+	FTimerHandle DebugShotTimer;
+	int32 DebugTapSlot = 0;
+	void TickDebugOpen();
+	void TickDebugTap();
+#endif
 
 	/** Finds the nearest openable container and turns held input into channel start/stop. */
 	void UpdateInteract();

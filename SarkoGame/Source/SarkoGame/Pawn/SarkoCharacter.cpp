@@ -386,17 +386,10 @@ void ASarkoCharacter::OpenContainerFor(int32 ContainerIndex)
 	UE_LOG(LogTemp, Display, TEXT("SarkoCharacter: opened container %d, holding %d stack(s)"),
 		ContainerIndex, Inventory->Num());
 
-	if (BackpackComponent)
-	{
-		// TEMPORARY, removed in Task 4 when the panel exists. Until then the raid
-		// has to stay playable, so opening still hauls — but through TransferOne,
-		// so the remainder stays in the crate. That single difference is the
-		// defect fixed. TakeAllFrom ends in FinishTransfer, which is the push.
-		TakeAllFrom(ContainerIndex);
-		return;
-	}
-	// No backpack component at all: nothing can move, but the client is still
-	// told what it opened, or the panel would have nothing to draw.
+	// Opening takes nothing. The client is told what is in the crate and the
+	// player decides, one cell at a time — which is the entire point of this
+	// feature and the defect the plan set out to fix: a hold used to vacuum the
+	// container and evaporate whatever did not fit.
 	ClientContainerContents(ContainerIndex, *Inventory);
 }
 
