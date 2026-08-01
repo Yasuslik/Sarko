@@ -12,6 +12,7 @@
 #include "Loot/SarkoLootContainer.h"
 #include "Pawn/SarkoCharacter.h"
 #include "Pawn/SarkoHealthComponent.h"
+#include "Pawn/SarkoSurvival.h"
 #include "UI/SarkoInventoryPanel.h"
 #include "UI/SarkoUiScale.h"
 
@@ -758,12 +759,17 @@ void ASarkoPlayerController::SarkoDebugLoot(int32 Count)
 
 	// Ordered so the first four cells are four different hues: a four-pocket
 	// pawn photographed with Count 4 still shows the palette doing its job.
+	// `water_bottle` sits third since the survival stage — Consumable is a hue
+	// the palette gained and had no representative for, and it is also the one
+	// category with a VERB, so a low Count now reaches a cell that can be tapped.
+	// It replaced `painkillers`, which duplicated the medkit's hue and no longer
+	// appears anywhere on the tutorial route.
 	static const FName Mixed[] = {
-		TEXT("pistol"), TEXT("ammo_9mm"), TEXT("medkit"), TEXT("toolbox"),
-		TEXT("scrap_metal"), TEXT("wheel_small"), TEXT("bandage"), TEXT("vodka"),
-		TEXT("copper_wire"), TEXT("chain"), TEXT("painkillers"), TEXT("cigarettes"),
+		TEXT("pistol"), TEXT("ammo_9mm"), TEXT("water_bottle"), TEXT("medkit"),
+		TEXT("toolbox"), TEXT("canned_food"), TEXT("scrap_metal"), TEXT("wheel_small"),
+		TEXT("bandage"), TEXT("vodka"), TEXT("copper_wire"), TEXT("chain"),
 	};
-	static const int32 Quantities[] = { 1, 47, 3, 1, 9, 2, 5, 2, 12, 1, 4, 6 };
+	static const int32 Quantities[] = { 1, 47, 2, 3, 1, 3, 9, 2, 5, 2, 12, 1 };
 
 	TArray<FSarkoItemStack> Slots;
 	const int32 Wanted = FMath::Clamp(Count, 0, UE_ARRAY_COUNT(Mixed));
@@ -927,6 +933,94 @@ void ASarkoPlayerController::SarkoDebugAmmo(int32 Rounds)
 	Pawn->WeaponComponent->ResetForTest(FMath::Max(0, Rounds));
 	UE_LOG(LogTemp, Display, TEXT("SarkoDebugAmmo: magazine now %d"),
 		Pawn->WeaponComponent->GetAmmoInMagazine());
+#endif
+}
+
+void ASarkoPlayerController::SarkoDebugSurvival(float Food, float Water, float Damage, float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	// -ExecCmds runs its whole list at engine init, so a step that has to happen
+	// LATER carries its own delay. Rescheduled through this same function, so the
+	// deferred path and the immediate one cannot drift apart.
+	if (DelaySeconds > 0.f)
+	{
+		FTimerHandle Handle;
+		GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+			[this, Food, Water, Damage]() { SarkoDebugSurvival(Food, Water, Damage, 0.f); }),
+			DelaySeconds, /*bLoop*/ false);
+		return;
+	}
+
+	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	if (!Pawn || !Pawn->SurvivalComponent)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoDebugSurvival: no possessed pawn with survival meters"));
+		return;
+	}
+	Pawn->SurvivalComponent->ResetForTest(Food, Water);
+	UE_LOG(LogTemp, Display, TEXT("SarkoDebugSurvival: food %.0f%%, water %.0f%%"),
+		Pawn->SurvivalComponent->GetFoodExact(), Pawn->SurvivalComponent->GetWaterExact());
+
+	// Applied through the real damage path, so it stamps the combat clock exactly
+	// as a bullet would — which is the half of the regeneration rule that a
+	// direct health write would skip.
+	if (Damage > 0.f && Pawn->HealthComponent)
+	{
+		Pawn->HealthComponent->ApplyDamage(Damage, nullptr);
+		UE_LOG(LogTemp, Display, TEXT("SarkoDebugSurvival: took %.0f damage, health now %.0f"),
+			Damage, Pawn->HealthComponent->GetHealth());
+	}
+#endif
+}
+
+void ASarkoPlayerController::SarkoTapCarryCell(int32 SlotIndex, float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	if (DelaySeconds > 0.f)
+	{
+		// The panel does not exist yet when this is queued: the raid's session, the
+		// 1.5 s loot channel and the panel's own construction all land seconds in.
+		FTimerHandle Handle;
+		GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+			[this, SlotIndex]() { SarkoTapCarryCell(SlotIndex, 0.f); }), DelaySeconds, /*bLoop*/ false);
+		return;
+	}
+
+	if (!InventoryPanel.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoTapCarryCell: no panel is open — open a container first"));
+		return;
+	}
+	const bool bTapped = InventoryPanel->SimulateTapCarryCell(SlotIndex);
+	UE_LOG(LogTemp, Display, TEXT("SarkoTapCarryCell: cell %d %s"),
+		SlotIndex, bTapped ? TEXT("tapped") : TEXT("is not a tappable consumable"));
+#endif
+}
+
+void ASarkoPlayerController::SarkoDebugStandInZone(int32 ZoneIndex, float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	if (DelaySeconds > 0.f)
+	{
+		FTimerHandle Handle;
+		GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+			[this, ZoneIndex]() { SarkoDebugStandInZone(ZoneIndex, 0.f); }), DelaySeconds, /*bLoop*/ false);
+		return;
+	}
+
+	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	ASarkoRaidGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ASarkoRaidGameMode>() : nullptr;
+	if (!Pawn || !GameMode || !GameMode->CachedDefinition.Extractions.IsValidIndex(ZoneIndex))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoDebugStandInZone: no pawn, or no zone %d on this map"), ZoneIndex);
+		return;
+	}
+	// The pad's authored centre, read from the map the server is running rather
+	// than typed into a script that would go stale the moment the zone moves.
+	const FSarkoExtractionSpot& Zone = GameMode->CachedDefinition.Extractions[ZoneIndex];
+	Pawn->SetActorLocation(Zone.Location + FVector(0.f, 0.f, 150.f), /*bSweep*/ false);
+	UE_LOG(LogTemp, Display, TEXT("SarkoDebugStandInZone: standing on zone %d ('%s') at %s"),
+		ZoneIndex, *Zone.Name, *Zone.Location.ToCompactString());
 #endif
 }
 

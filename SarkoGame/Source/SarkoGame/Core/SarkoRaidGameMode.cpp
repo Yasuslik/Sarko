@@ -506,6 +506,7 @@ void ASarkoRaidGameMode::ActivateRaid(int32 AuthoritativeSeed, float ClockSecond
 	// from entering this zone, and the raid going live counts as entering" should
 	// hold because this line exists. Pinned by Sarko.Extract.ActivationIsTheDwellEpoch.
 	Dwells.Reset();
+	AnnouncedClosedZones.Reset();
 
 	// Last of the three: it is what unlocks looting and the dwell, so it must not
 	// be observable before the seed and the clock it belongs with.
@@ -888,6 +889,17 @@ void ASarkoRaidGameMode::Tick(float DeltaSeconds)
 		const bool bOpen = Zones.IsValidIndex(ZoneIndex)
 			&& SarkoExtract::IsZoneOpen(Zones[ZoneIndex].OpensAfterSeconds, ElapsedSeconds);
 		const int32 CountingZone = bOpen ? ZoneIndex : INDEX_NONE;
+
+		// Once per zone per raid, not per tick: a player can stand on a shut pad
+		// for minutes, and this exists so a headless run can prove the gate holds.
+		if (Zones.IsValidIndex(ZoneIndex) && !bOpen && !AnnouncedClosedZones.Contains(ZoneIndex))
+		{
+			AnnouncedClosedZones.Add(ZoneIndex);
+			UE_LOG(LogTemp, Display,
+				TEXT("SarkoRaidGameMode: zone %d ('%s') refuses the dwell — it opens at %.0fs and the raid is %.0fs old (%.0fs to go)"),
+				ZoneIndex, *Zones[ZoneIndex].Name, Zones[ZoneIndex].OpensAfterSeconds, ElapsedSeconds,
+				SarkoExtract::SecondsUntilOpen(Zones[ZoneIndex].OpensAfterSeconds, ElapsedSeconds));
+		}
 
 		SarkoExtract::FSarkoDwell& Dwell = Dwells.FindOrAdd(Pawn);
 		Dwell = SarkoExtract::AdvanceDwellInZone(Dwell, CountingZone, DeltaSeconds);

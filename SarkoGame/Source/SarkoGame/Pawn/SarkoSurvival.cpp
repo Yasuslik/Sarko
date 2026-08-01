@@ -206,6 +206,18 @@ void USarkoSurvivalComponent::TickRegen(float DeltaSeconds)
 		World->GetTimeSeconds() - LastCombatSeconds,
 		Settings.HealthRegenDelaySeconds,
 		Food, Water, Settings.SurvivalLowPercent);
+	// Logged when the RATE changes, not per tick. It changes when a fight ends,
+	// when a meter crosses the threshold, and when the second one does — a
+	// handful of lines in a fifteen-minute raid, and the only way a headless run
+	// can show that regeneration is gated at all.
+	if (!FMath::IsNearlyEqual(PerSecond, LastLoggedRegenPerSecond, 0.001f))
+	{
+		LastLoggedRegenPerSecond = PerSecond;
+		UE_LOG(LogTemp, Display,
+			TEXT("SarkoSurvival: out-of-combat regen now %.2f hp/s (food %.0f%%, water %.0f%%, %.1fs since combat, health %.0f)"),
+			PerSecond, Food, Water, World->GetTimeSeconds() - LastCombatSeconds, Health->GetHealth());
+	}
+
 	if (PerSecond <= 0.f)
 	{
 		return;

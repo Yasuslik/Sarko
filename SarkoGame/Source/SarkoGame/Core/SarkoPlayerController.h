@@ -279,6 +279,47 @@ public:
 	UFUNCTION(Exec)
 	void SarkoDebugAmmo(int32 Rounds);
 
+	/**
+	 * Debug only: puts the survival meters at a chosen reading and optionally
+	 * applies damage, so a headless run can reach a state that would otherwise
+	 * take a quarter of an hour and a firefight.
+	 *
+	 * Hunger and thirst move by 2.5 and 3.3 PER MINUTE, and regeneration only
+	 * starts eight seconds after the last damage taken or dealt — so "thirst
+	 * below thirty, wounded, then quiet" is a state no offscreen run can play its
+	 * way into inside a reasonable timeout. Same precedent and same shipping
+	 * guard as SarkoDebugAmmo above.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugSurvival(float Food, float Water, float Damage, float DelaySeconds);
+
+	/**
+	 * Debug only: taps a cell of the player's OWN grid, through the panel's real
+	 * button, exactly as a finger would.
+	 *
+	 * The carry grid's consumable cells are the one interactive thing in this
+	 * project a -RenderOffscreen run cannot reach any other way: the container
+	 * cells already have SarkoTapContainerCell, and this is its mirror on the
+	 * other half of the panel. It goes through SButton::SimulateClick rather than
+	 * calling RequestConsumeItem, so what it proves includes the button existing,
+	 * being enabled, and the rebuild being deferred out of ExecuteOnClick.
+	 */
+	UFUNCTION(Exec)
+	void SarkoTapCarryCell(int32 SlotIndex, float DelaySeconds);
+
+	/**
+	 * Debug only: teleports the pawn onto extraction zone ZoneIndex, DelaySeconds
+	 * from now.
+	 *
+	 * BugItGo would do it if a headless run could issue a command mid-run, but
+	 * -ExecCmds executes its whole list at engine init — so every step of a
+	 * verification run that needs time to pass has to carry its own delay, which
+	 * is why the three seams above take one. Reading the pad's centre out of the
+	 * map file also means the coordinate cannot go stale when the map moves.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugStandInZone(int32 ZoneIndex, float DelaySeconds);
+
 private:
 	void UpdateSticks();
 

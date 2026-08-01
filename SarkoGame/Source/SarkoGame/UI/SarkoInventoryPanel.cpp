@@ -567,13 +567,15 @@ TSharedRef<SWidget> SSarkoInventoryPanel::DecorateCarryCell(int32 SlotIndex, TSh
 	TSharedRef<SWidget> Interactive = Cell;
 	if (bConsumable)
 	{
-		Interactive = SNew(SButton)
+		TSharedPtr<SButton> Button;
+		Interactive = SAssignNew(Button, SButton)
 			.ButtonStyle(&Styles->InvisibleTap)
 			.ContentPadding(FMargin(0.f))
 			.OnClicked(FOnClicked::CreateSP(this, &SSarkoInventoryPanel::HandleConsumeSlot, SlotIndex))
 			[
 				Cell
 			];
+		CarryButtons.Add(SlotIndex, Button);
 	}
 
 	TSharedRef<SOverlay> Wrapped = SNew(SOverlay)
@@ -689,6 +691,10 @@ void SSarkoInventoryPanel::Refresh()
 	}
 	PreviousBag = Bag;
 	bHasPreviousBag = true;
+
+	// Cleared before the pages are rebuilt, because DecorateCarryCell refills it
+	// and a stale entry is a pointer to a button that is no longer on screen.
+	CarryButtons.Reset();
 
 	const SarkoUI::FStackCellDecorator Decorate =
 		[this](int32 StackIndex, TSharedRef<SWidget> Cell) { return DecorateCarryCell(StackIndex, Cell); };
@@ -845,6 +851,20 @@ bool SSarkoInventoryPanel::SimulateTapContainerCell(int32 SlotIndex)
 		return false;
 	}
 	ContainerButtons[SlotIndex]->SimulateClick();
+	return true;
+}
+
+bool SSarkoInventoryPanel::SimulateTapCarryCell(int32 SlotIndex)
+{
+	// IsEnabled() checked here and not left to SimulateClick, for the reason
+	// SimulateTapContainerCell gives: the engine's SimulateClick calls
+	// ExecuteOnClick() directly and never consults the enabled state.
+	const TSharedPtr<SButton>* Button = CarryButtons.Find(SlotIndex);
+	if (!Button || !Button->IsValid() || !(*Button)->IsEnabled())
+	{
+		return false;
+	}
+	(*Button)->SimulateClick();
 	return true;
 }
 #endif

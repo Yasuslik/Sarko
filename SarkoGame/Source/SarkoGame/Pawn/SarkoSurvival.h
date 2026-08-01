@@ -124,7 +124,8 @@ public:
 	 */
 	bool ConsumeFromBag(TArray<struct FSarkoItemStack>& Bag, int32 SlotIndex);
 
-	/** Test seam: a known state without a world or a replication cycle. */
+	/** Test seam: a known state without a world or a replication cycle. Also the
+	 *  debug console's way of putting a headless raid at a chosen meter reading. */
 	void ResetForTest(float Food, float Water);
 
 	/** Test seam: reads the server's float, not the replicated integer. */
@@ -159,4 +160,14 @@ private:
 
 	/** Server: runs the out-of-combat regeneration for this tick. */
 	void TickRegen(float DeltaSeconds);
+
+	/**
+	 * The last regeneration rate written to the log.
+	 *
+	 * The rate is logged when it CHANGES — a fight ending, a meter crossing the
+	 * threshold, the second one crossing it — which is a handful of lines a raid
+	 * against one per tick. Negative until the first evaluation, so the opening
+	 * "zero, you are in combat" is a change too.
+	 */
+	float LastLoggedRegenPerSecond = -1.f;
 };
