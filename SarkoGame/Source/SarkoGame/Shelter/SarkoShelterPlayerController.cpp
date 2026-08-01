@@ -152,6 +152,41 @@ void ASarkoShelterPlayerController::RefreshWidget()
 		LastError, LastCraftLine, SarkoLoot::GetItemCatalog()));
 }
 
+void ASarkoShelterPlayerController::SarkoDebugParts(float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	TWeakObjectPtr<ASarkoShelterPlayerController> WeakThis(this);
+	FTimerHandle Handle;
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda([WeakThis]()
+	{
+		ASarkoShelterPlayerController* Self = WeakThis.Get();
+		USarkoGameInstance* GameInstance = Self ? Self->GetGameInstance<USarkoGameInstance>() : nullptr;
+		if (!GameInstance)
+		{
+			return;
+		}
+		// The mirrored recipe, not a hand-written list: if garage.go's recipe
+		// moves, this moves with it and the shot keeps showing the truth.
+		for (const FSarkoItemStack& Part : SarkoShelter::BicycleRecipe())
+		{
+			if (FSarkoItemStack* Held = GameInstance->CachedProfile.Stash.FindByPredicate(
+				[&Part](const FSarkoItemStack& Stack) { return Stack.Item == Part.Item; }))
+			{
+				Held->Quantity = FMath::Max(Held->Quantity, Part.Quantity);
+			}
+			else
+			{
+				GameInstance->CachedProfile.Stash.Add(Part);
+			}
+		}
+		GameInstance->bProfileLoaded = true;
+		UE_LOG(LogTemp, Warning,
+			TEXT("SarkoDebugParts: the CACHED profile now holds a bicycle's parts. Nothing was sent to the backend."));
+		Self->RefreshWidget();
+	}), FMath::Max(0.01f, DelaySeconds), false);
+#endif
+}
+
 void ASarkoShelterPlayerController::Craft()
 {
 	if (bCraftInFlight)
