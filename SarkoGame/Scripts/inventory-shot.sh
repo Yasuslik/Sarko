@@ -24,10 +24,10 @@
 # because -ExecCmds is queued at engine init and the raid's authoritative seed,
 # the loot channel and the panel's construction all land later:
 #
-#   SarkoDebugLoot <n>          fill the bag with n mixed-category stacks
-#   SarkoOpenNearestContainer   channel open the nearest crate
-#   SarkoTapContainerCell <i>   press container cell i
-#   SarkoInventoryShot <secs>   take the shot that many seconds in
+#   SarkoDebugLoot <n>              fill the bag with n mixed-category stacks
+#   SarkoOpenNearestContainer       channel open the nearest crate
+#   SarkoTapContainerCell <i> <s>   press cell i, then shoot s seconds LATER
+#   SarkoInventoryShot <secs>       take the shot that many seconds in
 #
 # Usage:
 #   Scripts/inventory-shot.sh              # 9 stacks: a mixed, nearly-full bag
@@ -61,9 +61,15 @@ X="${1:--10800}"
 Y="${2:--17400}"
 Z="${3:-200}"
 
+# When a cell is tapped, the shutter is chained off the TAP rather than off
+# engine start — the refusal pulse is 240 ms and the tap lands whenever the loot
+# channel finishes, so a boot-relative shutter catches it only by luck.
+# INV_TAP_SHOT is that delay, in seconds after the tap.
 TAP_CMD=""
+SHOT_CMD="SarkoInventoryShot $SHOT_AT"
 if [[ -n "${INV_TAP:-}" ]]; then
-	TAP_CMD="SarkoTapContainerCell $INV_TAP, "
+	TAP_CMD="SarkoTapContainerCell $INV_TAP ${INV_TAP_SHOT:-0.12}, "
+	SHOT_CMD="SarkoInventoryShot 25"   # a backstop only, in case the tap never lands
 fi
 
 SAFE_CMD="sarko.SafeArea.DebugPhoneLandscape 1, "
@@ -81,7 +87,7 @@ rm -rf "$SHOT_DIR"
 	"/Engine/Maps/Entry?game=/Script/SarkoGame.SarkoRaidGameMode" \
 	-game -RenderOffscreen -unattended -nosplash \
 	-windowed -ForceRes -ResX="$RES_X" -ResY="$RES_Y" \
-	-ExecCmds="t.MaxFPS 10, ${SAFE_CMD}EnableCheats, BugItGo $X $Y $Z, Walk, SarkoDebugLoot $BAG, SarkoOpenNearestContainer, ${TAP_CMD}SarkoInventoryShot $SHOT_AT" > /dev/null 2>&1 &
+	-ExecCmds="t.MaxFPS 10, ${SAFE_CMD}EnableCheats, BugItGo $X $Y $Z, Walk, SarkoDebugLoot $BAG, SarkoOpenNearestContainer, ${TAP_CMD}${SHOT_CMD}" > /dev/null 2>&1 &
 PID=$!
 
 ELAPSED=0

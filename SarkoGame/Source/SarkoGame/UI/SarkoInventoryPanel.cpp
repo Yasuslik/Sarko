@@ -190,17 +190,16 @@ TOptional<FSlateRenderTransform> SSarkoInventoryPanel::PlateTransform() const
 	return TOptional<FSlateRenderTransform>(FSlateRenderTransform(FVector2D(Offset, 0.f)));
 }
 
-FSlateColor SSarkoInventoryPanel::RefusalGlowTint() const
+const FSlateBrush* SSarkoInventoryPanel::RefusalGlowBrush() const
 {
 	// Signal 1: the player grid's rim pulses amber. Only NoSpace lights it — a
 	// shake with no amber means "you moved", and that distinction is the
 	// difference between a player retrying and a player understanding.
 	if (!RefusalCurve.IsPlaying() || LastRefusal != ESarkoTakeRefusal::NoSpace)
 	{
-		return FSlateColor(FLinearColor(1.f, 1.f, 1.f, 0.f));
+		return nullptr;
 	}
-	const float Alpha = FMath::Sin(PI * RefusalCurve.GetLerp());
-	return FSlateColor(FLinearColor(1.f, 1.f, 1.f, Alpha));
+	return Styles->RefusalGlowFor(FMath::Sin(PI * RefusalCurve.GetLerp()));
 }
 
 FSlateColor SSarkoInventoryPanel::BackpackHeaderColour() const
@@ -236,16 +235,15 @@ TOptional<FSlateRenderTransform> SSarkoInventoryPanel::PlayerCellTransform(int32
 	return TOptional<FSlateRenderTransform>(FSlateRenderTransform(Scale));
 }
 
-FSlateColor SSarkoInventoryPanel::TransferFlashTint(int32 SlotIndex) const
+const FSlateBrush* SSarkoInventoryPanel::TransferFlashBrush(int32 SlotIndex) const
 {
 	if (!TransferCurve.IsPlaying() || SlotIndex != ReceivingCell)
 	{
-		return FSlateColor(FLinearColor(1.f, 1.f, 1.f, 0.f));
+		return nullptr;
 	}
-	// White rim, fading out into the category colour underneath it. The outline
-	// of a brush is not an attribute and cannot be animated in place, so this is
-	// a second widget's opacity rather than a colour written per frame.
-	return FSlateColor(FLinearColor(1.f, 1.f, 1.f, 1.f - TransferCurve.GetLerp()));
+	// White rim, fading out into the category colour underneath it — as a baked
+	// brush, for the same reason the refusal glow is one.
+	return Styles->TransferFlashFor(1.f - TransferCurve.GetLerp());
 }
 
 void SSarkoInventoryPanel::Construct(const FArguments& InArgs)
@@ -315,17 +313,41 @@ void SSarkoInventoryPanel::Construct(const FArguments& InArgs)
 
 									+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
 									[
-										SAssignNew(ContainerHeader, STextBlock)
-										.Font(PanelFont(SarkoUI::SectionHeaderPt))
-										.ColorAndOpacity(FSlateColor(SarkoUI::HeaderColour))
+										SNew(SVerticalBox)
+
+										+ SVerticalBox::Slot().AutoHeight()
+										[
+											SNew(STextBlock)
+											.Font(PanelFont(SarkoUI::SectionLabelPt))
+											.ColorAndOpacity(FSlateColor(SarkoUI::HeaderColour))
+											.Text(FText::FromString(TEXT("ОБШУК")))
+										]
+
+										+ SVerticalBox::Slot().AutoHeight()
+										[
+											// The tier is the headline: it is what says
+											// whether this crate was worth the walk.
+											SAssignNew(ContainerHeader, STextBlock)
+											.Font(PanelFont(SarkoUI::TierPt))
+											.ColorAndOpacity(FSlateColor(SarkoUI::CellCountColour))
+											.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+										]
 									]
 
 									+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+										.Padding(6.f, 0.f, 0.f, 0.f)
 									[
+										// Two lines, right-aligned. On one line this
+										// label is 105 pt of a 172 pt row and left the
+										// tier beside it truncated to "MILIT…";
+										// stacked it is 42, and both columns then read
+										// as a label over its value.
 										SNew(STextBlock)
 										.Font(PanelFont(SarkoUI::TakeAllPt))
 										.ColorAndOpacity(FSlateColor(SarkoUI::AmberWarn))
-										.Text(FText::FromString(TEXT("ЗАБРАТИ ВСЕ")))
+										.Justification(ETextJustify::Right)
+										.LineHeightPercentage(0.92f)
+										.Text(FText::FromString(TEXT("ЗАБРАТИ\nВСЕ")))
 									]
 								]
 							]
@@ -364,6 +386,7 @@ void SSarkoInventoryPanel::Construct(const FArguments& InArgs)
 							[
 								SAssignNew(BackpackHeader, STextBlock)
 								.Font(PanelFont(SarkoUI::SectionHeaderPt))
+								.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
 								.ColorAndOpacity(TAttribute<FSlateColor>::CreateSP(
 									this, &SSarkoInventoryPanel::BackpackHeaderColour))
 							]
@@ -384,9 +407,8 @@ void SSarkoInventoryPanel::Construct(const FArguments& InArgs)
 							[
 								SNew(SBorder)
 								.Visibility(EVisibility::SelfHitTestInvisible)
-								.BorderImage(&Styles->RefusalGlowBrush)
-								.BorderBackgroundColor(TAttribute<FSlateColor>::CreateSP(
-									this, &SSarkoInventoryPanel::RefusalGlowTint))
+								.BorderImage(TAttribute<const FSlateBrush*>::CreateSP(
+									this, &SSarkoInventoryPanel::RefusalGlowBrush))
 							]
 						]
 					]
@@ -512,9 +534,8 @@ TSharedRef<SWidget> SSarkoInventoryPanel::BuildPlayerCell(const FSarkoItemStack&
 			[
 				SNew(SBorder)
 				.Visibility(EVisibility::SelfHitTestInvisible)
-				.BorderImage(&Styles->TransferFlashBrush)
-				.BorderBackgroundColor(TAttribute<FSlateColor>::CreateSP(
-					this, &SSarkoInventoryPanel::TransferFlashTint, SlotIndex))
+				.BorderImage(TAttribute<const FSlateBrush*>::CreateSP(
+					this, &SSarkoInventoryPanel::TransferFlashBrush, SlotIndex))
 			]
 		];
 
@@ -533,9 +554,7 @@ void SSarkoInventoryPanel::Refresh()
 	}
 
 	const FString Tier = OpenContainerTier(P);
-	ContainerHeader->SetText(FText::FromString(Tier.IsEmpty()
-		? FString(TEXT("ОБШУК"))
-		: FString::Printf(TEXT("ОБШУК · %s"), *Tier)));
+	ContainerHeader->SetText(FText::FromString(Tier.IsEmpty() ? FString(TEXT("—")) : Tier));
 
 	// --- the crate ---------------------------------------------------------
 	const TArray<FSarkoItemStack>& Slots = P->GetOpenContainerSlots();

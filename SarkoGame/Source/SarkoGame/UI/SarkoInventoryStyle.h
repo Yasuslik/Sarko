@@ -143,16 +143,35 @@ struct FSarkoInventoryStyles
 	FSlateBrush PanelBrush;
 	FSlateBrush HairlineBrush;
 
+	/** How many baked opacities each fade ladder below has. Twelve reads as a
+	 *  smooth ramp over 240 ms and costs twelve FSlateBrushes, once, per process. */
+	static constexpr int32 GlowSteps = 12;
+
 	/**
 	 * A transparent-bodied rounded box with an amber rim, laid OVER the player
-	 * grid and faded in and out by the refusal curve. The outline of a brush is
-	 * not an attribute and cannot be animated in place, so the pulse is a second
-	 * widget's opacity rather than a colour being written per frame.
+	 * grid — in twelve fixed opacities rather than one brush with an animated
+	 * tint.
+	 *
+	 * A LADDER, and this is not a stylistic choice: it is the shape this took
+	 * after a screenshot showed the pulse never drawing at all. SBorder folds the
+	 * BRUSH's own tint into the colour it draws with (`BrushResource->GetTint() *
+	 * InWidgetStyle * BorderBackgroundColor`, SBorder.cpp:115), so a brush with a
+	 * transparent BODY has a final alpha of zero no matter what the attribute
+	 * says — and FSlateDrawElement then culls the entire element, outline
+	 * included (DrawElementTypes.cpp:154). Setting bUseBrushTransparency false
+	 * makes the outline colour be used verbatim instead, which is the only way a
+	 * transparent-bodied rim draws at all; the price is that its alpha is baked
+	 * into the brush, so a fade is a choice between twelve of them.
 	 */
-	FSlateBrush RefusalGlowBrush;
+	FSlateBrush RefusalGlow[GlowSteps];
 
 	/** The same trick for the transfer flash: a white rim over the receiving cell. */
-	FSlateBrush TransferFlashBrush;
+	FSlateBrush TransferFlash[GlowSteps];
+
+	/** The rung nearest Alpha, or null below the first — a null BorderImage draws
+	 *  nothing, which is exactly the resting state both of these want. */
+	const FSlateBrush* RefusalGlowFor(float Alpha) const;
+	const FSlateBrush* TransferFlashFor(float Alpha) const;
 
 	FSarkoInventoryStyles();
 };

@@ -138,6 +138,10 @@ void ASarkoPlayerController::PlayerTick(float DeltaTime)
 	Super::PlayerTick(DeltaTime);
 
 	UpdatePanelBinding();
+	// After the binding and before anything reads the panel: this is the one
+	// place widgets are created and destroyed, and it is deliberately on the tick
+	// rather than inside the Slate event that asked for the change.
+	UpdateInventoryPanel();
 	UpdateSticks();
 	UpdateInteract();
 
@@ -541,6 +545,27 @@ void ASarkoPlayerController::UpdatePanelBinding()
 
 void ASarkoPlayerController::HandleContainerViewChanged()
 {
+	// Deferred to the next tick, and NEVER done inline. This delegate can fire
+	// from inside SButton::ExecuteOnClick: tapping a cell calls RequestTakeItem,
+	// and in a standalone or listen-server game the "RPC" runs synchronously, so
+	// the contents change and this arrives while the button is still mid-click.
+	// Rebuilding the grid here destroys that very button, and ExecuteOnClick then
+	// calls AsShared() on a freed widget — Assertion failed:
+	// DoesSharedInstanceExist() in SharedPointer.h, a hard crash, every single
+	// time a player taps a cell. A take-all that empties the crate reaches the
+	// panel *removal* down the same path, which is why the whole body moved and
+	// not just the Refresh.
+	bPanelDirty = true;
+}
+
+void ASarkoPlayerController::UpdateInventoryPanel()
+{
+	if (!bPanelDirty)
+	{
+		return;
+	}
+	bPanelDirty = false;
+
 	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
 	if (!Pawn)
 	{
@@ -740,17 +765,40 @@ void ASarkoPlayerController::TickDebugTap()
 {
 	if (InventoryPanel.IsValid() && InventoryPanel->SimulateTapContainerCell(DebugTapSlot))
 	{
+		// Logged with the world time, because the ONE thing a still frame cannot
+		// show is a 240 ms pulse, and knowing the instant it started is the
+		// difference between "the shot was mistimed" and "the glow never drew".
+		UE_LOG(LogTemp, Display, TEXT("SarkoTapContainerCell: tapped cell %d at t=%.3f"),
+			DebugTapSlot, GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f);
 		GetWorldTimerManager().ClearTimer(DebugTapTimer);
+
+		// Chained off the tap, not off engine start: the refusal pulse is 240 ms
+		// long and the tap lands whenever the loot channel finishes, so a shutter
+		// timed from boot photographs the transient only by luck.
+		if (DebugTapShotDelay > 0.f)
+		{
+			GetWorldTimerManager().SetTimer(DebugShotTimer, this,
+				&ASarkoPlayerController::TakeDebugShot, DebugTapShotDelay, false);
+		}
 	}
+}
+
+void ASarkoPlayerController::TakeDebugShot()
+{
+	// `Shot showui` and NOT HighResShot: HighResShot goes through the scene
+	// renderer and captures no Slate at all, so the PNG comes out with no panel
+	// on it — which looks exactly like a panel that failed to draw.
+	ConsoleCommand(TEXT("Shot showui"), /*bWriteToLog*/ true);
 }
 #endif
 
-void ASarkoPlayerController::SarkoTapContainerCell(int32 SlotIndex)
+void ASarkoPlayerController::SarkoTapContainerCell(int32 SlotIndex, float ShotDelay)
 {
 #if !UE_BUILD_SHIPPING
 	// A headless run has no fingers, and the panel does not exist yet when this
 	// command is queued. Retried until the cell is there and enabled.
 	DebugTapSlot = SlotIndex;
+	DebugTapShotDelay = ShotDelay;
 	GetWorldTimerManager().SetTimer(DebugTapTimer, this,
 		&ASarkoPlayerController::TickDebugTap, 0.5f, true, 0.5f);
 #endif
@@ -759,14 +807,8 @@ void ASarkoPlayerController::SarkoTapContainerCell(int32 SlotIndex)
 void ASarkoPlayerController::SarkoInventoryShot(float Delay)
 {
 #if !UE_BUILD_SHIPPING
-	// `Shot showui` and NOT HighResShot: HighResShot goes through the scene
-	// renderer and captures no Slate at all, so the PNG comes out with no panel
-	// on it — which looks exactly like a panel that failed to draw.
-	FTimerDelegate Shot = FTimerDelegate::CreateWeakLambda(this, [this]()
-	{
-		ConsoleCommand(TEXT("Shot showui"), /*bWriteToLog*/ true);
-	});
-	GetWorldTimerManager().SetTimer(DebugShotTimer, Shot, FMath::Max(0.1f, Delay), false);
+	GetWorldTimerManager().SetTimer(DebugShotTimer, this,
+		&ASarkoPlayerController::TakeDebugShot, FMath::Max(0.1f, Delay), false);
 #endif
 }
 

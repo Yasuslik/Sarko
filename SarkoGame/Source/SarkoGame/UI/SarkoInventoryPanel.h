@@ -45,8 +45,27 @@ namespace SarkoUI
 	/** Type sizes, from the Visual design table. */
 	constexpr float SectionHeaderPt = 11.f;
 	constexpr float TakeAllPt = 12.f;
-	constexpr float CellLabelPt = 8.5f;
 	constexpr float CellCountPt = 10.f;
+
+	/**
+	 * 7.5 and not the table's 8.5, settled by reading the frame rather than the
+	 * spec: at 8.5 a 36 pt cell interior held four Cyrillic capitals before the
+	 * ellipsis, so ПІСТОЛЕТ and ПАТРОНИ both came out "П..." and the two junk
+	 * items were indistinguishable from each other. At 7.5 it holds six, which is
+	 * enough to tell two items of the SAME hue apart — the only job the label has,
+	 * since the hue already carries the category.
+	 */
+	constexpr float CellLabelPt = 7.5f;
+
+	/**
+	 * The crate's tier is the header's headline and "ОБШУК" is its dim label
+	 * above it, stacked rather than run together on one line: at 216 pt wide,
+	 * "ОБШУК · MILITARY" and "ЗАБРАТИ ВСЕ" on one row overlapped each other, and
+	 * a header printed through a button label is the first thing that makes a
+	 * screen look unfinished.
+	 */
+	constexpr float SectionLabelPt = 9.f;
+	constexpr float TierPt = 13.f;
 
 	/** How far the panel slides in from the right on entry. */
 	constexpr float EntrySlidePt = 24.f;
@@ -227,8 +246,10 @@ private:
 	FLinearColor PanelTint() const;
 	TOptional<FSlateRenderTransform> PlateTransform() const;
 
-	/** The amber that says "your bag is the problem", at sin(pi * lerp). */
-	FSlateColor RefusalGlowTint() const;
+	/** The amber that says "your bag is the problem", at sin(pi * lerp) — as a
+	 *  choice of baked brush, because an animated tint cannot draw a
+	 *  transparent-bodied rim at all. See FSarkoInventoryStyles::RefusalGlow. */
+	const FSlateBrush* RefusalGlowBrush() const;
 	FSlateColor BackpackHeaderColour() const;
 
 	/** Per-cell animation, read as attributes so nothing has to tick to keep a
@@ -236,7 +257,7 @@ private:
 	 *  is not the one currently animating, which is all of them almost always. */
 	TOptional<FSlateRenderTransform> ContainerCellTransform(int32 SlotIndex) const;
 	TOptional<FSlateRenderTransform> PlayerCellTransform(int32 SlotIndex) const;
-	FSlateColor TransferFlashTint(int32 SlotIndex) const;
+	const FSlateBrush* TransferFlashBrush(int32 SlotIndex) const;
 
 	TSharedRef<SWidget> BuildContainerCell(const FSarkoItemStack& Stack, int32 SlotIndex);
 	TSharedRef<SWidget> BuildPlayerCell(const FSarkoItemStack& Stack, int32 SlotIndex);

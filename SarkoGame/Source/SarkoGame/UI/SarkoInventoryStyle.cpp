@@ -181,13 +181,55 @@ FSarkoInventoryStyles::FSarkoInventoryStyles()
 	HairlineBrush = MakeRoundedBrush(SarkoUI::Hairline, 0.f, FLinearColor::Transparent, 0.f);
 
 	// Both animation overlays have a fully transparent body, so all that is ever
-	// seen of them is the rim they fade in and out. Radius is one point over the
-	// cell's, so the rim sits just outside the thing it is drawing attention to
-	// instead of fighting with it.
-	RefusalGlowBrush = MakeRoundedBrush(FLinearColor::Transparent, SarkoUI::CellRadiusPt + 1.f,
-		SarkoUI::AmberWarn, 2.f);
-	TransferFlashBrush = MakeRoundedBrush(FLinearColor::Transparent, SarkoUI::CellRadiusPt,
-		FLinearColor::White, 2.f);
+	// seen of them is the rim. Radius is one point over the cell's, so the rim
+	// sits just outside the thing it is drawing attention to instead of fighting
+	// with it.
+	//
+	// bUseBrushTransparency is deliberately left FALSE on these two and only
+	// these two — see the header. With it true the outline's alpha is taken from
+	// the final tint, and the final tint of a transparent-bodied brush is zero,
+	// so the element is culled and the rim is never seen. False makes the
+	// outline colour verbatim, which is why each rung carries its own alpha.
+	for (int32 Step = 0; Step < FSarkoInventoryStyles::GlowSteps; ++Step)
+	{
+		const float Alpha = static_cast<float>(Step + 1) / FSarkoInventoryStyles::GlowSteps;
+
+		FSlateRoundedBoxBrush Glow(FLinearColor::Transparent, SarkoUI::CellRadiusPt + 1.f,
+			SarkoUI::AmberWarn.CopyWithNewOpacity(Alpha), 2.f);
+		Glow.OutlineSettings.bUseBrushTransparency = false;
+		RefusalGlow[Step] = Glow;
+
+		FSlateRoundedBoxBrush Flash(FLinearColor::Transparent, SarkoUI::CellRadiusPt,
+			FLinearColor(1.f, 1.f, 1.f, Alpha), 2.f);
+		Flash.OutlineSettings.bUseBrushTransparency = false;
+		TransferFlash[Step] = Flash;
+	}
+}
+
+namespace
+{
+	/** Nearest rung, or null when there is not enough of it to be worth drawing.
+	 *  Null and not rung zero: a permanently-drawn faintest rim around the player
+	 *  grid would read as a border the panel always has. */
+	const FSlateBrush* RungFor(const FSlateBrush* Ladder, int32 Steps, float Alpha)
+	{
+		if (Alpha <= 1.f / (Steps * 2.f))
+		{
+			return nullptr;
+		}
+		const int32 Index = FMath::Clamp(FMath::RoundToInt(Alpha * Steps) - 1, 0, Steps - 1);
+		return &Ladder[Index];
+	}
+}
+
+const FSlateBrush* FSarkoInventoryStyles::RefusalGlowFor(float Alpha) const
+{
+	return RungFor(RefusalGlow, GlowSteps, Alpha);
+}
+
+const FSlateBrush* FSarkoInventoryStyles::TransferFlashFor(float Alpha) const
+{
+	return RungFor(TransferFlash, GlowSteps, Alpha);
 }
 
 TSharedRef<const FSarkoInventoryStyles> FSarkoInventoryStyles::Get()

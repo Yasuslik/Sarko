@@ -198,8 +198,18 @@ public:
 	UFUNCTION(Exec)
 	void SarkoOpenNearestContainer();
 
+	/**
+	 * Taps a container cell and, if ShotDelay is positive, takes the screenshot
+	 * ShotDelay seconds AFTER the tap actually lands rather than at a fixed time
+	 * from boot.
+	 *
+	 * That is the only way a still frame can catch the 240 ms refusal pulse: the
+	 * tap itself happens whenever the loot channel finishes, which moves run to
+	 * run, so a shutter timed from engine start is guessing. Chaining it off the
+	 * tap makes the transient photographable instead of lucky.
+	 */
 	UFUNCTION(Exec)
-	void SarkoTapContainerCell(int32 SlotIndex);
+	void SarkoTapContainerCell(int32 SlotIndex, float ShotDelay);
 
 	UFUNCTION(Exec)
 	void SarkoInventoryShot(float Delay);
@@ -233,9 +243,20 @@ private:
 	FDelegateHandle ContainerViewHandle;
 	FDelegateHandle TakeRefusedHandle;
 
+	/**
+	 * Set by HandleContainerViewChanged, acted on by UpdateInventoryPanel one
+	 * tick later. The indirection is not tidiness — see HandleContainerViewChanged
+	 * for the crash it exists to prevent.
+	 */
+	bool bPanelDirty = false;
+
 	/** Rebinds when the possessed pawn changes. Called once per tick; it compares
 	 *  two pointers and does nothing on all but the first frame. */
 	void UpdatePanelBinding();
+
+	/** Creates, refreshes or dismisses the panel, from the tick rather than from
+	 *  inside a Slate event. */
+	void UpdateInventoryPanel();
 
 	void HandleContainerViewChanged();
 	void HandleTakeRefused(int32 SlotIndex, ESarkoTakeRefusal Reason);
@@ -249,8 +270,10 @@ private:
 	FTimerHandle DebugTapTimer;
 	FTimerHandle DebugShotTimer;
 	int32 DebugTapSlot = 0;
+	float DebugTapShotDelay = 0.f;
 	void TickDebugOpen();
 	void TickDebugTap();
+	void TakeDebugShot();
 #endif
 
 	/** Finds the nearest openable container and turns held input into channel start/stop. */
