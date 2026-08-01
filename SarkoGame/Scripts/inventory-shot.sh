@@ -53,6 +53,11 @@ BAG="${INV_BAG:-9}"
 # at 0.5 s, so anything under ~4 photographs a panel that is not up yet.
 SHOT_AT="${INV_SHOT_AT:-7}"
 
+# Frame rate. 10 keeps a long headless run cheap, but a frame every 100 ms
+# cannot sample a 120 ms transfer flash — the shutter lands either side of it.
+# Raise this when photographing motion, not when photographing layout.
+FPS="${INV_FPS:-10}"
+
 # The rail depot's military crate. Close enough to walk into, and its own roll
 # is overwritten by SarkoOpenNearestContainer with four different categories so
 # the frame answers "are these hues distinguishable" rather than whatever one
@@ -87,7 +92,7 @@ rm -rf "$SHOT_DIR"
 	"/Engine/Maps/Entry?game=/Script/SarkoGame.SarkoRaidGameMode" \
 	-game -RenderOffscreen -unattended -nosplash \
 	-windowed -ForceRes -ResX="$RES_X" -ResY="$RES_Y" \
-	-ExecCmds="t.MaxFPS 10, ${SAFE_CMD}EnableCheats, BugItGo $X $Y $Z, Walk, SarkoDebugLoot $BAG, SarkoOpenNearestContainer, ${TAP_CMD}${SHOT_CMD}" > /dev/null 2>&1 &
+	-ExecCmds="t.MaxFPS $FPS, ${SAFE_CMD}EnableCheats, BugItGo $X $Y $Z, Walk, SarkoDebugLoot $BAG, SarkoOpenNearestContainer, ${TAP_CMD}${SHOT_CMD}" > /dev/null 2>&1 &
 PID=$!
 
 ELAPSED=0
