@@ -2,6 +2,7 @@
 
 #include "Loot/SarkoBackpack.h"
 #include "Loot/SarkoItemCatalog.h"
+#include "Loot/SarkoLootContainer.h"
 #include "Loot/SarkoLootTable.h"
 #include "Map/SarkoMapDefinition.h"
 
@@ -833,6 +834,125 @@ bool FSarkoCatalogHasABackpackAndAGearCategory::RunTest(const FString& Parameter
 	TestEqual(TEXT("a backpack does not stack"), Bag->StackSize, 1);
 	TestTrue(TEXT("a bag is gear, not junk — the palette must not lie about it"),
 		Bag->Category == ESarkoItemCategory::Gear);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoTransferMovesWhatFitsAndLeavesTheRest,
+	"Sarko.Loot.TransferMovesWhatFitsAndLeavesTheRest",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoTransferMovesWhatFitsAndLeavesTheRest::RunTest(const FString& Parameters)
+{
+	FSarkoItemCatalog Catalog;
+	FString Error;
+	TestTrue(TEXT("fixture catalog parses"), SarkoLoot::ParseItemCatalog(GoodCatalogJson, Catalog, Error));
+
+	// The whole defect, in one assertion. ammo_9mm stacks 60; the bag has one
+	// free cell; the container holds 100. Sixty move, FORTY STAY IN THE CRATE.
+	// Before this function existed the forty were destroyed, because the
+	// container was marked looted whether or not the haul fitted.
+	TArray<FSarkoItemStack> Container = { FSarkoItemStack{ TEXT("ammo_9mm"), 100 } };
+	TArray<FSarkoItemStack> Bag;
+	const int32 Moved = SarkoLoot::TransferOne(Container, 0, Bag, Catalog, /*BagLimit*/ 1);
+
+	TestEqual(TEXT("one full stack moved"), Moved, 60);
+	TestEqual(TEXT("the bag holds it"), Bag.Num(), 1);
+	TestEqual(TEXT("the remainder is still in the container"), Container.Num(), 1);
+	TestEqual(TEXT("and it is exactly what did not fit"), Container[0].Quantity, 40);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoTransferEmptiesTheSlotItDrains,
+	"Sarko.Loot.TransferEmptiesTheSlotItDrains",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoTransferEmptiesTheSlotItDrains::RunTest(const FString& Parameters)
+{
+	FSarkoItemCatalog Catalog;
+	FString Error;
+	SarkoLoot::ParseItemCatalog(GoodCatalogJson, Catalog, Error);
+
+	// A drained slot is REMOVED, not left at quantity zero. A zero-quantity slot
+	// would draw as an occupied cell the player can tap forever, which is the
+	// same "I tapped and nothing happened" the refusal animation exists to end.
+	TArray<FSarkoItemStack> Container = {
+		FSarkoItemStack{ TEXT("medkit"), 1 },
+		FSarkoItemStack{ TEXT("pistol"), 1 },
+	};
+	TArray<FSarkoItemStack> Bag;
+	TestEqual(TEXT("the medkit moves whole"), SarkoLoot::TransferOne(Container, 0, Bag, Catalog, 4), 1);
+	TestEqual(TEXT("one slot left"), Container.Num(), 1);
+	TestTrue(TEXT("and it is the pistol — indices shift, so the panel rebuilds from the new array"),
+		Container[0].Item == FName(TEXT("pistol")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoTransferRefusesRatherThanEatsInput,
+	"Sarko.Loot.TransferRefusesRatherThanEatsInput",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoTransferRefusesRatherThanEatsInput::RunTest(const FString& Parameters)
+{
+	FSarkoItemCatalog Catalog;
+	FString Error;
+	SarkoLoot::ParseItemCatalog(GoodCatalogJson, Catalog, Error);
+
+	TArray<FSarkoItemStack> Container = { FSarkoItemStack{ TEXT("pistol"), 1 } };
+	TArray<FSarkoItemStack> Full = { FSarkoItemStack{ TEXT("medkit"), 3 } };
+
+	// Zero moved is the signal the refusal animation reads. Both sides must be
+	// byte-identical afterwards — a "refusal" that quietly moved one unit is
+	// worse than one that moved none.
+	TestEqual(TEXT("a full bag refuses"), SarkoLoot::TransferOne(Container, 0, Full, Catalog, 1), 0);
+	TestEqual(TEXT("the container is untouched"), Container.Num(), 1);
+	TestEqual(TEXT("the bag is untouched"), Full.Num(), 1);
+
+	// Hostile indices. This function is one call away from an RPC parameter.
+	TestEqual(TEXT("negative index"), SarkoLoot::TransferOne(Container, -1, Full, Catalog, 8), 0);
+	TestEqual(TEXT("out of range"), SarkoLoot::TransferOne(Container, 99, Full, Catalog, 8), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoContainerStateHasThreeMeanings,
+	"Sarko.Loot.ContainerStateHasThreeMeanings",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoContainerStateHasThreeMeanings::RunTest(const FString& Parameters)
+{
+	// Opened-but-not-empty is a NEW state and the reason a crate you walked away
+	// from is still worth walking back to. CanInteract must gate on emptied, not
+	// on opened, or the remainder this whole task preserves is unreachable.
+	TestTrue(TEXT("a closed container is openable"),
+		SarkoLoot::CanInteract(FVector::ZeroVector, FVector::ZeroVector, 250.f, true, /*bEmptied*/ false));
+	TestFalse(TEXT("an emptied one is not"),
+		SarkoLoot::CanInteract(FVector::ZeroVector, FVector::ZeroVector, 250.f, true, /*bEmptied*/ true));
+	TestFalse(TEXT("nor is anything, to a corpse"),
+		SarkoLoot::CanInteract(FVector::ZeroVector, FVector::ZeroVector, 250.f, false, false));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoEveryTierFitsTheContainerGrid,
+	"Sarko.Loot.EveryTierFitsTheContainerGrid",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoEveryTierFitsTheContainerGrid::RunTest(const FString& Parameters)
+{
+	// The container grid is four cells, sized to the loudest tier the shipped
+	// tables can produce (military, rolls.max 4). Raising a table's rolls in the
+	// data file without widening the grid would truncate a roll — i.e. reinvent
+	// the vanishing-loot defect on the other side of the fix. So it fails here,
+	// in a test over the REAL file, instead of quietly in a raid.
+	for (const FSarkoLootTable& Table : SarkoLoot::GetLootTables().Tables)
+	{
+		TestTrue(*FString::Printf(TEXT("tier '%s' rolls at most %d, and the grid holds %d"),
+				*Table.Tier.ToString(), Table.MaxRolls, SarkoLoot::ContainerCells),
+			Table.MaxRolls <= SarkoLoot::ContainerCells);
+	}
 	return true;
 }
 

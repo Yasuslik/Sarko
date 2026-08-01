@@ -133,6 +133,11 @@ void ASarkoCharacter::HandleDeath(AActor* Killer)
 	// frame in which a dead pawn is still opening a crate.
 	LootChannelIndex = INDEX_NONE;
 	LocalChannelIndex = INDEX_NONE;
+	// Nor is a corpse standing over an open crate. Cleared on both sides, so no
+	// panel survives the death that emptied the bag it was filling.
+	OpenContainerIndex = INDEX_NONE;
+	LocalOpenContainerIndex = INDEX_NONE;
+	LocalOpenContainerSlots.Reset();
 
 	// Nor is a corpse mid-extraction. Cleared before the game mode is told, so
 	// the summary cannot flash a countdown from the frame the player died on.
@@ -189,6 +194,9 @@ void ASarkoCharacter::FreezeForRaidEnd()
 	bIsAiming = false;
 	LootChannelIndex = INDEX_NONE;
 	LocalChannelIndex = INDEX_NONE;
+	OpenContainerIndex = INDEX_NONE;
+	LocalOpenContainerIndex = INDEX_NONE;
+	LocalOpenContainerSlots.Reset();
 
 	// Nor is a frozen pawn mid-extraction, for the same reason HandleDeath clears
 	// these: the dwell chip is drawn from them, so leaving them set draws a live
@@ -274,11 +282,21 @@ void ASarkoCharacter::ServerBeginLoot_Implementation(int32 ContainerIndex)
 
 	const bool bAlive = HealthComponent && !HealthComponent->IsDead();
 	if (!SarkoLoot::CanInteract(GetActorLocation(), Spots[ContainerIndex].Location,
-			GetDefault<USarkoRaidSettings>()->InteractRadiusUU, bAlive, RaidState->IsContainerLooted(ContainerIndex)))
+			GetDefault<USarkoRaidSettings>()->InteractRadiusUU, bAlive, RaidState->IsContainerEmptied(ContainerIndex)))
 	{
 		// Every refusal tells the client, so the optimistic bar RequestBeginLoot
 		// started does not stay pinned at full for the rest of the hold.
 		ClientLootRejected(ContainerIndex);
+		return;
+	}
+
+	if (RaidState->IsContainerOpened(ContainerIndex))
+	{
+		// The channel is the price of DISCOVERY, and it has been paid. Re-opening
+		// a crate you already emptied halfway must not cost another second and a
+		// half of standing still in the open.
+		ClientLootRejected(ContainerIndex);
+		OpenContainerFor(ContainerIndex);
 		return;
 	}
 
@@ -331,7 +349,7 @@ void ASarkoCharacter::TickLootChannel()
 	// Re-checked every tick, not only at the start: walking away or dying
 	// mid-channel must cancel it, and both are things the server sees first.
 	if (!SarkoLoot::CanInteract(GetActorLocation(), Spots[LootChannelIndex].Location,
-			Settings.InteractRadiusUU, bAlive, RaidState->IsContainerLooted(LootChannelIndex)))
+			Settings.InteractRadiusUU, bAlive, RaidState->IsContainerEmptied(LootChannelIndex)))
 	{
 		LootChannelIndex = INDEX_NONE;
 		return;
@@ -342,61 +360,315 @@ void ASarkoCharacter::TickLootChannel()
 		return;
 	}
 
-	// Channel complete. Roll here and now, never ahead of time: nothing on this
-	// machine should ever hold a map of the whole raid's contents, so a later
-	// decision to replicate or log rolled loot can only ever leak one opened crate
-	// (slice-1 spec §6.1). What keeps the *client* from knowing is a different
-	// thing — the server-only salt mixed into the stream seed below.
+	// Channel complete. The 1.5 s buys an OPEN, not a haul: opening is the risk,
+	// taking is fast (spec §4). Nothing is rolled or transferred inline any more,
+	// which is why CompleteLootChannel — and its unconditional Mark, which
+	// destroyed whatever did not fit — no longer exists.
 	const int32 Index = LootChannelIndex;
 	LootChannelIndex = INDEX_NONE;
+	OpenContainerFor(Index);
+}
 
-	const FSarkoLootTable* Table = SarkoLoot::GetLootTables().Find(Spots[Index].Tier);
-	if (!Table)
+void ASarkoCharacter::OpenContainerFor(int32 ContainerIndex)
+{
+	ASarkoRaidGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ASarkoRaidGameMode>() : nullptr;
+	if (!GameMode)
 	{
-		UE_LOG(LogTemp, Error, TEXT("SarkoCharacter: container %d has tier '%s' with no loot table"),
-			Index, *Spots[Index].Tier.ToString());
-		RaidState->MarkContainerLooted(Index);
+		return;
+	}
+	TArray<FSarkoItemStack>* Inventory = GameMode->OpenContainerAt(ContainerIndex);
+	if (!Inventory)
+	{
 		return;
 	}
 
-	// GameMode->LootSalt is the reason a client cannot precompute this: Seed is
-	// replicated and the tables ship in the build, so without the salt the two
-	// remaining inputs are both already in the client's hands.
-	FRandomStream Stream(SarkoLoot::ContainerSeed(RaidState->Seed, Index, GameMode->LootSalt));
-	// RollContainerFor, not RollContainer: the tutorial's static loot (spec §6.5)
-	// is a per-container branch, and bTutorialLoot is a server-only member of the
-	// game mode — like LootSalt, it is never replicated, so a client cannot learn
-	// which mode the raid is in and therefore cannot read the authored layout out
-	// of its own copy of the map file plus the tables.
-	const TArray<FSarkoItemStack> Rolled =
-		SarkoLoot::RollContainerFor(Spots[Index], *Table, Stream, GameMode->bTutorialLoot);
+	OpenContainerIndex = ContainerIndex;
+	UE_LOG(LogTemp, Display, TEXT("SarkoCharacter: opened container %d, holding %d stack(s)"),
+		ContainerIndex, Inventory->Num());
 
-	// CompleteLootChannel owns the order and the double-credit gate: credit, then
-	// mark, and never credit an index that is already marked. Spec §4.3's partial
-	// loot is the "mark unconditionally" half of that rule. Pure and unit tested
-	// (Sarko.Loot.CompletedChannelCreditsThenMarksOnce), which is the only way the
-	// rule gets checked at all — everything around it needs a world and a network.
-	const SarkoLoot::FSarkoLootPayout Payout = SarkoLoot::CompleteLootChannel(
-		Rolled,
-		RaidState->IsContainerLooted(Index),
-		[this](FName Item, int32 Quantity)
+	if (BackpackComponent)
+	{
+		// TEMPORARY, removed in Task 4 when the panel exists. Until then the raid
+		// has to stay playable, so opening still hauls — but through TransferOne,
+		// so the remainder stays in the crate. That single difference is the
+		// defect fixed. TakeAllFrom ends in FinishTransfer, which is the push.
+		TakeAllFrom(ContainerIndex);
+		return;
+	}
+	// No backpack component at all: nothing can move, but the client is still
+	// told what it opened, or the panel would have nothing to draw.
+	ClientContainerContents(ContainerIndex, *Inventory);
+}
+
+bool ASarkoCharacter::TakeSlotInto(TArray<FSarkoItemStack>& Inventory, int32 SlotIndex,
+	TArray<FSarkoItemStack>& Bag)
+{
+	if (!Inventory.IsValidIndex(SlotIndex) || Inventory[SlotIndex].Quantity <= 0)
+	{
+		return false;
+	}
+
+	// A backpack is worn, not carried: it does not occupy a cell, which is the
+	// only way spec §2.3's 4 + 8 = 12 adds up. A SECOND backpack is ordinary
+	// loot and takes a cell like anything else — it is worth carrying home.
+	if (Inventory[SlotIndex].Item == SarkoLoot::BackpackItemId
+		&& BackpackComponent && !BackpackComponent->IsWearingBackpack())
+	{
+		BackpackComponent->EquipBackpack(SarkoLoot::BackpackItemId);
+		// Decrement rather than RemoveAt: a slot that somehow held two bags would
+		// otherwise lose the second one, which is the very thing this task exists
+		// to stop happening.
+		if (--Inventory[SlotIndex].Quantity <= 0)
 		{
-			return BackpackComponent ? BackpackComponent->AddItem(Item, Quantity) : Quantity;
-		},
-		[RaidState, Index]() { RaidState->MarkContainerLooted(Index); });
+			Inventory.RemoveAt(SlotIndex);
+		}
+		return true;
+	}
 
-	if (!Payout.bCredited)
+	return SarkoLoot::TransferOne(Inventory, SlotIndex, Bag, SarkoLoot::GetItemCatalog(),
+		BackpackComponent ? BackpackComponent->GetSlotLimit() : 0) > 0;
+}
+
+void ASarkoCharacter::TakeAllFrom(int32 ContainerIndex)
+{
+	ASarkoRaidGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ASarkoRaidGameMode>() : nullptr;
+	TArray<FSarkoItemStack>* Inventory = GameMode ? GameMode->FindContainerInventory(ContainerIndex) : nullptr;
+	if (!Inventory || !BackpackComponent)
 	{
-		// Only reachable if the per-tick CanInteract gate above and the looted bit
-		// ever disagree. That would be a bug worth seeing rather than a silent
-		// no-op, so it is logged instead of ignored.
-		UE_LOG(LogTemp, Warning, TEXT("SarkoCharacter: channel completed on container %d, which was already emptied"),
-			Index);
 		return;
 	}
 
-	UE_LOG(LogTemp, Display, TEXT("SarkoCharacter: looted container %d (tier %s): took %d units, left %d behind"),
-		Index, *Spots[Index].Tier.ToString(), Payout.Taken, Payout.LeftBehind);
+	// Slot 0 repeatedly, because a drained slot is REMOVED and the next one
+	// shifts down into its place. Bounded by the grid size rather than by
+	// "until it stops moving" alone, so no data file can turn this into a spin.
+	TArray<FSarkoItemStack> Bag = BackpackComponent->GetSlots();
+	int32 Moved = 0;
+	for (int32 Guard = 0; Guard < SarkoLoot::ContainerCells && Inventory->Num() > 0; ++Guard)
+	{
+		if (!TakeSlotInto(*Inventory, 0, Bag))
+		{
+			// The first refusal ends the pass: slot 0 is the only slot tried, and
+			// what does not fit now will not fit later. The rest simply stays.
+			break;
+		}
+		++Moved;
+	}
+
+	if (Moved > 0)
+	{
+		BackpackComponent->SetSlots(Bag);
+	}
+	// Once, not per item: one write-back, one emptied check, one client push.
+	FinishTransfer(ContainerIndex, *Inventory);
+}
+
+void ASarkoCharacter::FinishTransfer(int32 ContainerIndex, const TArray<FSarkoItemStack>& Inventory)
+{
+	ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
+	if (RaidState && Inventory.Num() == 0)
+	{
+		// Emptied only now, and only because it is ACTUALLY empty. This one line
+		// is the vanishing-loot fix: the old code marked here unconditionally.
+		RaidState->SetContainerState(ContainerIndex, ESarkoContainerState::Emptied);
+	}
+	ClientContainerContents(ContainerIndex, Inventory);
+}
+
+void ASarkoCharacter::ServerTakeItem_Implementation(int32 ContainerIndex, int32 SlotIndex)
+{
+	// Spec §3's order, unchanged and not to be reordered: raid live and not
+	// settled -> index in range -> container opened -> pawn alive -> server
+	// re-measured distance -> slot non-empty -> capacity available. Anything that
+	// fails logs and changes nothing. This mirrors ServerBeginLoot, which is
+	// already hostile-input safe, and every index below is checked before it
+	// indexes anything at all.
+	ASarkoRaidGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ASarkoRaidGameMode>() : nullptr;
+	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
+	if (!GameMode || !RaidState || !RaidState->IsLootable())
+	{
+		ClientTransferRefused(ContainerIndex, SlotIndex, ESarkoTakeRefusal::RaidOver);
+		return;
+	}
+
+	const TArray<FSarkoLootContainerSpot>& Spots = GameMode->CachedDefinition.Containers;
+	if (!Spots.IsValidIndex(ContainerIndex))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoCharacter: take from out-of-range container %d (have %d)"),
+			ContainerIndex, Spots.Num());
+		ClientTransferRefused(ContainerIndex, SlotIndex, ESarkoTakeRefusal::Gone);
+		return;
+	}
+
+	TArray<FSarkoItemStack>* Inventory = GameMode->FindContainerInventory(ContainerIndex);
+	if (!Inventory)
+	{
+		// Never opened. A client asking to take from a container it has not
+		// opened is asking for the loot map; it gets nothing and it learns nothing.
+		ClientTransferRefused(ContainerIndex, SlotIndex, ESarkoTakeRefusal::NotOpen);
+		return;
+	}
+
+	const bool bAlive = HealthComponent && !HealthComponent->IsDead();
+	// The server's OWN copy of this pawn's location, re-measured. A client-supplied
+	// position would be pointless to send and pointless to trust, exactly as in
+	// ServerRequestFire.
+	if (!SarkoLoot::CanInteract(GetActorLocation(), Spots[ContainerIndex].Location,
+			GetDefault<USarkoRaidSettings>()->InteractRadiusUU, bAlive,
+			RaidState->IsContainerEmptied(ContainerIndex)))
+	{
+		ClientTransferRefused(ContainerIndex, SlotIndex, ESarkoTakeRefusal::TooFar);
+		return;
+	}
+
+	if (!Inventory->IsValidIndex(SlotIndex))
+	{
+		ClientTransferRefused(ContainerIndex, SlotIndex, ESarkoTakeRefusal::Gone);
+		return;
+	}
+
+	if (!BackpackComponent)
+	{
+		ClientTransferRefused(ContainerIndex, SlotIndex, ESarkoTakeRefusal::NoSpace);
+		return;
+	}
+
+	TArray<FSarkoItemStack> Bag = BackpackComponent->GetSlots();
+	if (!TakeSlotInto(*Inventory, SlotIndex, Bag))
+	{
+		ClientTransferRefused(ContainerIndex, SlotIndex, ESarkoTakeRefusal::NoSpace);
+		return;
+	}
+	// Server-side write-back of the cells this pawn now carries.
+	BackpackComponent->SetSlots(Bag);
+	FinishTransfer(ContainerIndex, *Inventory);
+}
+
+void ASarkoCharacter::ServerTakeAll_Implementation(int32 ContainerIndex)
+{
+	// The same §3 chain, run ONCE, then the loop. Deliberately not four calls to
+	// ServerTakeItem_Implementation: that would re-validate per item and send
+	// four client RPCs for one button press.
+	ASarkoRaidGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ASarkoRaidGameMode>() : nullptr;
+	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
+	if (!GameMode || !RaidState || !RaidState->IsLootable())
+	{
+		ClientTransferRefused(ContainerIndex, INDEX_NONE, ESarkoTakeRefusal::RaidOver);
+		return;
+	}
+
+	const TArray<FSarkoLootContainerSpot>& Spots = GameMode->CachedDefinition.Containers;
+	if (!Spots.IsValidIndex(ContainerIndex))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoCharacter: take-all from out-of-range container %d (have %d)"),
+			ContainerIndex, Spots.Num());
+		ClientTransferRefused(ContainerIndex, INDEX_NONE, ESarkoTakeRefusal::Gone);
+		return;
+	}
+
+	if (!GameMode->FindContainerInventory(ContainerIndex))
+	{
+		ClientTransferRefused(ContainerIndex, INDEX_NONE, ESarkoTakeRefusal::NotOpen);
+		return;
+	}
+
+	const bool bAlive = HealthComponent && !HealthComponent->IsDead();
+	if (!SarkoLoot::CanInteract(GetActorLocation(), Spots[ContainerIndex].Location,
+			GetDefault<USarkoRaidSettings>()->InteractRadiusUU, bAlive,
+			RaidState->IsContainerEmptied(ContainerIndex)))
+	{
+		ClientTransferRefused(ContainerIndex, INDEX_NONE, ESarkoTakeRefusal::TooFar);
+		return;
+	}
+
+	TakeAllFrom(ContainerIndex);
+}
+
+void ASarkoCharacter::ServerCloseContainer_Implementation()
+{
+	const int32 Closed = OpenContainerIndex;
+	OpenContainerIndex = INDEX_NONE;
+	if (Closed != INDEX_NONE)
+	{
+		ClientContainerClosed(Closed);
+	}
+}
+
+void ASarkoCharacter::ClientContainerContents_Implementation(int32 ContainerIndex,
+	const TArray<FSarkoItemStack>& Slots)
+{
+	LocalOpenContainerIndex = ContainerIndex;
+	LocalOpenContainerSlots = Slots;
+	OnContainerViewChanged.Broadcast();
+}
+
+void ASarkoCharacter::ClientContainerClosed_Implementation(int32 ContainerIndex)
+{
+	// Only the container that was actually closed: a player who walked from one
+	// crate straight into another can have an open panel for a newer index by the
+	// time this lands, and clearing that would blank a panel the server kept.
+	if (LocalOpenContainerIndex != ContainerIndex)
+	{
+		return;
+	}
+	LocalOpenContainerIndex = INDEX_NONE;
+	LocalOpenContainerSlots.Reset();
+	OnContainerViewChanged.Broadcast();
+}
+
+void ASarkoCharacter::ClientTransferRefused_Implementation(int32 ContainerIndex, int32 SlotIndex,
+	ESarkoTakeRefusal Reason)
+{
+	OnTakeRefused.Broadcast(SlotIndex, Reason);
+}
+
+void ASarkoCharacter::RequestTakeItem(int32 ContainerIndex, int32 SlotIndex)
+{
+	if (IsRaidFinishedNow())
+	{
+		return;
+	}
+	if (HasAuthority())
+	{
+		ServerTakeItem_Implementation(ContainerIndex, SlotIndex);
+	}
+	else
+	{
+		ServerTakeItem(ContainerIndex, SlotIndex);
+	}
+}
+
+void ASarkoCharacter::RequestTakeAll(int32 ContainerIndex)
+{
+	if (IsRaidFinishedNow())
+	{
+		return;
+	}
+	if (HasAuthority())
+	{
+		ServerTakeAll_Implementation(ContainerIndex);
+	}
+	else
+	{
+		ServerTakeAll(ContainerIndex);
+	}
+}
+
+void ASarkoCharacter::RequestCloseContainer()
+{
+	// The local mirror clears immediately: closing a panel must never wait for a
+	// round trip, and the server's own close is idempotent.
+	LocalOpenContainerIndex = INDEX_NONE;
+	LocalOpenContainerSlots.Reset();
+	OnContainerViewChanged.Broadcast();
+
+	if (HasAuthority())
+	{
+		ServerCloseContainer_Implementation();
+	}
+	else
+	{
+		ServerCloseContainer();
+	}
 }
 
 void ASarkoCharacter::SetMoveIntent(FVector2D Intent)

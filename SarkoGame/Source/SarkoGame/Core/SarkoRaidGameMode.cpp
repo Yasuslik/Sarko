@@ -9,6 +9,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Loot/SarkoBackpack.h"
 #include "Loot/SarkoExtractionZone.h"
+#include "Loot/SarkoLootTable.h"
 #include "Map/SarkoMapBuilder.h"
 #include "Pawn/SarkoCharacter.h"
 #include "Pawn/SarkoHealthComponent.h"
@@ -203,7 +204,8 @@ void ASarkoRaidGameMode::OnAuthenticated()
 {
 	// The profile decides the loot mode, so it is fetched before the session
 	// opens rather than alongside it: a container opened against the wrong mode
-	// cannot be un-opened, because CompleteLootChannel marks it.
+	// cannot be un-opened, because OpenContainerAt stores the roll for the rest
+	// of the raid.
 	//
 	// Fetched here rather than trusted from the game instance's cache, even though
 	// the shelter just fetched one: a raid can be entered directly from the
@@ -271,6 +273,71 @@ void ASarkoRaidGameMode::SetTutorialLoot(bool bEnabled)
 	UE_LOG(LogTemp, Display,
 		TEXT("SarkoRaidGameMode: TUTORIAL loot — %d of %d containers carry fixedItems, the rest roll"),
 		WithFixedItems, CachedDefinition.Containers.Num());
+}
+
+TArray<FSarkoItemStack>* ASarkoRaidGameMode::FindContainerInventory(int32 ContainerIndex)
+{
+	return ContainerInventories.Find(ContainerIndex);
+}
+
+TArray<FSarkoItemStack>* ASarkoRaidGameMode::OpenContainerAt(int32 ContainerIndex)
+{
+	if (TArray<FSarkoItemStack>* Existing = ContainerInventories.Find(ContainerIndex))
+	{
+		// Already rolled. Returning the stored array rather than re-rolling is the
+		// whole point: the roll is deterministic, so a re-roll would resurrect
+		// everything the player already took.
+		return Existing;
+	}
+
+	const TArray<FSarkoLootContainerSpot>& Spots = CachedDefinition.Containers;
+	if (!Spots.IsValidIndex(ContainerIndex))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoRaidGameMode: open of out-of-range container %d (have %d)"),
+			ContainerIndex, Spots.Num());
+		return nullptr;
+	}
+
+	ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>();
+	const FSarkoLootTable* Table = SarkoLoot::GetLootTables().Find(Spots[ContainerIndex].Tier);
+	if (!RaidState || !Table)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SarkoRaidGameMode: container %d has tier '%s' with no loot table"),
+			ContainerIndex, *Spots[ContainerIndex].Tier.ToString());
+		if (RaidState)
+		{
+			// Emptied, not Opened: there is nothing to come back for, and leaving
+			// it openable would re-run this failure every time the player walked past.
+			RaidState->SetContainerState(ContainerIndex, ESarkoContainerState::Emptied);
+		}
+		return nullptr;
+	}
+
+	// LootSalt is why a client cannot precompute this: Seed is replicated and the
+	// tables ship in the build, so without the salt the two remaining inputs are
+	// already in the client's hands. Unchanged from the code this replaces.
+	FRandomStream Stream(SarkoLoot::ContainerSeed(RaidState->Seed, ContainerIndex, LootSalt));
+	// RollContainerFor, not RollContainer: the tutorial's static loot (spec §6.5)
+	// is a per-container branch, and bTutorialLoot is server-only for the same
+	// reason LootSalt is.
+	TArray<FSarkoItemStack> Rolled =
+		SarkoLoot::RollContainerFor(Spots[ContainerIndex], *Table, Stream, bTutorialLoot);
+
+	if (Rolled.Num() > SarkoLoot::ContainerCells)
+	{
+		// Unreachable with the shipped tables (Sarko.Loot.EveryTierFitsTheContainerGrid
+		// proves it) and loud rather than silent if that ever stops being true —
+		// a truncated roll is the vanishing-loot defect wearing a new hat.
+		UE_LOG(LogTemp, Error, TEXT("SarkoRaidGameMode: container %d rolled %d stacks but the grid holds %d; truncating"),
+			ContainerIndex, Rolled.Num(), SarkoLoot::ContainerCells);
+		Rolled.SetNum(SarkoLoot::ContainerCells);
+	}
+
+	// Opened, NOT Emptied. Marking a container emptied happens in exactly one
+	// place — ASarkoCharacter::FinishTransfer, and only when the inventory is
+	// actually empty. That single line is the vanishing-loot fix.
+	RaidState->SetContainerState(ContainerIndex, ESarkoContainerState::Opened);
+	return &ContainerInventories.Add(ContainerIndex, MoveTemp(Rolled));
 }
 
 void ASarkoRaidGameMode::BeginRaidSession()

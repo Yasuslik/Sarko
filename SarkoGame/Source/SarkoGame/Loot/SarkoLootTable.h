@@ -171,42 +171,38 @@ namespace SarkoLoot
 	TArray<FSarkoItemStack> RollContainerFor(const FSarkoLootContainerSpot& Spot, const FSarkoLootTable& Table,
 		FRandomStream& Stream, bool bTutorialLoot);
 
-	/** What one completed loot channel actually moved. */
-	struct FSarkoLootPayout
-	{
-		/** Units that made it into the backpack. */
-		int32 Taken = 0;
-
-		/** Units that did not fit and stay in the container, unrecoverable (spec §4.3). */
-		int32 LeftBehind = 0;
-
-		/** False when the container was already emptied: nothing was credited and nothing was marked. */
-		bool bCredited = false;
-	};
+	/**
+	 * How many cells a container shows. Four, because the loudest shipped tier
+	 * (military) rolls at most four times and the tutorial's longest authored
+	 * list is three. Sarko.Loot.EveryTierFitsTheContainerGrid holds the line: a
+	 * table that outgrows this fails a test instead of losing a roll.
+	 */
+	constexpr int32 ContainerCells = 4;
 
 	/**
-	 * The completion half of one loot channel: the rule that decides whether a
-	 * finished channel pays out at all, and the order in which it does.
+	 * Moves as much of one container slot into a backpack as fits, and returns
+	 * how many units actually moved. Zero means refused, which is what the UI's
+	 * refusal animation reads.
 	 *
-	 * Pure and world-free — it is handed its two effects rather than reaching for
-	 * a backpack component or a game state — so the invariant that protects the
-	 * economy is unit tested with no world, no actor and no network:
+	 * Pure — arrays in, arrays out, no component, no world, no settings — because
+	 * this is now the ONLY place loot changes hands, and the invariant that used
+	 * to belong to CompleteLootChannel lives here instead:
 	 *
-	 *  - an already-emptied container credits **nothing**, so one roll can never
-	 *    be credited twice (the roll is deterministic, so a second payout would
-	 *    be the same items again, out of thin air);
-	 *  - Credit runs before Mark, because Mark is what makes the container
-	 *    ineligible — marking first would make the credit unreachable;
-	 *  - Mark runs **unconditionally** once credit has been attempted, including
-	 *    when part or all of the roll did not fit. Spec §4.3 allows partial loot,
-	 *    and leaving a partly-emptied container openable would re-run the same
-	 *    deterministic roll and duplicate the part already taken.
+	 *  - the units added to the bag are removed from the container in the same
+	 *    call, so one roll cannot be credited twice. The old function needed a
+	 *    bAlreadyLooted gate for that; there is nothing left here to gate,
+	 *    because there is nothing left to credit;
+	 *  - **a partial move leaves the remainder in the slot.** This is the fix for
+	 *    the vanishing-loot defect: CompleteLootChannel marked a container looted
+	 *    unconditionally, so whatever AddToBackpack refused was destroyed.
+	 *    Nothing here destroys anything; the container is marked emptied only
+	 *    when its last slot is actually gone;
+	 *  - a drained slot is removed rather than left at quantity zero, so the
+	 *    panel never draws a cell that cannot be tapped.
 	 *
-	 * @param Rolled         this container's contents, from RollContainer
-	 * @param bAlreadyLooted the authority's own looted bit for this index
-	 * @param Credit         moves one stack into the backpack; returns the quantity that did not fit
-	 * @param Mark           records the container as emptied
+	 * SlotIndex is one hop from an RPC parameter and is bounds-checked here as
+	 * well as at the call site — the call site can be forgotten; this cannot.
 	 */
-	FSarkoLootPayout CompleteLootChannel(const TArray<FSarkoItemStack>& Rolled, bool bAlreadyLooted,
-		TFunctionRef<int32(FName /*Item*/, int32 /*Quantity*/)> Credit, TFunctionRef<void()> Mark);
+	int32 TransferOne(TArray<FSarkoItemStack>& Container, int32 SlotIndex,
+		TArray<FSarkoItemStack>& Bag, const FSarkoItemCatalog& Catalog, int32 BagLimit);
 }

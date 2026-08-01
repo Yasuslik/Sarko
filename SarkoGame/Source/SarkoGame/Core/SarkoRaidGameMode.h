@@ -110,6 +110,36 @@ public:
 	 */
 	bool bTutorialLoot = false;
 
+	/**
+	 * Every container that has been opened this raid, keyed by container index,
+	 * holding what is still in it.
+	 *
+	 * On the game mode, and a plain member rather than a UPROPERTY, for exactly
+	 * the reasons LootSalt is: a game mode exists only on the server, so there is
+	 * no replication path to forget to exclude and nothing that walks reflected
+	 * properties can dump it. Spec §3's "a client sees a container's contents
+	 * only after opening it, never before" is therefore a structural fact rather
+	 * than a rule someone has to remember — the only way contents reach a client
+	 * is ASarkoCharacter::ClientContainerContents, and only for an index that
+	 * client has successfully opened.
+	 *
+	 * A TMap and not a sized array: key presence IS "this has been rolled", which
+	 * is the spec's "rolled once, on first open" with no second flag to keep in
+	 * step and no sizing hook to get wrong.
+	 */
+	TMap<int32, TArray<FSarkoItemStack>> ContainerInventories;
+
+	/** Server only. Null for an index that has never been opened. */
+	TArray<FSarkoItemStack>* FindContainerInventory(int32 ContainerIndex);
+
+	/**
+	 * Rolls a container's contents if this is its first open, stores them, and
+	 * marks it Opened. Returns null and logs if the index is out of range or the
+	 * tier has no table. Idempotent: a second open returns the SAME array, so a
+	 * player who walks away and comes back sees what they left.
+	 */
+	TArray<FSarkoItemStack>* OpenContainerAt(int32 ContainerIndex);
+
 	/** The layout this raid was loaded from; pawns spawn against it. */
 	FSarkoMapLayout CachedLayout;
 

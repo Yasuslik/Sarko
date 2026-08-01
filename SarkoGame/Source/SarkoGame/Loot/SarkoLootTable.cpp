@@ -1,6 +1,9 @@
 #include "Loot/SarkoLootTable.h"
 
 #include "Dom/JsonObject.h"
+// TransferOne delegates the stacking and cell-limit rule to AddToBackpack rather
+// than reimplementing it: two copies of that arithmetic is how a haul half-fits.
+#include "Loot/SarkoBackpack.h"
 // For the full FSarkoLootContainerSpot that RollContainerFor reads FixedItems
 // off; the header only forward-declares it.
 #include "Map/SarkoMapDefinition.h"
@@ -290,37 +293,38 @@ TArray<FSarkoItemStack> SarkoLoot::RollContainerFor(const FSarkoLootContainerSpo
 	return RollContainer(Table, Stream);
 }
 
-SarkoLoot::FSarkoLootPayout SarkoLoot::CompleteLootChannel(const TArray<FSarkoItemStack>& Rolled,
-	bool bAlreadyLooted, TFunctionRef<int32(FName, int32)> Credit, TFunctionRef<void()> Mark)
+int32 SarkoLoot::TransferOne(TArray<FSarkoItemStack>& Container, int32 SlotIndex,
+	TArray<FSarkoItemStack>& Bag, const FSarkoItemCatalog& Catalog, int32 BagLimit)
 {
-	FSarkoLootPayout Payout;
-
-	// The last line of defence against crediting one roll twice, checked here
-	// rather than only by the caller's earlier CanInteract gate: the roll is
-	// deterministic, so a second payout on the same index would conjure the same
-	// items out of nothing. Nothing is marked either — the container is already
-	// marked, and re-marking would hide a double completion instead of it simply
-	// having no effect.
-	if (bAlreadyLooted)
+	if (!Container.IsValidIndex(SlotIndex))
 	{
-		return Payout;
+		return 0;
 	}
 
-	for (const FSarkoItemStack& Stack : Rolled)
+	FSarkoItemStack& Slot = Container[SlotIndex];
+	if (Slot.Quantity <= 0)
 	{
-		// Clamped, because Credit is supplied by the caller: a leftover outside
-		// [0, Quantity] would otherwise turn into a negative Taken and a haul that
-		// reads as smaller than it is.
-		const int32 Leftover = FMath::Clamp(Credit(Stack.Item, Stack.Quantity), 0, Stack.Quantity);
-		Payout.Taken += Stack.Quantity - Leftover;
-		Payout.LeftBehind += Leftover;
+		return 0;
 	}
 
-	// After the credit, and unconditionally. Before it, the container would
-	// already be ineligible and the credit above would be unreachable;
-	// conditionally, a full backpack would leave the crate openable and the same
-	// deterministic roll could be credited a second time.
-	Mark();
-	Payout.bCredited = true;
-	return Payout;
+	// AddToBackpack is unchanged and still the only thing that knows about
+	// stacking and cell limits. It returns the remainder, which is exactly what
+	// stays in the crate.
+	const int32 Leftover = FMath::Clamp(
+		SarkoLoot::AddToBackpack(Bag, Catalog, BagLimit, Slot.Item, Slot.Quantity), 0, Slot.Quantity);
+	const int32 Moved = Slot.Quantity - Leftover;
+	if (Moved <= 0)
+	{
+		return 0;
+	}
+
+	Slot.Quantity = Leftover;
+	if (Slot.Quantity <= 0)
+	{
+		// RemoveAt and not RemoveAtSwap: the panel draws these in order, and a
+		// swap would make an untouched cell jump across the grid while the
+		// player is looking at it.
+		Container.RemoveAt(SlotIndex);
+	}
+	return Moved;
 }

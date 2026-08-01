@@ -353,15 +353,17 @@ void ASarkoPlayerController::UpdateInteract()
 
 	// Nearest openable container. No allocation and no world scan: the containers
 	// register themselves with the game state at BeginPlay (which is also what
-	// lets a replicated looted bit recolour them), so this walks a list that is
+	// lets a replicated state byte recolour them), so this walks a list that is
 	// already maintained. That registry replaces a cached TActorIterator scan
 	// which, on a map with no containers at all — a bridge.json that failed to
 	// load, say — could never seal itself and re-ran a heap-allocating iterator
 	// over the whole world every single frame, forever.
 	//
-	// ASarkoLootContainer::IsLooted() would resolve the world and the game state
-	// per container per frame; RaidState is already in hand, so the looted bit is
-	// read straight off it with one lookup for the whole loop.
+	// ASarkoLootContainer::IsEmptied() would resolve the world and the game state
+	// per container per frame; RaidState is already in hand, so the state byte is
+	// read straight off it with one lookup for the whole loop. Gated on EMPTIED
+	// and not on opened: a crate whose contents did not fit is still worth a
+	// prompt, which is the whole point of the three-state byte.
 	ASarkoLootContainer* Best = nullptr;
 	float BestDistanceSquared = TNumericLimits<float>::Max();
 	for (const TWeakObjectPtr<ASarkoLootContainer>& Weak : RaidState->GetContainers())
@@ -372,7 +374,7 @@ void ASarkoPlayerController::UpdateInteract()
 			continue;
 		}
 		if (!SarkoLoot::CanInteract(PawnLocation, Container->GetActorLocation(),
-				Settings.InteractRadiusUU, bAlive, RaidState->IsContainerLooted(Container->ContainerIndex)))
+				Settings.InteractRadiusUU, bAlive, RaidState->IsContainerEmptied(Container->ContainerIndex)))
 		{
 			continue;
 		}

@@ -9,9 +9,9 @@
 #include "Materials/MaterialInterface.h"
 
 bool SarkoLoot::CanInteract(const FVector& PawnLocation, const FVector& ContainerLocation,
-	float RadiusUU, bool bPawnAlive, bool bAlreadyLooted)
+	float RadiusUU, bool bPawnAlive, bool bContainerEmptied)
 {
-	if (!bPawnAlive || bAlreadyLooted)
+	if (!bPawnAlive || bContainerEmptied)
 	{
 		return false;
 	}
@@ -22,8 +22,11 @@ bool SarkoLoot::CanInteract(const FVector& PawnLocation, const FVector& Containe
 
 namespace
 {
-	/** Closed: rusted olive. Emptied: washed out, so a cleared route reads at a glance. */
+	/** Closed: rusted olive. Opened but not empty: warm amber — you left something
+	 *  in there, and from across a yard that is worth knowing. Emptied: washed
+	 *  out, so a cleared route reads at a glance. */
 	const FLinearColor ClosedTint(0.28f, 0.30f, 0.16f);
+	const FLinearColor OpenedTint(0.42f, 0.26f, 0.05f);
 	const FLinearColor LootedTint(0.42f, 0.42f, 0.44f);
 
 	/** Chest-height crate: findable from above, low enough not to hide anything. */
@@ -104,10 +107,10 @@ void ASarkoLootContainer::SetupFromSpot(int32 InIndex, FName InTier)
 	Tier = InTier;
 }
 
-bool ASarkoLootContainer::IsLooted() const
+bool ASarkoLootContainer::IsEmptied() const
 {
 	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
-	return RaidState && RaidState->IsContainerLooted(ContainerIndex);
+	return RaidState && RaidState->IsContainerEmptied(ContainerIndex);
 }
 
 void ASarkoLootContainer::RefreshVisualState()
@@ -116,7 +119,23 @@ void ASarkoLootContainer::RefreshVisualState()
 	{
 		return;
 	}
-	const FLinearColor Tint = IsLooted() ? LootedTint : ClosedTint;
+	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
+	const ESarkoContainerState State = RaidState
+		? RaidState->GetContainerState(ContainerIndex)
+		: ESarkoContainerState::Closed;
+
+	FLinearColor Tint = ClosedTint;
+	switch (State)
+	{
+	case ESarkoContainerState::Opened:
+		Tint = OpenedTint;
+		break;
+	case ESarkoContainerState::Emptied:
+		Tint = LootedTint;
+		break;
+	default:
+		break;
+	}
 	LidMaterial->SetVectorParameterValue(TEXT("Color"), Tint);
 	LidMaterial->SetVectorParameterValue(TEXT("BaseColor"), Tint);
 }
