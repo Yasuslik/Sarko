@@ -99,6 +99,64 @@ namespace SarkoInput
 	bool ShouldFireWhileHeld(FVector2D AimValue, float FireDeadZone);
 
 	/**
+	 * THE STICK'S FULL-DEFLECTION TRAVEL, IN POINTS.
+	 *
+	 * It was 100 *pixels* — the one input constant in this project that was not
+	 * point-scaled, and the reason four other numbers were wrong on a phone and
+	 * right in the editor. On a 2556x1179 device the point scale is 3.02, so a
+	 * "100 px" radius was 33 pt of thumb travel: less than the 44 pt minimum this
+	 * project's own tests assert on both thumb buttons, roughly half of what
+	 * shipped touch shooters use, and it dragged the fire threshold (0.35 of the
+	 * radius) down to 11.6 pt and the quiet-walk band down to an 18 pt annulus.
+	 * In a Mac editor window the scale is ~1.85, so the stick felt 63 % bigger
+	 * than on the target device and nothing ever caught it.
+	 *
+	 * 52 pt puts the fire threshold at 18 pt (a deliberate push rather than a
+	 * twitch), the walk/run noise boundary at 36 pt (a findable place on the
+	 * ring), and full deflection at 52 pt — inside the ~45 pt arc a landscape
+	 * thumb sweeps, which the reload button's placement already assumes.
+	 */
+	constexpr float StickRadiusPt = 52.f;
+
+	/**
+	 * That radius in pixels, for a viewport of this size. **The one authority.**
+	 *
+	 * Everything that consumes the radius — the deflection maths in
+	 * FSarkoTouchStick::Value, the move dead zone and the fire threshold that are
+	 * fractions of it, and the rings ASarkoHUD::DrawStick draws — reads the
+	 * resolved value off the stick, which is set from here once, at the moment
+	 * the thumb anchors. Resolving it per frame would be a multiply on a tick
+	 * path for a number that cannot change while a finger is down; resolving it
+	 * in two places would let the drawn ring and the rule it pictures disagree,
+	 * which is the bug the old static constant already was.
+	 */
+	float StickRadiusPxForViewport(FVector2D ViewportSize);
+
+	/**
+	 * Whether lifting the aim thumb should fire the flick's single shot.
+	 *
+	 * LastAimValueWhileHeld is the deflection on the last frame the stick was
+	 * still down — the frame after that it is gone, which is why the controller
+	 * latches it rather than reading the stick.
+	 *
+	 * Two rules, and they turn out to be one. **A touch that never established a
+	 * direction must not fire**: ASarkoCharacter::SetAimIntent leaves AimDirection
+	 * untouched when the stick is centred (correctly — a released stick must not
+	 * snap the pawn to a default facing), so a zero-deflection tap used to fire a
+	 * round along whatever the *previous* hold aimed at. A stray right-half touch
+	 * was a shot, and a shot is the loudest event this game models: 2600 uu
+	 * against a 450 uu walk. **And dragging back onto the anchor is a cancel** —
+	 * the gesture Brawl Stars and Diablo Immortal both use, and the player's only
+	 * way to abort a shot they have thought better of. Both are the same test:
+	 * where the thumb was when it left.
+	 *
+	 * The move dead zone and not the fire dead zone, so the tap band (dead zone
+	 * to fire threshold, 8 pt to 18 pt at the radius above) stays a real gesture
+	 * rather than collapsing to nothing.
+	 */
+	bool ShouldFireOnRelease(FVector2D LastAimValueWhileHeld, float MoveDeadZone);
+
+	/**
 	 * Whether the left thumb's stick must not be driven this frame.
 	 *
 	 * Today this is exactly "a container panel is open" — spec §4.5. The panel
@@ -125,8 +183,18 @@ struct FSarkoTouchStick
 {
 	GENERATED_BODY()
 
-	/** Screen distance at which the stick reads full deflection. */
-	static constexpr float RadiusPx = 100.f;
+	/**
+	 * Screen distance at which this stick reads full deflection, in pixels.
+	 *
+	 * An instance member and not a static constant, because the answer depends on
+	 * the screen: it is SarkoInput::StickRadiusPt resolved through the viewport's
+	 * point scale, written once by ASarkoPlayerController::UpdateSticks at the
+	 * moment the thumb anchors. The default is the unscaled point value so that a
+	 * stick that somehow reads before it anchors divides by something sane rather
+	 * than by zero.
+	 */
+	UPROPERTY()
+	float RadiusPx = SarkoInput::StickRadiusPt;
 
 	UPROPERTY()
 	bool bActive = false;
@@ -151,7 +219,10 @@ struct FSarkoTouchStick
 		{
 			return FVector2D::ZeroVector;
 		}
-		return (Delta / Length) * FMath::Min(1.f, Length / RadiusPx);
+		// Guarded: a stick whose radius was never resolved would divide by zero
+		// and read full deflection from a single pixel of travel.
+		const float Radius = FMath::Max(KINDA_SMALL_NUMBER, RadiusPx);
+		return (Delta / Length) * FMath::Min(1.f, Length / Radius);
 	}
 };
 
@@ -205,6 +276,14 @@ public:
 
 	/** True while the player is holding interact. The HUD reads this to draw the progress bar. */
 	bool IsInteractHeld() const { return bInteractHeld; }
+
+	/** Which of the four taught verbs the player has already performed this raid.
+	 *  Read only by ASarkoHUD::DrawFirstRaidHints; see the members for why they
+	 *  live here and are not replicated. */
+	bool HasEverFired() const { return bEverFired; }
+	bool HasEverMoved() const { return bEverMoved; }
+	bool HasEverReloaded() const { return bEverReloaded; }
+	bool HasEverLooted() const { return bEverLooted; }
 
 	/**
 	 * TEMPORARY manual-verification aid for the rc-task-6 fix wave: a
@@ -508,6 +587,63 @@ private:
 	 *  flick fire exactly once on release, and a hold not fire a bonus shot when
 	 *  the thumb finally lifts. Reset when the stick is next pressed. */
 	bool bAimFiredThisHold = false;
+
+	/**
+	 * The aim deflection on the last frame the thumb was still down.
+	 *
+	 * Latched because the release edge and the value it has to judge are one
+	 * frame apart: UpdateSticks clears the stick the moment the finger lifts, so
+	 * by the time PlayerTick asks "did this flick have a direction, and was it
+	 * dragged back to the anchor" the answer has already been thrown away.
+	 * Zeroed when a new hold anchors, so one hold's aim can never fire the next
+	 * hold's tap. See SarkoInput::ShouldFireOnRelease for what it decides.
+	 */
+	FVector2D LastAimValueWhileHeld = FVector2D::ZeroVector;
+
+	/**
+	 * The damage serial this controller has already reacted to, or INDEX_NONE
+	 * before the first look.
+	 *
+	 * INDEX_NONE rather than zero for the same reason ASarkoHUD::SeenDamageSerial
+	 * uses it: a controller that starts watching a pawn which has already been
+	 * hit must record what it finds, not act on a bullet that landed before it
+	 * was looking. See UpdateLootPanelUnderFire.
+	 */
+	int32 LastSeenDamageSerial = INDEX_NONE;
+
+	/**
+	 * Shuts the loot panel when the pawn takes a hit.
+	 *
+	 * The panel suppresses the move stick — deliberately, and that stays (spec
+	 * §4.5: you are standing still to loot anyway, and aim, fire and reload all
+	 * keep working). But the verb that gives movement back lives on the interact
+	 * button, 104 pt straight up from the aim thumb's anchor, sized and placed
+	 * for SEARCH — a decision you have already stopped to make. Under fire it is
+	 * being used as a panic button, and it is in the wrong place for one.
+	 *
+	 * So the game closes the panel on exactly the event that makes movement
+	 * matter again. Client-side and cosmetic: the panel is a client-side view of
+	 * the container and this is a client-side input rule, so nothing new
+	 * replicates — the damage serial already does, for the directional damage
+	 * arcs the HUD polls the same way.
+	 */
+	void UpdateLootPanelUnderFire(class ASarkoCharacter& Pawn);
+
+	/**
+	 * FIRST-RAID TEACHING, dismissal half. Each is set the first time the player
+	 * performs the verb, and read by ASarkoHUD::DrawFirstRaidHints so the hint
+	 * for that verb never comes back this raid.
+	 *
+	 * Plain bools on the controller and NOT replicated: the whole hint system is
+	 * one client drawing on its own screen, and in the standalone raid this game
+	 * ships the client is the server anyway. Per-raid by construction — a
+	 * controller does not outlive its level — which is exactly the lifetime
+	 * "dismissed for this raid" wants.
+	 */
+	bool bEverFired = false;
+	bool bEverMoved = false;
+	bool bEverReloaded = false;
+	bool bEverLooted = false;
 
 	/**
 	 * World time of the last fire request this client SENT.

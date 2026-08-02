@@ -3,10 +3,12 @@
 #include "CanvasItem.h"
 #include "Combat/SarkoWeapon.h"
 #include "Core/SarkoPlayerController.h"
+#include "Core/SarkoGameInstance.h"
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Engine/Canvas.h"
 #include "EngineFontServices.h"
+#include "EngineUtils.h"
 #include "Fonts/FontMeasure.h"
 #include "Loot/SarkoBackpack.h"
 #include "Loot/SarkoExtractionZone.h"
@@ -14,6 +16,7 @@
 #include "Map/SarkoMapDefinition.h"
 #include "Misc/ScopeExit.h"
 #include "Pawn/SarkoCharacter.h"
+#include "Pawn/SarkoHealthComponent.h"
 #include "Pawn/SarkoSurvival.h"
 #include "UI/SarkoInventoryPanel.h"
 #include "UI/SarkoInventoryStyle.h"
@@ -108,6 +111,54 @@ namespace
 	constexpr float StickStrokePt = 1.5f;
 	constexpr float AimConeStrokePt = 1.f;
 	constexpr float StickDotPt = 11.f;
+
+	/** The quiet/audible ring is the same stroke, dimmer: it is a boundary inside
+	 *  the stick, not a second stick. */
+	constexpr float QuietRingAlphaScale = 0.55f;
+
+	/** The snap-target bracket: four corner ticks on a 12 pt box, at the same
+	 *  weight as the aim cone it belongs to. */
+	constexpr float BracketSizePt = 12.f;
+	constexpr float BracketArmPt = 4.f;
+	constexpr float BracketStrokePt = 1.5f;
+
+	/**
+	 * The first-raid hint band: one line, top-centre, BELOW every other top row
+	 * (clock 10 pt, connecting 46, loot prompt 72, extraction 118) so that a hint
+	 * about the interact button — which by definition shows while the loot prompt
+	 * is up — never lands on top of the prompt it is talking about.
+	 */
+	constexpr float HintTopPt = 150.f;
+	constexpr float HintPt = 15.f;
+
+	/** How long a hint stays up whether or not the player obeys it, and the tail
+	 *  of that it spends fading. A hint that never leaves is an obstruction. */
+	constexpr float HintLifetimeSeconds = 6.f;
+	constexpr float HintFadeSeconds = 1.f;
+
+	namespace SarkoHint
+	{
+		/**
+		 * The four hints, in priority order — only ever one on screen, because a
+		 * wall of text at raid start is the thing every game that gets this right
+		 * refuses to draw.
+		 *
+		 * FIRE first: it is the single non-obvious rule in this control scheme.
+		 * Every player arriving from a mobile shooter is looking for a fire button
+		 * and there is not one — pointing IS shooting.
+		 *
+		 * Static FStrings and not Printf: DrawHUD is a tick path, these never
+		 * change, and their widths are measured once per scale beside them.
+		 */
+		enum EHint : int32 { Fire = 0, Move = 1, Reload = 2, Interact = 3, Count = 4 };
+
+		const FString Text[Count] = {
+			FString(TEXT("ТРИМАЙ ПРАВИЙ СТІК — ВОГОНЬ")),
+			FString(TEXT("ЛІВИЙ СТІК — РУХ · МАЛЕ ВІДХИЛЕННЯ = ТИХО")),
+			FString(TEXT("КНОПКА СПРАВА — ПЕРЕЗАРЯДКА")),
+			FString(TEXT("ТРИМАЙ ОБШУКАТИ, ЩОБ ВІДКРИТИ"))
+		};
+	}
 
 	/** The drop shadow every readout gets. The HUD is drawn over an arbitrary
 	 *  world, and white-on-white is the one failure that no size fixes. */
@@ -231,8 +282,11 @@ void ASarkoHUD::DrawHUD()
 	DrawDamageArcs();
 	DrawHitMarker();
 
-	DrawStick(PC->GetMoveStick(), FLinearColor(1.f, 1.f, 1.f, 0.35f));
-	DrawStick(PC->GetAimStick(), FLinearColor(1.f, 0.85f, 0.2f, 0.45f));
+	// The quiet ring is the MOVE stick's alone: it is a movement-noise boundary,
+	// and the aim stick's fractions (the 0.35 fire threshold) mean something else
+	// entirely — two rings drawn on both would teach the wrong rule twice.
+	DrawStick(PC->GetMoveStick(), FLinearColor(1.f, 1.f, 1.f, 0.35f), /*bDrawQuietRing*/ true);
+	DrawStick(PC->GetAimStick(), FLinearColor(1.f, 0.85f, 0.2f, 0.45f), /*bDrawQuietRing*/ false);
 	DrawAimCone();
 	DrawTopBar();
 	DrawHealth();
@@ -241,6 +295,7 @@ void ASarkoHUD::DrawHUD()
 	DrawInteract();
 	DrawReload();
 	DrawExtraction();
+	DrawFirstRaidHints(*PC);
 	// Last, so the final screen is over everything else rather than under it.
 	DrawOutcomeSummary();
 }
@@ -253,6 +308,10 @@ void ASarkoHUD::InvalidateMeasurements()
 	CachedInteractLabel.Reset();
 	CachedReloadLabel.Reset();
 	bPromptCached = false;
+	for (FVector2D& Size : CachedHintSize)
+	{
+		Size = FVector2D(-1.f, 0.f);
+	}
 }
 
 FSlateFontInfo ASarkoHUD::FontPt(float PointSize) const
@@ -306,7 +365,23 @@ void ASarkoHUD::DrawTextPt(const FString& Text, const FLinearColor& Colour, floa
 	Canvas->DrawItem(Item);
 }
 
-void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, const FLinearColor& Colour)
+void ASarkoHUD::DrawRing(FVector2D Centre, float Radius, const FLinearColor& Colour)
+{
+	constexpr int32 Segments = 24;
+	for (int32 i = 0; i < Segments; ++i)
+	{
+		const float A0 = (2.f * PI * i) / Segments;
+		const float A1 = (2.f * PI * (i + 1)) / Segments;
+		DrawLine(
+			Centre.X + FMath::Cos(A0) * Radius,
+			Centre.Y + FMath::Sin(A0) * Radius,
+			Centre.X + FMath::Cos(A1) * Radius,
+			Centre.Y + FMath::Sin(A1) * Radius,
+			Colour, Px(StickStrokePt));
+	}
+}
+
+void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, const FLinearColor& Colour, bool bDrawQuietRing)
 {
 	if (!Stick.bActive)
 	{
@@ -315,24 +390,35 @@ void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, const FLinearColor& Col
 
 	// Ring at the thumb's landing point, dot at the current position.
 	//
-	// The ring's radius is the one thing on this HUD that is deliberately *not*
-	// scaled: FSarkoTouchStick::RadiusPx is the screen distance at which the stick
-	// reads full deflection, so the ring is a picture of the input rule and would
-	// be lying if it were drawn at any other size. Only the ink is scaled — a
-	// two-pixel stroke is invisible at 3x, which is how a stick could be active
-	// and look like it was not.
-	const int32 Segments = 24;
-	for (int32 i = 0; i < Segments; ++i)
+	// The radius is read off the STICK and not from a constant here. It used to be
+	// FSarkoTouchStick's static 100 px with a comment claiming the ring was
+	// deliberately unscaled — which was true, and was the bug: the rule itself was
+	// in pixels, so on a 3.02x phone full deflection was 33 pt of thumb travel,
+	// less than the 44 pt minimum this project asserts on its own buttons. The
+	// rule is in POINTS now (SarkoInput::StickRadiusPt), resolved to pixels once
+	// when the thumb anchors, and the ring is still an exact picture of it —
+	// because it is drawn from the same number the input maths divides by.
+	DrawRing(Stick.Origin, Stick.RadiusPx, Colour);
+
+	// THE WALK/RUN BOUNDARY, move stick only. Inside this ring the pawn is heard
+	// at 450 uu; outside it, at 1100 uu — five times the area, and the difference
+	// between crossing a compound unnoticed and pulling two bots onto you. The
+	// server has always drawn that line; nothing ever showed the player where it
+	// was, so the game's most interesting choice was invisible.
+	//
+	// Dimmer, and inside: it reads as a band within the stick rather than as a
+	// second control.
+	if (bDrawQuietRing)
 	{
-		const float A0 = (2.f * PI * i) / Segments;
-		const float A1 = (2.f * PI * (i + 1)) / Segments;
-		DrawLine(
-			Stick.Origin.X + FMath::Cos(A0) * FSarkoTouchStick::RadiusPx,
-			Stick.Origin.Y + FMath::Sin(A0) * FSarkoTouchStick::RadiusPx,
-			Stick.Origin.X + FMath::Cos(A1) * FSarkoTouchStick::RadiusPx,
-			Stick.Origin.Y + FMath::Sin(A1) * FSarkoTouchStick::RadiusPx,
-			Colour, Px(StickStrokePt));
+		const float Fraction = FMath::Clamp(GetDefault<USarkoRaidSettings>()->NoiseRunSpeedFraction, 0.f, 1.f);
+		if (Fraction > KINDA_SMALL_NUMBER && Fraction < 1.f)
+		{
+			FLinearColor Quiet = Colour;
+			Quiet.A *= QuietRingAlphaScale;
+			DrawRing(Stick.Origin, Stick.RadiusPx * Fraction, Quiet);
+		}
 	}
+
 	const float Dot = Px(StickDotPt);
 	DrawRect(Colour, Stick.Current.X - Dot * 0.5f, Stick.Current.Y - Dot * 0.5f, Dot, Dot);
 }
@@ -557,6 +643,156 @@ void ASarkoHUD::DrawAimCone()
 	const FLinearColor Colour(1.f, 0.85f, 0.2f, 0.5f);
 	ProjectAndDraw(Left, Colour);
 	ProjectAndDraw(Right, Colour);
+
+	// And, if the assist has someone, say so.
+	DrawSnapTargetBracket(*Pawn, Muzzle, Aim);
+}
+
+void ASarkoHUD::DrawSnapTargetBracket(const ASarkoCharacter& Pawn, const FVector& Muzzle, const FVector& Aim)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// The SAME candidate rule USarkoWeaponComponent::ServerFire uses: living
+	// FOES only. Restricted to foes there so a shot at the player cannot be
+	// nudged onto a nearer enemy; restricted to foes here so the bracket names
+	// the actor the shot would actually reach.
+	const USarkoHealthComponent* OwnerHealth = Pawn.HealthComponent;
+	const ESarkoTeam OwnerTeam = OwnerHealth ? OwnerHealth->GetTeam() : ESarkoTeam::Player;
+
+	// Reset, not Empty: the capacity survives, so after the first aimed frame
+	// this gathers without allocating.
+	AimAssistCandidates.Reset();
+	for (TActorIterator<APawn> It(World); It; ++It)
+	{
+		const APawn* Other = *It;
+		if (!Other || Other == &Pawn)
+		{
+			continue;
+		}
+		if (const USarkoHealthComponent* Health = Other->FindComponentByClass<USarkoHealthComponent>())
+		{
+			if (!Health->IsDead() && SarkoCombat::IsFoe(OwnerTeam, Health->GetTeam()))
+			{
+				AimAssistCandidates.Add(Other->GetActorLocation());
+			}
+		}
+	}
+
+	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+	const int32 Best = SarkoCombat::BestAimAssistTarget(
+		Muzzle, Aim, Settings.AimConeHalfAngleDegrees, AimAssistCandidates);
+	if (!AimAssistCandidates.IsValidIndex(Best))
+	{
+		return;
+	}
+
+	FVector2D Screen;
+	if (!ProjectToScreen(AimAssistCandidates[Best], Screen))
+	{
+		return;
+	}
+
+	// Four corners and no box: a closed rectangle over an enemy hides the enemy,
+	// and the thing being communicated is "this one", not "look at this area".
+	const float Half = Px(BracketSizePt) * 0.5f;
+	const float Arm = Px(BracketArmPt);
+	const float Stroke = Px(BracketStrokePt);
+	const FLinearColor Colour(1.f, 0.85f, 0.2f, 0.85f);
+	for (int32 SignX = -1; SignX <= 1; SignX += 2)
+	{
+		for (int32 SignY = -1; SignY <= 1; SignY += 2)
+		{
+			const float CornerX = Screen.X + Half * SignX;
+			const float CornerY = Screen.Y + Half * SignY;
+			DrawLine(CornerX, CornerY, CornerX - Arm * SignX, CornerY, Colour, Stroke);
+			DrawLine(CornerX, CornerY, CornerX, CornerY - Arm * SignY, Colour, Stroke);
+		}
+	}
+}
+
+void ASarkoHUD::DrawFirstRaidHints(const ASarkoPlayerController& PC)
+{
+	const UWorld* World = GetWorld();
+	const USarkoGameInstance* Instance = World ? World->GetGameInstance<USarkoGameInstance>() : nullptr;
+	// A player who has finished a raid is not being taught the controls again.
+	// The profile is the client's own cached copy — the raid fetches it before it
+	// goes live, and in the standalone raid this game ships the client is the
+	// server, so there is nothing to replicate and nothing to wait for.
+	if (!Instance || Instance->CachedProfile.bTutorialCompleted)
+	{
+		return;
+	}
+
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	if (!Pawn)
+	{
+		return;
+	}
+
+	// Whether each hint still has anything to teach. Two are due from the first
+	// frame — they are the scheme itself — and two wait for the beat where the
+	// verb is first needed, which is the rule every game that teaches well
+	// follows: at the empty magazine, and at the crate.
+	const USarkoWeaponComponent* Weapon = Pawn->WeaponComponent;
+	const bool bMagazineEmpty = Weapon && !Weapon->IsReloading() && Weapon->GetAmmoInMagazine() <= 0;
+
+	bool bDue[SarkoHint::Count] = { false, false, false, false };
+	bDue[SarkoHint::Fire] = !PC.HasEverFired();
+	bDue[SarkoHint::Move] = !PC.HasEverMoved();
+	bDue[SarkoHint::Reload] = !PC.HasEverReloaded() && bMagazineEmpty;
+	bDue[SarkoHint::Interact] = !PC.HasEverLooted() && PC.GetInteractTarget() != nullptr;
+
+	const float Now = World->GetTimeSeconds();
+
+	// One line at a time, in priority order, and each keeps its own clock: a hint
+	// that has already had its six seconds stays down even while it is still due,
+	// so the next one gets the band instead of queueing behind a permanent one.
+	int32 Chosen = INDEX_NONE;
+	for (int32 Index = 0; Index < SarkoHint::Count; ++Index)
+	{
+		if (!bDue[Index])
+		{
+			continue;
+		}
+		if (HintFirstShownSeconds[Index] < 0.f)
+		{
+			HintFirstShownSeconds[Index] = Now;
+		}
+		if (Now - HintFirstShownSeconds[Index] < HintLifetimeSeconds)
+		{
+			Chosen = Index;
+			break;
+		}
+	}
+
+	if (Chosen == INDEX_NONE)
+	{
+		return;
+	}
+
+	const float Age = Now - HintFirstShownSeconds[Chosen];
+	const float Alpha = FMath::Clamp((HintLifetimeSeconds - Age) / FMath::Max(KINDA_SMALL_NUMBER, HintFadeSeconds), 0.f, 1.f);
+
+	const FString& Text = SarkoHint::Text[Chosen];
+	if (CachedHintSize[Chosen].X < 0.f)
+	{
+		CachedHintSize[Chosen] = MeasurePt(Text, HintPt);
+	}
+	const FVector2D Size = CachedHintSize[Chosen];
+
+	// Top-centre, below every other top row, on the same dark plate every readout
+	// on this HUD sits on — the world underneath is arbitrary and white-on-white
+	// is the one failure no size fixes.
+	const float X = Safe.GetCenter().X - Size.X * 0.5f;
+	const float Y = Safe.Min.Y + Px(HintTopPt);
+	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.55f * Alpha),
+		X - Px(PlatePadXPt), Y - Px(PlatePadYPt),
+		Size.X + Px(PlatePadXPt * 2.f), Size.Y + Px(PlatePadYPt * 2.f));
+	DrawTextPt(Text, FLinearColor(1.f, 0.92f, 0.6f, Alpha), X, Y, HintPt);
 }
 
 void ASarkoHUD::DrawTopBar()
