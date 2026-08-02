@@ -93,7 +93,8 @@ FString SarkoUI::CellLabel(const FString& Name)
 	return First;
 }
 
-SarkoUI::ESarkoReloadState SarkoUI::ReloadStateFor(int32 AmmoInMagazine, int32 MagazineSize, bool bReloading)
+SarkoUI::ESarkoReloadState SarkoUI::ReloadStateFor(int32 AmmoInMagazine, int32 MagazineSize, bool bReloading,
+	int32 ReserveRounds)
 {
 	// Reloading outranks everything, including empty: while the reload is running
 	// the count is not the fact the player needs.
@@ -101,10 +102,31 @@ SarkoUI::ESarkoReloadState SarkoUI::ReloadStateFor(int32 AmmoInMagazine, int32 M
 	{
 		return ESarkoReloadState::Reloading;
 	}
+
+	// Negative is treated as none rather than trusted. Nothing honest produces one
+	// — SarkoGrid::CountItem sums positive quantities — but this decides a colour
+	// on a hot path and a wrong sign here would read as "you have ammo".
+	const int32 Reserve = FMath::Max(0, ReserveRounds);
+
 	if (AmmoInMagazine <= 0)
 	{
-		return ESarkoReloadState::Empty;
+		// The split the scarcity stage made necessary. With rounds in the bag this
+		// is the routine empty magazine and the pulse is the instruction. With an
+		// empty bag it is DRY, which the button draws as a state rather than as an
+		// invitation — there is nothing to load and no press that changes it.
+		return Reserve > 0 ? ESarkoReloadState::Empty : ESarkoReloadState::Dry;
 	}
+
+	// Amber is a call to press this button. An empty bag makes the press a no-op,
+	// so nagging with it would be the HUD asking for something it knows does
+	// nothing — and it would drown out the one amber that still means "reload
+	// now". The count on the button and the `n | 0` readout carry the bad news
+	// without pretending the button is the answer to it.
+	if (Reserve <= 0)
+	{
+		return ESarkoReloadState::Ready;
+	}
+
 	// A zero or negative magazine size is a broken config, not a divide by zero.
 	// Everything is "low" then, which is the direction that nags rather than the
 	// one that lies.

@@ -3,6 +3,7 @@
 #include "Core/SarkoRaidSettings.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Loot/SarkoBackpack.h"
 #include "Net/UnrealNetwork.h"
 #include "Pawn/SarkoHealthComponent.h"
 #include "Pawn/SarkoSurvival.h"
@@ -84,6 +85,18 @@ int32 SarkoCombat::StartingRounds(int32 Configured, int32 MagazineSize)
 	return FMath::Clamp(Configured, 0, Capacity);
 }
 
+int32 SarkoCombat::ReloadAmount(int32 InMagazine, int32 MagazineSize, int32 ReserveRounds)
+{
+	const int32 Capacity = FMath::Max(0, MagazineSize);
+	// Clamped UP to zero as well as down to Capacity: a magazine holding more than
+	// it should would otherwise make Room negative, and a negative transfer moves
+	// rounds the wrong way through a caller that only knows how to add.
+	const int32 Loaded = FMath::Clamp(InMagazine, 0, Capacity);
+	const int32 Room = Capacity - Loaded;
+	const int32 Reserve = FMath::Max(0, ReserveRounds);
+	return FMath::Min(Room, Reserve);
+}
+
 USarkoWeaponComponent::USarkoWeaponComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
@@ -110,6 +123,7 @@ void USarkoWeaponComponent::ResetForTest(int32 Rounds)
 	AmmoInMagazine = Rounds;
 	bReloading = false;
 	bDryClickReported = false;
+	bEmptyReserveReported = false;
 }
 
 void USarkoWeaponComponent::ServerFire(FVector Origin, FVector Direction)
@@ -251,6 +265,28 @@ void USarkoWeaponComponent::StartReload()
 		return;
 	}
 
+	// THE OTHER DRY CLICK (spec §1). A reload with nothing in the bag is refused
+	// here rather than allowed to run and come back empty: ReloadSeconds of a
+	// weapon that cannot shoot, ending in the same zero, is the button lying about
+	// what it can do. One log line and nothing else — no timer, no state.
+	//
+	// Gated on the component EXISTING, not on the number: a pawn with no backpack
+	// at all is a bot, and bots keep their infinite reload (see FinishReload).
+	if (const USarkoBackpackComponent* Backpack = Owner->FindComponentByClass<USarkoBackpackComponent>())
+	{
+		if (Backpack->CountItem(SarkoLoot::AmmoItemId) <= 0)
+		{
+			if (!bEmptyReserveReported)
+			{
+				bEmptyReserveReported = true;
+				UE_LOG(LogTemp, Display,
+					TEXT("SarkoWeapon: dry click on reload — %d in the magazine and no ammo_9mm in the bag"),
+					AmmoInMagazine);
+			}
+			return;
+		}
+	}
+
 	// bReloading must only latch once a timer actually exists to clear it
 	// again. Setting it first and checking the world second meant a call
 	// with no world left bReloading stuck true forever with nothing left to
@@ -266,8 +302,56 @@ void USarkoWeaponComponent::StartReload()
 
 void USarkoWeaponComponent::FinishReload()
 {
-	AmmoInMagazine = GetDefault<USarkoRaidSettings>()->MagazineSize;
+	const int32 Capacity = FMath::Max(0, GetDefault<USarkoRaidSettings>()->MagazineSize);
+	AActor* Owner = GetOwner();
+	USarkoBackpackComponent* Backpack = Owner ? Owner->FindComponentByClass<USarkoBackpackComponent>() : nullptr;
+
+	if (!Backpack)
+	{
+		// NO GRID, NO SCARCITY — and that is deliberate, not an oversight.
+		// ASarkoEnemyCharacter has a weapon component and no backpack component, so
+		// every bot reloads out of nothing exactly as it always has
+		// (ASarkoAIController's reload call is untouched). Ammo is a decision the
+		// player makes about cells they have to carry; a bot has no cells, no haul
+		// to lose and nobody to spend the decision on, and giving it a grid would
+		// mean authoring a reserve for four pawns whose whole job is to run out of
+		// patience before they run out of bullets.
+		AmmoInMagazine = Capacity;
+	}
+	else
+	{
+		// The transfer, server-side, where both the grid and the weapon live.
+		// StartReload already refused the zero-reserve case, so this normally moves
+		// something — but it is re-read rather than remembered, because
+		// ReloadSeconds have passed since then and the player can have consumed,
+		// dropped or died into a different bag in between.
+		const int32 Before = AmmoInMagazine;
+		const int32 Reserve = Backpack->CountItem(SarkoLoot::AmmoItemId);
+		const int32 Wanted = SarkoCombat::ReloadAmount(Before, Capacity, Reserve);
+		// RemoveItem is the authority; Taken is what actually left the grid, and the
+		// magazine is credited with that rather than with what was asked for, so the
+		// two can never disagree about how many rounds exist.
+		const int32 Taken = Wanted > 0 ? Backpack->RemoveItem(SarkoLoot::AmmoItemId, Wanted) : 0;
+		AmmoInMagazine = FMath::Clamp(Before, 0, Capacity) + Taken;
+
+		UE_LOG(LogTemp, Display,
+			TEXT("SarkoWeapon: reload — magazine %d -> %d, reserve %d -> %d"),
+			Before, AmmoInMagazine, Reserve, Reserve - Taken);
+	}
+
 	bReloading = false;
 	// The next empty magazine gets its own line. See ServerFire's dry click.
 	bDryClickReported = false;
+	bEmptyReserveReported = false;
+}
+
+int32 USarkoWeaponComponent::UnloadMagazine()
+{
+	if (const AActor* Owner = GetOwner(); Owner && !Owner->HasAuthority())
+	{
+		return 0;
+	}
+	const int32 Rounds = FMath::Max(0, AmmoInMagazine);
+	AmmoInMagazine = 0;
+	return Rounds;
 }

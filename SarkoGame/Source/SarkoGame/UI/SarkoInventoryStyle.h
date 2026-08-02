@@ -128,10 +128,26 @@ namespace SarkoUI
 	 * "amber below a third" is a test rather than an eyeball — and it lives here
 	 * rather than in the HUD for the same reason every colour above does: the HUD
 	 * cannot be constructed under -nullrhi and this can.
+	 *
+	 * DRY is the state the scarcity stage added (spec §1). Once reload consumes
+	 * `ammo_9mm` from the grid, "empty" is two different facts with two different
+	 * answers: an empty magazine over a bag with rounds in it is a two-second
+	 * problem, and an empty magazine over an empty bag is the raid changing shape.
+	 * They must not share a colour, because the amber pulse is a call to press this
+	 * button and pressing it in the second case does nothing at all.
 	 */
-	enum class ESarkoReloadState : uint8 { Ready, Low, Empty, Reloading };
+	enum class ESarkoReloadState : uint8 { Ready, Low, Empty, Reloading, Dry };
 
-	ESarkoReloadState ReloadStateFor(int32 AmmoInMagazine, int32 MagazineSize, bool bReloading);
+	/**
+	 * ReserveRounds is `ammo_9mm` in the pockets and the bag — the number the
+	 * reload would draw on. It gates every urgent state, because urgency on this
+	 * button means "press me": with an empty bag the button can move no rounds, so
+	 * amber would be the HUD asking for a press it already knows is useless. An
+	 * empty bag with a full magazine is therefore CALM, which is the honest
+	 * reading — you have eight rounds and a decision to make, not an emergency.
+	 */
+	ESarkoReloadState ReloadStateFor(int32 AmmoInMagazine, int32 MagazineSize, bool bReloading,
+		int32 ReserveRounds);
 
 	/** The empty button's pulse, 0.25..0.65 at 2 Hz. Bounded away from zero: a
 	 *  button that vanishes on the trough reads as absent, not as urgent. */

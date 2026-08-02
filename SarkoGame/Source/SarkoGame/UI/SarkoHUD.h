@@ -187,11 +187,21 @@ private:
 	 */
 	FString CachedInteractLabel;
 
-	/** The reload button's count, measured when the number changes rather than
-	 *  every frame. DrawHUD is a tick path. */
+	/**
+	 * The reload button's "magazine|reserve" pair, built and measured when either
+	 * number changes rather than every frame. DrawHUD is a tick path.
+	 *
+	 * Keyed on the two numbers rather than compared as a string, because the string
+	 * is now a Printf: comparing it would mean building it every frame to find out
+	 * that it had not changed, which is the allocation the key exists to avoid.
+	 * The ammo half carries INDEX_NONE for "reloading", exactly as CachedAmmoKey
+	 * does; -2 for both means nothing is cached yet.
+	 */
 	FString CachedReloadLabel;
 	float CachedReloadLabelWidth = 0.f;
 	float CachedReloadLabelHeight = 0.f;
+	int32 CachedReloadAmmoKey = -2;
+	int32 CachedReloadReserveKey = -2;
 
 	/**
 	 * The clock, rebuilt on the second rather than on the frame.
@@ -211,8 +221,14 @@ private:
 	 * which is the only other thing this readout can say, and the reason the key is
 	 * not simply the count. Negative-one is not a reachable ammo value, so it also
 	 * serves as "nothing cached yet".
+	 *
+	 * CachedReserveKey is the second half since the scarcity stage: the readout
+	 * says "8 | 24" now, and picking ammo up out of a crate moves the reserve
+	 * without moving the magazine — keyed on the count alone, the reserve figure
+	 * would have stayed stale until the next shot.
 	 */
 	int32 CachedAmmoKey = -2;
+	int32 CachedReserveKey = -2;
 	FString CachedAmmoText;
 
 	/**

@@ -2,6 +2,7 @@
 
 #include "AI/SarkoEnemyCharacter.h"
 #include "CollisionQueryParams.h"
+#include "Combat/SarkoWeapon.h"
 #include "Core/SarkoGameInstance.h"
 #include "Core/SarkoPlayerController.h"
 #include "Core/SarkoRaidGameState.h"
@@ -1046,9 +1047,44 @@ void ASarkoRaidGameMode::FinishRaid(ESarkoRaidOutcome NewOutcome)
 		{
 			for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
 			{
-				const ASarkoCharacter* Pawn = It->IsValid() ? Cast<ASarkoCharacter>((*It)->GetPawn()) : nullptr;
+				ASarkoCharacter* Pawn = It->IsValid() ? Cast<ASarkoCharacter>((*It)->GetPawn()) : nullptr;
 				if (Pawn && Pawn->BackpackComponent)
 				{
+					// THE MAGAZINE COMES HOME TOO (spec §1). Now that a reload
+					// spends `ammo_9mm` out of the grid, rounds sitting in the gun
+					// are rounds the player found, carried and did not spend —
+					// losing them for the crime of having reloaded before walking
+					// to the pad would teach exactly the wrong lesson, and it would
+					// make "reload before extracting" a strictly wrong move.
+					//
+					// Through AddItem rather than appended to the haul, and that is
+					// the load-bearing choice: AddItem tops up an existing ammo
+					// stack for free and only opens a new rectangle when there is
+					// room, so the credit can never claim more than the bag could
+					// physically hold. Appending straight to the submission would
+					// have been simpler and would eventually have handed
+					// domain.FitsCarryGrid a haul that needs a thirteenth cell —
+					// answered 400 implausible_items, i.e. the player's whole raid
+					// deleted over eight rounds. Rounds with genuinely nowhere to
+					// go are dropped, which is the same rule every other overflow
+					// on this path already follows.
+					//
+					// UnloadMagazine zeroes the magazine as it reports it, so this
+					// is exactly-once by construction however the outcome path is
+					// re-entered.
+					if (Pawn->WeaponComponent)
+					{
+						const int32 Rounds = Pawn->WeaponComponent->UnloadMagazine();
+						if (Rounds > 0)
+						{
+							const int32 Leftover =
+								Pawn->BackpackComponent->AddItem(SarkoLoot::AmmoItemId, Rounds);
+							UE_LOG(LogTemp, Display,
+								TEXT("SarkoRaidGameMode: extraction credits %d round(s) from the magazine (%d had nowhere to go)"),
+								Rounds - Leftover, Leftover);
+						}
+					}
+
 					// Not GetSlots(): a worn backpack is not in the cells, and
 					// submitting the cells alone would silently drop the one item
 					// the player most obviously carried out.

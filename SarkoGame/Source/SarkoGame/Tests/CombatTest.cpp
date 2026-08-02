@@ -1,8 +1,12 @@
 #include "Misc/AutomationTest.h"
 
+#include "AI/SarkoBotArchetypes.h"
 #include "Combat/SarkoWeapon.h"
 #include "Core/SarkoPlayerController.h"
 #include "Core/SarkoRaidSettings.h"
+#include "Loot/SarkoBackpack.h"
+#include "Loot/SarkoItemGrid.h"
+#include "Map/SarkoMapDefinition.h"
 #include "Pawn/SarkoHealthComponent.h"
 #include "UI/SarkoInventoryStyle.h"
 #include "UI/SarkoUiScale.h"
@@ -61,6 +65,103 @@ bool FSarkoFriendFoeDistinction::RunTest(const FString& Parameters)
 	TestFalse(TEXT("the player is not a foe to themselves"), IsFoe(ESarkoTeam::Player, ESarkoTeam::Player));
 	TestTrue(TEXT("an enemy is a foe to the player"), IsFoe(ESarkoTeam::Enemy, ESarkoTeam::Player));
 	TestTrue(TEXT("the player is a foe to an enemy"), IsFoe(ESarkoTeam::Player, ESarkoTeam::Enemy));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoTheTutorialsAmmoBudgetIsWinnable,
+	"Sarko.Map.TheTutorialsAmmoBudgetIsWinnable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoTheTutorialsAmmoBudgetIsWinnable::RunTest(const FString& Parameters)
+{
+	// Spec §1 made the route's authored rounds a real budget: reload now spends
+	// `ammo_9mm` out of the grid, SarkoBackend::WireLoadout sends an EMPTY loadout
+	// (so a raid begins with an empty bag and nothing else), and the tutorial's
+	// fixedItems are therefore every round the player will ever have.
+	//
+	// This is arithmetic over that data, not a playthrough — and it exists because
+	// the failure it guards against is silent: deleting a crate or retuning
+	// WeaponDamage would leave a tutorial that cannot be finished with a pistol,
+	// and nothing would say so until someone played it to the end.
+	FSarkoMapDefinition Map;
+	FString Error;
+	if (!SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Map, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json failed to load: %s"), *Error));
+		return false;
+	}
+	const USarkoRaidSettings* Settings = GetDefault<USarkoRaidSettings>();
+	if (!Settings)
+	{
+		AddError(TEXT("settings did not resolve"));
+		return false;
+	}
+
+	// Supply: the starting magazine plus every authored round on the route.
+	int32 RouteRounds = 0;
+	for (const FSarkoLootContainerSpot& Spot : Map.Containers)
+	{
+		for (const FSarkoItemStack& Stack : Spot.FixedItems)
+		{
+			if (Stack.Item == FName(TEXT("ammo_9mm")))
+			{
+				RouteRounds += Stack.Quantity;
+			}
+		}
+	}
+	const int32 StartingRounds =
+		SarkoCombat::StartingRounds(Settings->StartingMagazineRounds, Settings->MagazineSize);
+	const int32 Supply = StartingRounds + RouteRounds;
+
+	// Demand: every bot the encounter budget can put on the map, at the hits its
+	// archetype's health costs against the player's damage. maxAlive summed over
+	// one-shot encounters is exactly how many bots a full clear meets, and the
+	// budget is the ceiling over all of them.
+	const float Damage = FMath::Max(1.f, Settings->WeaponDamage);
+	int32 HitsNeeded = 0;
+	int32 Bots = 0;
+	for (const FSarkoEncounter& Encounter : Map.Encounters)
+	{
+		// The worst archetype among this encounter's doors, taken maxAlive times:
+		// which door fires is a runtime choice, so the budget must survive the
+		// toughest one every time.
+		float ToughestHealth = 0.f;
+		for (const FSarkoEncounterSpawn& Spawn : Encounter.Spawns)
+		{
+			FSarkoBotArchetype Archetype;
+			if (SarkoAI::FindBotArchetype(Spawn.Archetype, Archetype))
+			{
+				ToughestHealth = FMath::Max(ToughestHealth, Archetype.MaxHealth);
+			}
+		}
+		const int32 HitsPerBot = FMath::CeilToInt(ToughestHealth / Damage);
+		HitsNeeded += HitsPerBot * FMath::Max(0, Encounter.MaxAlive);
+		Bots += FMath::Max(0, Encounter.MaxAlive);
+	}
+
+	TestTrue(TEXT("the route authors ammunition at all"), RouteRounds > 0);
+	TestTrue(TEXT("the tutorial has fights to spend it on"), HitsNeeded > 0);
+
+	// The bound. A player who lands every shot needs HitsNeeded rounds; the honest
+	// question is how badly they may shoot and still finish, and the answer has to
+	// leave room for a first-timer on a phone. Two thirds missed is the line: at a
+	// 66% miss rate a full clear costs three times the hits, and the route must
+	// still cover it.
+	const int32 RoundsAtTwoThirdsMissed = HitsNeeded * 3;
+	TestTrue(*FString::Printf(
+			TEXT("%d rounds (%d in the magazine + %d on the route) covers %d bots at %d hits, and still covers %d — a 66%% miss rate"),
+			Supply, StartingRounds, RouteRounds, Bots, HitsNeeded, RoundsAtTwoThirdsMissed),
+		Supply >= RoundsAtTwoThirdsMissed);
+
+	// And the other direction, because a budget nobody can run out of is not a
+	// budget: perfect shooting must not leave the player with a spare magazine per
+	// bot, or the scarcity the stage just built is invisible on the map that
+	// teaches it.
+	TestTrue(*FString::Printf(
+			TEXT("%d rounds is a budget, not a surplus: under %d bots' worth of full magazines"),
+			Supply, Bots),
+		Supply < Bots * Settings->MagazineSize * 2);
 	return true;
 }
 
@@ -209,6 +310,130 @@ bool FSarkoMagazineGatesFiring::RunTest(const FString& Parameters)
 	Weapon->ConsumeRoundForTest();
 	TestEqual(TEXT("the magazine empties"), Weapon->GetAmmoInMagazine(), 0);
 	TestFalse(TEXT("an empty weapon cannot fire"), Weapon->CanFire());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoReloadSpendsTheReserve,
+	"Sarko.Combat.ReloadSpendsTheReserve",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoReloadSpendsTheReserve::RunTest(const FString& Parameters)
+{
+	// THE KEYSTONE OF THE SCARCITY STAGE (spec §1), as arithmetic. Reload used to
+	// assign MagazineSize unconditionally, so every number the realism stage
+	// shipped — the eight-round magazine, the route's 46 authored rounds, the
+	// halved loot weights — described an infinite supply.
+	TestEqual(TEXT("a plentiful bag fills the magazine"), SarkoCombat::ReloadAmount(0, 8, 60), 8);
+	TestEqual(TEXT("a partial magazine takes only the room it has"),
+		SarkoCombat::ReloadAmount(3, 8, 60), 5);
+	TestEqual(TEXT("a full magazine takes nothing"), SarkoCombat::ReloadAmount(8, 8, 60), 0);
+
+	// PARTIAL RELOADS ARE THE POINT, not an edge case: three rounds in the bag
+	// load three rounds, and the player walks into the next fight knowing it.
+	TestEqual(TEXT("three rounds in the bag load three rounds"), SarkoCombat::ReloadAmount(0, 8, 3), 3);
+	TestEqual(TEXT("one round in the bag is still a reload"), SarkoCombat::ReloadAmount(0, 8, 1), 1);
+	TestEqual(TEXT("an empty bag loads nothing — the dry-click path"),
+		SarkoCombat::ReloadAmount(0, 8, 0), 0);
+
+	// Hostile and broken inputs, clamped rather than trusted. The over-full case
+	// is the one that matters: a negative transfer would run backwards through a
+	// caller that only knows how to add rounds.
+	TestEqual(TEXT("a magazine holding more than it should never transfers backwards"),
+		SarkoCombat::ReloadAmount(50, 8, 60), 0);
+	TestEqual(TEXT("a negative reserve is none, not a gift"), SarkoCombat::ReloadAmount(0, 8, -20), 0);
+	TestEqual(TEXT("a broken magazine size yields nothing"), SarkoCombat::ReloadAmount(0, 0, 60), 0);
+	TestEqual(TEXT("a negative magazine size yields nothing"), SarkoCombat::ReloadAmount(0, -8, 60), 0);
+
+	// The grid half of the same transfer: what comes OUT, and what is left behind.
+	// RemoveFromGrid is the exact inverse of AddToGrid and the only way ammo ever
+	// leaves the bag other than consuming or dying.
+	TArray<FSarkoItemStack> Bag = {
+		FSarkoItemStack{ TEXT("medkit"), 1 },
+		FSarkoItemStack{ TEXT("ammo_9mm"), 60 },
+		FSarkoItemStack{ TEXT("ammo_9mm"), 5 },
+	};
+	TestEqual(TEXT("the reserve is every stack of the id, summed"),
+		SarkoGrid::CountItem(Bag, TEXT("ammo_9mm")), 65);
+
+	// Backwards: the trailing stack is the least-full one, and draining it first
+	// keeps the earlier stacks whole and the earlier cells still.
+	TestEqual(TEXT("a five-round reload takes five"),
+		SarkoGrid::RemoveFromGrid(Bag, TEXT("ammo_9mm"), 5), 5);
+	TestEqual(TEXT("...and the drained trailing stack is gone, not left at zero"), Bag.Num(), 2);
+	TestEqual(TEXT("...leaving the full stack untouched"), Bag[1].Quantity, 60);
+	TestEqual(TEXT("...and the medkit exactly where it was"), Bag[0].Item, FName(TEXT("medkit")));
+
+	// Asking for more than there is takes everything and says so, rather than
+	// failing: that IS the partial reload, one layer down.
+	TestEqual(TEXT("asking for more than the bag holds takes what there is"),
+		SarkoGrid::RemoveFromGrid(Bag, TEXT("ammo_9mm"), 100), 60);
+	TestEqual(TEXT("...and the empty bag holds only the medkit"), Bag.Num(), 1);
+	TestEqual(TEXT("an empty bag gives nothing"),
+		SarkoGrid::RemoveFromGrid(Bag, TEXT("ammo_9mm"), 8), 0);
+	TestEqual(TEXT("a zero request is a no-op, not an error"),
+		SarkoGrid::RemoveFromGrid(Bag, TEXT("medkit"), 0), 0);
+	TestEqual(TEXT("a negative request is a no-op too"),
+		SarkoGrid::RemoveFromGrid(Bag, TEXT("medkit"), -3), 0);
+	TestEqual(TEXT("...and nothing was touched by either"), Bag.Num(), 1);
+	TestEqual(TEXT("an id that is not there removes nothing"),
+		SarkoGrid::RemoveFromGrid(Bag, TEXT("bike_frame"), 5), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoExtractionCreditsTheMagazine,
+	"Sarko.Combat.ExtractionCreditsTheMagazine",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoExtractionCreditsTheMagazine::RunTest(const FString& Parameters)
+{
+	// Spec §1's extraction question, answered YES. Rounds in the gun are rounds
+	// the player found and did not spend; losing them for having reloaded before
+	// walking to the pad would make "reload before extracting" a strictly wrong
+	// move, which is the opposite of the lesson. Death still loses everything —
+	// ClearOnDeath is untouched and the magazine goes with the pawn.
+	USarkoWeaponComponent* Weapon = NewObject<USarkoWeaponComponent>();
+	Weapon->ResetForTest(6);
+
+	TestEqual(TEXT("unloading reports what was in the magazine"), Weapon->UnloadMagazine(), 6);
+	TestEqual(TEXT("...and empties it, so the credit is exactly-once by construction"),
+		Weapon->GetAmmoInMagazine(), 0);
+	TestEqual(TEXT("a second unload pays nothing, however the outcome path is re-entered"),
+		Weapon->UnloadMagazine(), 0);
+
+	// FOLDED BACK INTO THE STACK, through the same placement rule everything else
+	// uses: AddItem tops a partial stack up for free and only opens a rectangle
+	// when there is room, so the credit can never claim a cell the bag does not
+	// have — which is what keeps domain.FitsCarryGrid from answering 400 on a
+	// legitimate haul.
+	//
+	// Exercised through SarkoGrid::AddToGrid rather than USarkoBackpackComponent::
+	// AddItem, which is the one line AddItem consists of: AddItem refuses a
+	// component with no owner outright (its authority guard has no HasAuthority to
+	// ask), and a NewObject component has none. The rule under test is the pure
+	// one either way — and it is the same call the extraction path makes.
+	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+	const TArray<FSarkoGridPage> Pages = SarkoGrid::CarryPages(true, FIntPoint(2, 2), FIntPoint(4, 2));
+
+	TArray<FSarkoItemStack> Bag = { FSarkoItemStack{ TEXT("ammo_9mm"), 40 } };
+	TestEqual(TEXT("six rounds fold into the open stack with nothing left over"),
+		SarkoGrid::AddToGrid(Bag, Catalog, Pages, SarkoLoot::AmmoItemId, 6), 0);
+	TestEqual(TEXT("...as one stack of 46, not a second cell"), Bag.Num(), 1);
+	TestEqual(TEXT("...carrying every round"), SarkoGrid::CountItem(Bag, SarkoLoot::AmmoItemId), 46);
+
+	// And the case that made AddToGrid the right call rather than appending to the
+	// haul: a bag with no room refuses what it cannot hold, so the submission can
+	// never claim a cell that does not exist. Those rounds are lost — the same
+	// rule every other overflow on the loot path already follows.
+	TArray<FSarkoItemStack> Full;
+	for (int32 Index = 0; Index < 12; ++Index)
+	{
+		Full.Add(FSarkoItemStack{ TEXT("medkit"), 3 });
+	}
+	TestEqual(TEXT("a bag with no cell left refuses the magazine's rounds rather than forging a thirteenth"),
+		SarkoGrid::AddToGrid(Full, Catalog, Pages, SarkoLoot::AmmoItemId, 6), 6);
+	TestEqual(TEXT("...and nothing was added"), Full.Num(), 12);
 	return true;
 }
 
@@ -379,28 +604,48 @@ bool FSarkoReloadButtonSaysWhatTheMagazineIs::RunTest(const FString& Parameters)
 	// The magazine is EIGHT since the realism retune (spec §5), so this is stated
 	// in the rounds the player actually has: eight full, three is still ready,
 	// two is amber. Three matters — it is what the raid starts on.
+	//
+	// THE RESERVE IS NOW THE FOURTH ARGUMENT (spec §1), and it gates every urgent
+	// state, because urgency on this button means "press me" and a press with an
+	// empty bag moves nothing. A full magazine over an empty bag is calm; an empty
+	// magazine over an empty bag is the one state that is neither calm nor
+	// actionable, and it has its own colour rather than borrowing the pulse.
 	using ESarkoReloadState = SarkoUI::ESarkoReloadState;
 	TestTrue(TEXT("a full eight-round magazine is ready"),
-		SarkoUI::ReloadStateFor(8, 8, false) == ESarkoReloadState::Ready);
+		SarkoUI::ReloadStateFor(8, 8, false, 24) == ESarkoReloadState::Ready);
 	TestTrue(TEXT("three of eight — the raid's starting magazine — is still ready"),
-		SarkoUI::ReloadStateFor(3, 8, false) == ESarkoReloadState::Ready);
+		SarkoUI::ReloadStateFor(3, 8, false, 24) == ESarkoReloadState::Ready);
 	TestTrue(TEXT("below a third is low"),
-		SarkoUI::ReloadStateFor(2, 8, false) == ESarkoReloadState::Low);
-	TestTrue(TEXT("empty is empty"),
-		SarkoUI::ReloadStateFor(0, 8, false) == ESarkoReloadState::Empty);
+		SarkoUI::ReloadStateFor(2, 8, false, 24) == ESarkoReloadState::Low);
+	TestTrue(TEXT("empty with rounds in the bag is empty — press me"),
+		SarkoUI::ReloadStateFor(0, 8, false, 24) == ESarkoReloadState::Empty);
+	TestTrue(TEXT("one round in the bag is still worth pressing for"),
+		SarkoUI::ReloadStateFor(0, 8, false, 1) == ESarkoReloadState::Empty);
 	TestTrue(TEXT("reloading outranks everything, including empty"),
-		SarkoUI::ReloadStateFor(0, 8, true) == ESarkoReloadState::Reloading);
+		SarkoUI::ReloadStateFor(0, 8, true, 24) == ESarkoReloadState::Reloading);
+	TestTrue(TEXT("...and including dry: a reload in flight is the fact, whatever the bag holds"),
+		SarkoUI::ReloadStateFor(0, 8, true, 0) == ESarkoReloadState::Reloading);
 	// The boundary rule itself, at a size where a third is a whole number.
 	TestTrue(TEXT("exactly a third is still ready — the boundary belongs to ready"),
-		SarkoUI::ReloadStateFor(10, 30, false) == ESarkoReloadState::Ready);
+		SarkoUI::ReloadStateFor(10, 30, false, 60) == ESarkoReloadState::Ready);
 	TestTrue(TEXT("...and one below it is not"),
-		SarkoUI::ReloadStateFor(9, 30, false) == ESarkoReloadState::Low);
+		SarkoUI::ReloadStateFor(9, 30, false, 60) == ESarkoReloadState::Low);
+
+	// THE EMPTY BAG, in its three shapes.
+	TestTrue(TEXT("empty magazine over an empty bag is DRY — the real emergency, and no press fixes it"),
+		SarkoUI::ReloadStateFor(0, 8, false, 0) == ESarkoReloadState::Dry);
+	TestTrue(TEXT("a full magazine over an empty bag is calm, not a warning"),
+		SarkoUI::ReloadStateFor(8, 8, false, 0) == ESarkoReloadState::Ready);
+	TestTrue(TEXT("...and so is a LOW magazine over an empty bag: amber would beg for a press that does nothing"),
+		SarkoUI::ReloadStateFor(2, 8, false, 0) == ESarkoReloadState::Ready);
+	TestTrue(TEXT("a negative reserve is read as none, never as ammo"),
+		SarkoUI::ReloadStateFor(0, 8, false, -5) == ESarkoReloadState::Dry);
 
 	// A zero magazine size is a broken config, not a divide by zero.
-	TestTrue(TEXT("a zero-size magazine does not divide by zero"),
-		SarkoUI::ReloadStateFor(0, 0, false) == ESarkoReloadState::Empty);
+	TestTrue(TEXT("a zero-size magazine with a bag behind it does not divide by zero"),
+		SarkoUI::ReloadStateFor(0, 0, false, 24) == ESarkoReloadState::Empty);
 	TestTrue(TEXT("...and a non-empty one against a broken size nags rather than lies"),
-		SarkoUI::ReloadStateFor(5, 0, false) == ESarkoReloadState::Low);
+		SarkoUI::ReloadStateFor(5, 0, false, 24) == ESarkoReloadState::Low);
 
 	// The pulse is bounded and never fully transparent, or "empty" flickers into
 	// looking like "absent".

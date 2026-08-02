@@ -421,15 +421,34 @@ void ASarkoHUD::DrawAmmo()
 	const USarkoWeaponComponent* Weapon = Pawn->WeaponComponent;
 	const bool bReloading = Weapon->IsReloading();
 
-	// Rebuilt when the readout changes, which is on a shot or a reload rather than
-	// on a frame. FromInt allocates, and so does turning the TEXT("RELOADING")
-	// literal into the FString DrawText takes — both were paid every frame for a
-	// string with two digits' worth of variation.
+	// THE RESERVE (spec §1). Read straight off the pawn's own grid rather than
+	// replicated separately: Slots is already COND_OwnerOnly, so the owning client
+	// has the stacks this sums and nobody else has either. A loop over at most
+	// thirteen stacks, allocating nothing — GetSlots hands back a const reference.
+	const int32 Reserve = Pawn->BackpackComponent
+		? Pawn->BackpackComponent->CountItem(SarkoLoot::AmmoItemId)
+		: 0;
+
+	// Rebuilt when the readout changes, which is on a shot, a reload or a pickup
+	// rather than on a frame. FromInt allocates, and so does turning the
+	// TEXT("RELOADING") literal into the FString DrawText takes — both were paid
+	// every frame for a string with two digits' worth of variation.
+	//
+	// BOTH halves are the key now. Keying on the magazine alone would have frozen
+	// the reserve figure on screen: picking ammo up out of a crate does not change
+	// the magazine, so the readout would have gone on claiming the old reserve
+	// until the next shot — a stale number is worse than no number.
 	const int32 AmmoKey = bReloading ? INDEX_NONE : Weapon->GetAmmoInMagazine();
-	if (AmmoKey != CachedAmmoKey)
+	if (AmmoKey != CachedAmmoKey || Reserve != CachedReserveKey)
 	{
 		CachedAmmoKey = AmmoKey;
-		CachedAmmoText = bReloading ? FString(TEXT("RELOADING")) : FString::FromInt(AmmoKey);
+		CachedReserveKey = Reserve;
+		// "8 | 24": what is in the gun, then what is left to put in it. Spaced,
+		// unlike the reload button's compact pairing, because there is room along
+		// the top row and this is the readout the player reads deliberately.
+		CachedAmmoText = bReloading
+			? FString(TEXT("RELOADING"))
+			: FString::Printf(TEXT("%d | %d"), AmmoKey, Reserve);
 	}
 
 	const FLinearColor Colour = bReloading ? FLinearColor(1.f, 0.6f, 0.1f, 1.f) : FLinearColor::White;
@@ -633,40 +652,76 @@ void ASarkoHUD::DrawReload()
 
 	const USarkoWeaponComponent* Weapon = Pawn->WeaponComponent;
 	const int32 Magazine = GetDefault<USarkoRaidSettings>()->MagazineSize;
+	// The same grid sum DrawAmmo takes, and for the same reason it is not
+	// replicated: it is the owning client's own bag.
+	const int32 Reserve = Pawn->BackpackComponent
+		? Pawn->BackpackComponent->CountItem(SarkoLoot::AmmoItemId)
+		: 0;
 	const SarkoUI::ESarkoReloadState State =
-		SarkoUI::ReloadStateFor(Weapon->GetAmmoInMagazine(), Magazine, Weapon->IsReloading());
+		SarkoUI::ReloadStateFor(Weapon->GetAmmoInMagazine(), Magazine, Weapon->IsReloading(), Reserve);
 
 	// Spec §4.3: "the magazine count lives on it, it goes amber below a third, and
 	// it pulses when empty. The player should never have to look at two places to
-	// know they need to reload."
+	// know they need to reload." The scarcity stage makes the reserve part of that
+	// sentence — knowing you need to reload is worth nothing if the bag is empty —
+	// so the label is the PAIR, compactly: "3|43", no spaces, because this is a
+	// 56 pt thumb button and the top-left readout is where the spaced version
+	// lives. Five characters at 20 pt is the realistic worst case ("8|720", a bag
+	// of nothing but ammo) and it fits.
+	//
+	// Built ONLY when one of the two numbers moves, not every frame. The pair made
+	// this matter: the old label was one FString::FromInt per frame, which was
+	// already an allocation on a tick path, and a Printf of two numbers is not the
+	// place to double it. The key is both halves plus the reloading flag, exactly
+	// as DrawAmmo's is, so a pickup that changes only the reserve still rebuilds.
+	const int32 LabelAmmoKey = Weapon->IsReloading() ? INDEX_NONE : Weapon->GetAmmoInMagazine();
+	if (LabelAmmoKey != CachedReloadAmmoKey || Reserve != CachedReloadReserveKey)
+	{
+		CachedReloadAmmoKey = LabelAmmoKey;
+		CachedReloadReserveKey = Reserve;
+		CachedReloadLabel = Weapon->IsReloading()
+			? FString(TEXT("…"))
+			: FString::Printf(TEXT("%d|%d"), LabelAmmoKey, Reserve);
+		const FVector2D Size = MeasurePt(CachedReloadLabel, ReloadLabelPt);
+		CachedReloadLabelWidth = Size.X;
+		CachedReloadLabelHeight = Size.Y;
+	}
+
 	FLinearColor Fill;
 	FLinearColor Ink;
-	FString Label;
 	switch (State)
 	{
 	case SarkoUI::ESarkoReloadState::Low:
 		Fill = FLinearColor(0.95f, 0.55f, 0.06f, 0.35f);
 		Ink = FLinearColor(1.f, 0.6f, 0.1f, 1.f);
-		Label = FString::FromInt(Weapon->GetAmmoInMagazine());
 		break;
 	case SarkoUI::ESarkoReloadState::Empty:
 		// The pulse is the one animated thing on this HUD, and it is bounded away
 		// from zero: a button that vanishes on the trough reads as absent, not as
-		// urgent.
+		// urgent. It survives the scarcity stage unchanged — but it now means
+		// exactly one thing, "press me, there are rounds in the bag", because Dry
+		// below took the other meaning away from it.
 		Fill = FLinearColor(0.95f, 0.55f, 0.06f,
 			SarkoUI::ReloadPulseAlpha(GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f));
 		Ink = FLinearColor(1.f, 0.6f, 0.1f, 1.f);
-		Label = TEXT("0");
+		break;
+	case SarkoUI::ESarkoReloadState::Dry:
+		// STATIC RED, and deliberately not the pulse. Empty magazine, empty bag:
+		// the press does nothing, so the button stops asking for one and reports a
+		// state instead. Red because this is the fact that changes the raid — the
+		// player's remaining verbs are avoid, loot and leave — and static because
+		// an animation here would be the HUD nagging for an action that does not
+		// exist.
+		Fill = FLinearColor(0.8f, 0.12f, 0.10f, 0.40f);
+		Ink = FLinearColor(1.f, 0.35f, 0.3f, 1.f);
 		break;
 	case SarkoUI::ESarkoReloadState::Reloading:
 		Fill = FLinearColor(1.f, 1.f, 1.f, 0.10f);
 		Ink = FLinearColor(0.7f, 0.7f, 0.7f, 1.f);
-		Label = TEXT("…");
 		break;
 	default:
 		Fill = FLinearColor(1.f, 1.f, 1.f, 0.15f);
 		Ink = FLinearColor::White;
-		Label = FString::FromInt(Weapon->GetAmmoInMagazine());
 		break;
 	}
 
@@ -674,16 +729,9 @@ void ASarkoHUD::DrawReload()
 	DrawRect(ThumbButtonPlate, Rect.Min.X, Rect.Min.Y, Rect.GetSize().X, Rect.GetSize().Y);
 	DrawRect(Fill, Rect.Min.X, Rect.Min.Y, Rect.GetSize().X, Rect.GetSize().Y);
 
-	// Measured when the string changes — on a shot or a reload — rather than every
-	// frame. DrawHUD is a tick path and an uncached MeasurePt per frame is the
-	// allocation this HUD spent two commits removing.
-	if (Label != CachedReloadLabel)
-	{
-		CachedReloadLabel = Label;
-		const FVector2D Size = MeasurePt(Label, ReloadLabelPt);
-		CachedReloadLabelWidth = Size.X;
-		CachedReloadLabelHeight = Size.Y;
-	}
+	// Both the string and its measurement were built above, on the frame one of the
+	// two numbers moved. DrawHUD is a tick path and an uncached MeasurePt per frame
+	// is the allocation this HUD spent two commits removing.
 	DrawTextPt(CachedReloadLabel, Ink,
 		Rect.GetCenter().X - CachedReloadLabelWidth * 0.5f,
 		Rect.GetCenter().Y - CachedReloadLabelHeight * 0.5f,

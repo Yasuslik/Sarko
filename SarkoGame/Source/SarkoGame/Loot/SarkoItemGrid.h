@@ -127,6 +127,37 @@ namespace SarkoGrid
 		const TArray<FSarkoGridPage>& Pages, FName Item, int32 Quantity);
 
 	/**
+	 * How many units of one id these stacks hold, summed across every stack that
+	 * carries it. Pure, and the inverse question to AddToGrid's: "how much of this
+	 * is in the bag right now".
+	 *
+	 * The reserve behind the magazine (spec §1) is this number, so it is read on
+	 * the server before a reload moves rounds and on the owning client every frame
+	 * the HUD draws — the second is why it is a plain loop over an array the caller
+	 * already holds by reference and allocates nothing.
+	 */
+	int32 CountItem(const TArray<FSarkoItemStack>& Stacks, FName Item);
+
+	/**
+	 * Removes up to Quantity units of Item and returns how many actually left —
+	 * fewer than asked for when the stacks hold less, zero when they hold none.
+	 * The exact inverse of AddToGrid, and the other half of what makes ammo a
+	 * consumable rather than a decoration.
+	 *
+	 * Drains from the LAST matching stack backwards, for two reasons that point the
+	 * same way. AddToGrid tops partial stacks up before opening a new rectangle, so
+	 * the trailing stack of an id is the least-full one — draining it first keeps
+	 * the earlier stacks whole instead of leaving a row of half-empty ones. And a
+	 * stack that empties is removed from the array, which shifts every stack after
+	 * it: taking from the back shifts the fewest, so the cells the player is looking
+	 * at do not slide sideways while they reload.
+	 *
+	 * Pure — no component, no world — because the reload arithmetic is the rule the
+	 * whole scarcity stage rests on and it is unit tested with neither.
+	 */
+	int32 RemoveFromGrid(TArray<FSarkoItemStack>& Stacks, FName Item, int32 Quantity);
+
+	/**
 	 * Category, then display name, then id. The stash's order (spec §2) — the
 	 * scarcity is in the raid, not in storage, so the one job this order has is
 	 * that the same item is always in the same place.

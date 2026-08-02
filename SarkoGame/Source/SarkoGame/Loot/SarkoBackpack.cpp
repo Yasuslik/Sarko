@@ -4,6 +4,7 @@
 #include "Net/UnrealNetwork.h"
 
 const FName SarkoLoot::BackpackItemId(TEXT("backpack"));
+const FName SarkoLoot::AmmoItemId(TEXT("ammo_9mm"));
 
 USarkoBackpackComponent::USarkoBackpackComponent()
 {
@@ -71,6 +72,28 @@ int32 USarkoBackpackComponent::AddItem(FName Item, int32 Quantity)
 		return Quantity;
 	}
 	return SarkoGrid::AddToGrid(Slots, SarkoLoot::GetItemCatalog(), GetCarryPages(), Item, Quantity);
+}
+
+int32 USarkoBackpackComponent::CountItem(FName Item) const
+{
+	return SarkoGrid::CountItem(Slots, Item);
+}
+
+int32 USarkoBackpackComponent::RemoveItem(FName Item, int32 Quantity)
+{
+	const AActor* Owner = GetOwner();
+	if (Owner && !Owner->HasAuthority())
+	{
+		// AddItem's guard, in the direction that matters more: a client that could
+		// take rounds out of its own grid could take them out of nothing and load
+		// a magazine the server never debited.
+		UE_LOG(LogTemp, Warning, TEXT("SarkoBackpack: RemoveItem called without authority; ignored"));
+		return 0;
+	}
+	// The null-owner case passes through, exactly as ClearOnDeath's does: a
+	// NewObject component has no owner, and the reload arithmetic has to be
+	// observable without spawning a pawn.
+	return SarkoGrid::RemoveFromGrid(Slots, Item, Quantity);
 }
 
 void USarkoBackpackComponent::ClearOnDeath()
