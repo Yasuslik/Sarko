@@ -17,6 +17,21 @@ namespace SarkoCombat
 	FVector ApplyAimAssist(FVector Origin, FVector Direction, float ConeHalfAngleDeg, const TArray<FVector>& CandidateTargets);
 
 	/**
+	 * WHICH candidate ApplyAimAssist would snap to, or INDEX_NONE.
+	 *
+	 * Factored out of ApplyAimAssist rather than written beside it, because the
+	 * HUD needs the target and the weapon needs the direction, and two copies of
+	 * a selection rule is how a bracket ends up drawn on an enemy the shot does
+	 * not go to. ApplyAimAssist is this function plus one normalise, so the
+	 * fairness tests still cover the comparison that matters.
+	 *
+	 * The HUD's use is display only, on the client, for the pawn it is drawing:
+	 * the server still runs the real one at fire time and is still the only
+	 * authority on where a bullet goes.
+	 */
+	int32 BestAimAssistTarget(FVector Origin, FVector Direction, float ConeHalfAngleDeg, const TArray<FVector>& CandidateTargets);
+
+	/**
 	 * Pure guard against a client sending a non-unit or zero Direction: a
 	 * plain FVector carries no guarantee of unit length, and the caller
 	 * (ServerFire) traces WeaponRangeUU along whatever this returns, so an

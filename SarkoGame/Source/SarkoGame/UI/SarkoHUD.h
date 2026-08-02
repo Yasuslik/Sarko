@@ -93,8 +93,81 @@ private:
 	 *  what every offset, width and thickness in the .cpp is passed through. */
 	float Px(float Points) const { return Points * PointScale; }
 
-	void DrawStick(const struct FSarkoTouchStick& Stick, const FLinearColor& Colour);
+	/**
+	 * A floating stick: the ring at the thumb's anchor, the dot at its current
+	 * position, and — on the MOVE stick only — a second, dimmer ring at the
+	 * walk/run boundary.
+	 *
+	 * That second ring is the noise model's only interface. The server splits
+	 * quiet from audible at USarkoRaidSettings::NoiseRunSpeedFraction of the
+	 * stick's deflection (450 uu heard against 1100 uu heard), which makes
+	 * "choose to be quiet" the most interesting verb in the game — and until now
+	 * the boundary existed nowhere but the diagnostic log. The fraction is READ
+	 * FROM THE SETTINGS and never written here, so the drawn ring cannot drift
+	 * from the rule the server applies.
+	 *
+	 * Both radii come off the stick itself (FSarkoTouchStick::RadiusPx, resolved
+	 * from points at anchor), so the picture and the rule are one number.
+	 */
+	void DrawStick(const struct FSarkoTouchStick& Stick, const FLinearColor& Colour, bool bDrawQuietRing);
+
+	/** One circle, in segments. Both stick rings and nothing else — a second
+	 *  hand-rolled loop is a second chance to draw a ring the input rule does not
+	 *  have. */
+	void DrawRing(FVector2D Centre, float Radius, const FLinearColor& Colour);
+
 	void DrawAimCone();
+
+	/**
+	 * THE SNAP-TARGET BRACKET. Four corner ticks on the enemy a shot fired right
+	 * now would be nudged onto.
+	 *
+	 * The aim assist is generous — a 6 deg half-angle is +/-115 uu of tolerance at
+	 * 1100 uu against a ~34 uu capsule — and completely invisible: the player has
+	 * no way to learn what the cone is worth, so they guess. This draws the
+	 * answer, using SarkoCombat::BestAimAssistTarget, the same selection the
+	 * server runs at fire time, against the same foes-only candidate set.
+	 *
+	 * DISPLAY ONLY. It changes nothing about the assist and nothing about
+	 * authority: the server still re-runs the selection from its own copy when the
+	 * shot is taken, exactly as it does for the hit marker.
+	 */
+	void DrawSnapTargetBracket(const class ASarkoCharacter& Pawn, const FVector& Muzzle, const FVector& Aim);
+
+	/**
+	 * Candidate target locations, gathered for the bracket above.
+	 *
+	 * A member and Reset() rather than a local TArray: DrawHUD is a tick path and
+	 * a heap allocation per frame is what this project forbids. Reset keeps the
+	 * capacity, so after the first aimed frame the gather allocates nothing.
+	 */
+	TArray<FVector> AimAssistCandidates;
+
+	/**
+	 * FIRST-RAID CONTROL HINTS (audit §7). One line, top-centre, teaching the one
+	 * rule this scheme does not share with every other mobile shooter — that the
+	 * right stick fires, because there is no fire button — plus the quiet-walk
+	 * band, the reload button and the interact button.
+	 *
+	 * Gated on the profile the client already holds
+	 * (USarkoGameInstance::CachedProfile.bTutorialCompleted): in the standalone
+	 * raid this game ships the client IS the server, so nothing new replicates.
+	 * Each hint is dismissed permanently — for this raid — the first time the
+	 * player performs its verb, which the controller already knows; and each also
+	 * fades on its own after HintLifetimeSeconds whether it was obeyed or not, so
+	 * a hint can never become a permanent obstruction.
+	 */
+	void DrawFirstRaidHints(const class ASarkoPlayerController& PC);
+
+	/** When each hint was first drawn, in world seconds; negative until it has
+	 *  been. Parallel to SarkoHint::Text by index. */
+	float HintFirstShownSeconds[4] = { -1.f, -1.f, -1.f, -1.f };
+
+	/** Each hint's measured size in pixels, taken once per scale. A negative X is
+	 *  "not measured yet"; dropped by InvalidateMeasurements with every other
+	 *  cache, because DrawHUD is a tick path and these strings never change. */
+	FVector2D CachedHintSize[4] = {
+		FVector2D(-1.f, 0.f), FVector2D(-1.f, 0.f), FVector2D(-1.f, 0.f), FVector2D(-1.f, 0.f) };
 	void DrawTopBar();
 	void DrawHealth();
 

@@ -8,6 +8,7 @@
 #include "AI/SarkoEnemyCharacter.h"
 #include "Debug/SarkoOverviewShot.h"
 #include "Engine/GameViewportClient.h"
+#include "GameFramework/PlayerInput.h"
 #include "HAL/IConsoleManager.h"
 #include "Loot/SarkoBackpack.h"
 #include "Loot/SarkoLootContainer.h"
@@ -100,6 +101,21 @@ bool SarkoInput::ShouldFireWhileHeld(FVector2D AimValue, float FireDeadZone)
 	return AimValue.Size() >= FMath::Max(KINDA_SMALL_NUMBER, FireDeadZone);
 }
 
+float SarkoInput::StickRadiusPxForViewport(FVector2D ViewportSize)
+{
+	// The SAME point scale the HUD lays itself out with, so the ring drawn around
+	// the thumb and the rule that ring pictures cannot come from two numbers.
+	return StickRadiusPt * SarkoUI::PointScaleForViewport(ViewportSize);
+}
+
+bool SarkoInput::ShouldFireOnRelease(FVector2D LastAimValueWhileHeld, float MoveDeadZone)
+{
+	// See the header: "the touch never had a direction" and "the thumb was
+	// dragged back onto the anchor" are the same question asked of the same
+	// number, and both answers are "do not shoot".
+	return LastAimValueWhileHeld.Size() >= FMath::Max(KINDA_SMALL_NUMBER, MoveDeadZone);
+}
+
 bool SarkoInput::IsMoveStickSuppressed(bool bContainerPanelOpen)
 {
 	// See the header: the ONE place, so spec §5's fallback is a one-line change.
@@ -176,6 +192,9 @@ void ASarkoPlayerController::PlayerTick(float DeltaTime)
 		return;
 	}
 
+	// The loot panel is a considered pose; a bullet ends it. See the header.
+	UpdateLootPanelUnderFire(*Pawn);
+
 	float CameraYaw = 0.f;
 	if (PlayerCameraManager)
 	{
@@ -201,9 +220,15 @@ void ASarkoPlayerController::PlayerTick(float DeltaTime)
 	bDebugMoved = ApplyDebugMoveInput(*Pawn);
 #endif
 
+	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+
 	if (!bKeyboardMoved && !bDebugMoved)
 	{
 		const FVector2D MoveValue = MoveStick.Value();
+		// The first hint's dismissal (see bEverMoved): the player has moved when
+		// the pawn has actually walked, i.e. past the same dead zone the movement
+		// itself is gated on — not merely when a finger touched the left half.
+		bEverMoved |= MoveValue.Size() >= Settings.MoveStickDeadZone;
 		const FVector2D MoveDirection = SarkoAim::StickToWorldDirection(MoveValue, CameraYaw);
 		Pawn->SetMoveIntent(MoveDirection * MoveValue.Size());
 	}
@@ -211,7 +236,6 @@ void ASarkoPlayerController::PlayerTick(float DeltaTime)
 	const FVector2D AimValue = AimStick.Value();
 	Pawn->SetAimIntent(SarkoAim::StickToWorldDirection(AimValue, CameraYaw), AimStick.bActive);
 
-	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
 
 	// HOLD to fire (spec §4.2). There is no fire button: a dedicated one competes
@@ -228,17 +252,27 @@ void ASarkoPlayerController::PlayerTick(float DeltaTime)
 		{
 			LastLocalFireSeconds = Now;
 			bAimFiredThisHold = true;
+			bEverFired = true;
 			Pawn->RequestFire();
 		}
 	}
 
-	// FLICK: a quick tap that never crossed the dead zone still fires once, on
-	// release — the behaviour this game already had, kept deliberately as the
-	// aimed single shot. A hold that has already fired gets no bonus shot when
-	// the thumb finally lifts.
-	if (bAimReleasedThisFrame && !bAimFiredThisHold)
+	// FLICK: a quick tap that never crossed the FIRE dead zone still fires once,
+	// on release — the aimed single shot, and the only one this scheme has. A
+	// hold that has already fired gets no bonus shot when the thumb finally
+	// lifts.
+	//
+	// But it must have gone somewhere first. A release with the thumb still on
+	// (or back on) its anchor is not a shot: it either never had a direction —
+	// in which case the round used to go out along the PREVIOUS hold's aim ray,
+	// so a stray touch, a re-grip or a thumb steadying the phone fired a 2600 uu
+	// noise event at nothing — or the player dragged back to cancel, which is
+	// the genre's abort gesture and the only one this scheme offers.
+	if (bAimReleasedThisFrame && !bAimFiredThisHold
+		&& SarkoInput::ShouldFireOnRelease(LastAimValueWhileHeld, Settings.MoveStickDeadZone))
 	{
 		LastLocalFireSeconds = Now;
+		bEverFired = true;
 		Pawn->RequestFire();
 	}
 }
@@ -331,6 +365,162 @@ void ASarkoPlayerController::CheatDrainAndReload(int32 Cycles, float IntervalSec
 #endif
 }
 
+#if !UE_BUILD_SHIPPING
+void ASarkoPlayerController::ScheduleTouch(int32 FingerIndex, uint8 TouchType, FVector2D Position, float AfterSeconds)
+{
+	// Through UPlayerInput, which is where the iOS layer delivers touches too.
+	// UPlayerInput::Touches is what APlayerController::GetInputTouchState reads,
+	// and a Began/Moved leaves the finger DOWN until an Ended arrives — so a
+	// scripted gesture is a handful of events, not one per frame.
+	const auto Fire = [this, FingerIndex, TouchType, Position]()
+	{
+		if (!PlayerInput)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("SarkoDebugTouch: no PlayerInput to inject into"));
+			return;
+		}
+		// Device 0: IPlatformInputDeviceMapper's default, spelled without it
+		// because reaching for the mapper would put an ApplicationCore dependency
+		// on this module for one integer, and a debug seam is not worth that.
+		PlayerInput->InputTouch(
+			FTouchId(FInputDeviceId::CreateFromInternalId(0),
+				static_cast<ETouchIndex::Type>(FingerIndex)),
+			static_cast<ETouchType::Type>(TouchType), Position, /*Force*/ 1.f, /*Timestamp*/ 0);
+	};
+
+	if (AfterSeconds <= 0.f)
+	{
+		Fire();
+		return;
+	}
+
+	FTimerHandle Handle;
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this, Fire),
+		AfterSeconds, /*bLoop*/ false);
+}
+
+FVector2D ASarkoPlayerController::DebugThumbAnchor(bool bLeftHalf) const
+{
+	int32 ViewportX = 0;
+	int32 ViewportY = 0;
+	GetViewportSize(ViewportX, ViewportY);
+	const FVector2D Viewport(static_cast<float>(ViewportX), static_cast<float>(ViewportY));
+	const FBox2D Frame = SarkoInput::SafeFrame(Viewport);
+	const float Scale = SarkoUI::PointScaleForViewport(Viewport);
+
+	const FVector2D Right = SarkoInput::RightThumbAnchor(Frame, Scale);
+	// Mirrored, so a debug drag starts where a real thumb would and the stick's
+	// whole ring stays inside the frame at either end.
+	return bLeftHalf ? FVector2D(Frame.Min.X + (Frame.Max.X - Right.X), Right.Y) : Right;
+}
+
+float ASarkoPlayerController::DebugStickRadiusPx() const
+{
+	int32 ViewportX = 0;
+	int32 ViewportY = 0;
+	GetViewportSize(ViewportX, ViewportY);
+	return SarkoInput::StickRadiusPxForViewport(
+		FVector2D(static_cast<float>(ViewportX), static_cast<float>(ViewportY)));
+}
+
+void ASarkoPlayerController::LogGestureAmmo(const TCHAR* Stage, const FString& Kind)
+{
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	const USarkoWeaponComponent* Weapon = Pawn ? Pawn->WeaponComponent : nullptr;
+	UE_LOG(LogTemp, Display, TEXT("SarkoDebugAimGesture[%s] %s: magazine=%d"),
+		*Kind, Stage, Weapon ? Weapon->GetAmmoInMagazine() : -1);
+}
+#endif
+
+void ASarkoPlayerController::SarkoDebugTouchStick(int32 Half, float DirX, float DirY, float Fraction, float HoldSeconds, float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	if (DelaySeconds > 0.f)
+	{
+		FTimerHandle Handle;
+		GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+			[this, Half, DirX, DirY, Fraction, HoldSeconds]()
+			{ SarkoDebugTouchStick(Half, DirX, DirY, Fraction, HoldSeconds, 0.f); }),
+			DelaySeconds, /*bLoop*/ false);
+		return;
+	}
+
+	const bool bLeft = Half == 0;
+	const FVector2D Anchor = DebugThumbAnchor(bLeft);
+	const float Radius = DebugStickRadiusPx();
+
+	// Screen Y grows DOWNWARD and FSarkoTouchStick::Value flips it, so a caller
+	// asking for "up" (+Y) must be dragged toward a smaller screen Y.
+	FVector2D Direction(DirX, DirY);
+	Direction = Direction.IsNearlyZero() ? FVector2D(0.f, 1.f) : Direction.GetSafeNormal();
+	const FVector2D Held = Anchor + FVector2D(Direction.X, -Direction.Y) * Radius * FMath::Clamp(Fraction, 0.f, 2.f);
+
+	// Two fingers, and always the same one per half, so holding both sticks at
+	// once — which is what a frame showing both rings needs — is one call each.
+	const int32 Finger = bLeft ? 0 : 1;
+	UE_LOG(LogTemp, Display,
+		TEXT("SarkoDebugTouchStick: %s stick, anchor (%.0f, %.0f), radius %.1f px, held at %.2f of it for %.1fs"),
+		bLeft ? TEXT("MOVE") : TEXT("AIM"), Anchor.X, Anchor.Y, Radius, Fraction, HoldSeconds);
+
+	ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Began), Anchor, 0.f);
+	ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Moved), Held, 0.1f);
+	ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Ended), Held, FMath::Max(0.2f, HoldSeconds));
+#endif
+}
+
+void ASarkoPlayerController::SarkoDebugAimGesture(FString Kind, float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	if (DelaySeconds > 0.f)
+	{
+		FTimerHandle Handle;
+		GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+			[this, Kind]() { SarkoDebugAimGesture(Kind, 0.f); }), DelaySeconds, /*bLoop*/ false);
+		return;
+	}
+
+	const FVector2D Anchor = DebugThumbAnchor(/*bLeftHalf*/ false);
+	const float Radius = DebugStickRadiusPx();
+
+	// 0.25 of the radius: past MoveStickDeadZone 0.15 so it counts as a
+	// direction, short of AimFireDeadZone 0.35 so the HOLD never fires. That
+	// isolates the release rule, which is the whole question.
+	const FVector2D Out = Anchor + FVector2D(0.f, -Radius * 0.25f);
+	const int32 Finger = 1;
+
+	LogGestureAmmo(TEXT("before"), Kind);
+	UE_LOG(LogTemp, Display, TEXT("SarkoDebugAimGesture[%s]: pressing at (%.0f, %.0f), radius %.1f px"),
+		*Kind, Anchor.X, Anchor.Y, Radius);
+
+	ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Began), Anchor, 0.f);
+
+	float EndAt = 0.4f;
+	if (Kind == TEXT("flick"))
+	{
+		// Out, and lifted there. The one gesture that must still fire.
+		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Moved), Out, 0.15f);
+		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Ended), Out, 0.4f);
+	}
+	else if (Kind == TEXT("cancel"))
+	{
+		// Out, then back onto the anchor, then lifted: the abort gesture.
+		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Moved), Out, 0.15f);
+		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Moved), Anchor, 0.4f);
+		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Ended), Anchor, 0.6f);
+		EndAt = 0.6f;
+	}
+	else
+	{
+		// "tap": pressed and lifted, never moved. The stray touch.
+		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Ended), Anchor, 0.4f);
+	}
+
+	FTimerHandle Handle;
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+		[this, Kind]() { LogGestureAmmo(TEXT("after"), Kind); }), EndAt + 0.3f, /*bLoop*/ false);
+#endif
+}
+
 void ASarkoPlayerController::UpdateSticks()
 {
 	bAimReleasedThisFrame = false;
@@ -355,6 +545,13 @@ void ASarkoPlayerController::UpdateSticks()
 	const float PointScale = SarkoUI::PointScaleForViewport(Viewport);
 	const FBox2D InteractRect = SarkoInput::InteractButtonRect(SafeFrame, PointScale);
 	const FBox2D ReloadRect = SarkoInput::ReloadButtonRect(SafeFrame, PointScale);
+	// Resolved ONCE per frame and written onto a stick only when it anchors: the
+	// radius cannot change while a finger is down, so recomputing it per stick
+	// per frame would be a multiply on a tick path for a constant. Every consumer
+	// — Value()'s deflection maths, the dead zone and fire threshold that are
+	// fractions of it, and the two rings the HUD draws — reads it back off the
+	// stick, so there is exactly one number.
+	const float StickRadiusPx = SarkoInput::StickRadiusPxForViewport(Viewport);
 	bool bInteractTouchStillDown = false;
 	bool bReloadTouchStillDown = false;
 
@@ -460,6 +657,7 @@ void ASarkoPlayerController::UpdateSticks()
 			// there is nothing more for it to do.
 			if (ASarkoCharacter* ReloadPawn = Cast<ASarkoCharacter>(GetPawn()))
 			{
+				bEverReloaded = true;
 				ReloadPawn->RequestReload();
 			}
 			continue;
@@ -484,6 +682,9 @@ void ASarkoPlayerController::UpdateSticks()
 				MoveStick.bActive = true;
 				MoveStick.Origin = Position;
 				MoveStick.Current = Position;
+				// The one place the point-sized radius becomes pixels for this
+				// stick: at anchor, from this frame's viewport.
+				MoveStick.RadiusPx = StickRadiusPx;
 				bMoveTouchStillDown = true;
 			}
 		}
@@ -495,10 +696,14 @@ void ASarkoPlayerController::UpdateSticks()
 				AimStick.bActive = true;
 				AimStick.Origin = Position;
 				AimStick.Current = Position;
+				AimStick.RadiusPx = StickRadiusPx;
 				bAimTouchStillDown = true;
 				// A new hold has fired nothing yet, so a flick that never leaves
-				// the dead zone still gets its one shot on release.
+				// the FIRE dead zone still gets its one shot on release.
 				bAimFiredThisHold = false;
+				// And it starts with no direction, so a fresh tap can never be
+				// fired by the deflection the PREVIOUS hold ended on.
+				LastAimValueWhileHeld = FVector2D::ZeroVector;
 			}
 		}
 	}
@@ -507,6 +712,13 @@ void ASarkoPlayerController::UpdateSticks()
 	{
 		MoveStick = FSarkoTouchStick();
 		MoveTouchIndex = INDEX_NONE;
+	}
+	// Latched while the finger is still down, because the release edge and the
+	// deflection it has to judge are one frame apart — the stick below is gone
+	// by the time PlayerTick asks. See SarkoInput::ShouldFireOnRelease.
+	if (bAimTouchStillDown)
+	{
+		LastAimValueWhileHeld = AimStick.Value();
 	}
 	if (!bAimTouchStillDown)
 	{
@@ -525,6 +737,45 @@ void ASarkoPlayerController::UpdateSticks()
 	// Release of the aim thumb is the FLICK's fire signal. Holding it past the
 	// dead zone fires continuously (spec §4.2); PlayerTick owns both.
 	bAimReleasedThisFrame = bWasAiming && !AimStick.bActive;
+}
+
+void ASarkoPlayerController::UpdateLootPanelUnderFire(ASarkoCharacter& Pawn)
+{
+	const USarkoHealthComponent* Health = Pawn.HealthComponent;
+	if (!Health)
+	{
+		return;
+	}
+
+	const int32 Serial = static_cast<int32>(Health->GetDamageSerial());
+	if (Serial == LastSeenDamageSerial)
+	{
+		return;
+	}
+
+	// Recorded before it is acted on, and the FIRST observation only records: a
+	// controller that starts watching a pawn which has already been hit — a
+	// possession change, a rejoin — must not shut a panel because of a bullet
+	// that landed before it was looking.
+	const bool bFirstLook = LastSeenDamageSerial == INDEX_NONE;
+	LastSeenDamageSerial = Serial;
+	if (bFirstLook)
+	{
+		return;
+	}
+
+	if (Pawn.GetOpenContainerIndex() == INDEX_NONE)
+	{
+		return;
+	}
+
+	// Say so: the panel vanishing under the player's thumb is the one thing on
+	// this HUD that happens without an input, and a log line is what makes it a
+	// behaviour rather than a glitch someone reports.
+	UE_LOG(LogTemp, Display,
+		TEXT("SarkoPlayerController: hit while looting (damage serial %d) — closing the container panel"),
+		Serial);
+	Pawn.RequestCloseContainer();
 }
 
 void ASarkoPlayerController::UpdateInteract()
@@ -634,6 +885,7 @@ void ASarkoPlayerController::UpdateInteract()
 	// crates should then start on the second one rather than wait for a release.
 	if (!bInteractHeld || HeldContainerIndex != BestIndex)
 	{
+		bEverLooted = true;
 		Pawn->RequestBeginLoot(BestIndex);
 		HeldContainerIndex = BestIndex;
 	}
