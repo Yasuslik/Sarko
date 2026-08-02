@@ -13,10 +13,18 @@
 
 FVector SarkoCombat::ApplyAimAssist(FVector Origin, FVector Direction, float ConeHalfAngleDeg, const TArray<FVector>& CandidateTargets)
 {
+	const int32 Best = BestAimAssistTarget(Origin, Direction, ConeHalfAngleDeg, CandidateTargets);
+	return CandidateTargets.IsValidIndex(Best)
+		? (CandidateTargets[Best] - Origin).GetSafeNormal()
+		: Direction;
+}
+
+int32 SarkoCombat::BestAimAssistTarget(FVector Origin, FVector Direction, float ConeHalfAngleDeg, const TArray<FVector>& CandidateTargets)
+{
 	const FVector Aim = Direction.GetSafeNormal();
 	if (Aim.IsNearlyZero() || CandidateTargets.Num() == 0)
 	{
-		return Direction;
+		return INDEX_NONE;
 	}
 
 	// The cone test is horizontal only. Origin is the muzzle, offset above
@@ -31,16 +39,17 @@ FVector SarkoCombat::ApplyAimAssist(FVector Origin, FVector Direction, float Con
 	const FVector2D Aim2D = FVector2D(Aim.X, Aim.Y).GetSafeNormal();
 	if (Aim2D.IsNearlyZero())
 	{
-		return Direction;
+		return INDEX_NONE;
 	}
 
 	const float CosLimit = FMath::Cos(FMath::DegreesToRadians(ConeHalfAngleDeg));
 
-	const FVector* Best = nullptr;
+	int32 Best = INDEX_NONE;
 	float BestDistanceSq = TNumericLimits<float>::Max();
 
-	for (const FVector& Target : CandidateTargets)
+	for (int32 Index = 0; Index < CandidateTargets.Num(); ++Index)
 	{
+		const FVector& Target = CandidateTargets[Index];
 		const FVector ToTarget = Target - Origin;
 		const FVector2D ToTargetDir2D = FVector2D(ToTarget.X, ToTarget.Y).GetSafeNormal();
 		if (ToTargetDir2D.IsNearlyZero())
@@ -59,11 +68,11 @@ FVector SarkoCombat::ApplyAimAssist(FVector Origin, FVector Direction, float Con
 		if (DistanceSq < BestDistanceSq)
 		{
 			BestDistanceSq = DistanceSq;
-			Best = &Target;
+			Best = Index;
 		}
 	}
 
-	return Best ? (*Best - Origin).GetSafeNormal() : Direction;
+	return Best;
 }
 
 FVector SarkoCombat::NormalizeFireDirection(FVector Direction)
