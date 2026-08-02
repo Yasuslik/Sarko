@@ -132,7 +132,80 @@ namespace SarkoMap
 
 		/** The roughness of one surface. */
 		float RoughnessFor(ESarkoSurface Surface);
+
+		/**
+		 * THE DETAIL MAP OF A SURFACE, or nullptr for a surface that is
+		 * deliberately flat.
+		 *
+		 * These are greyscale tiling maps built by Scripts/generate-textures.sh
+		 * and they are NOT base colour: the colour above is still the only
+		 * source of a surface's colour, and the map modulates it around that
+		 * value. Every generated image is normalised to a mean of exactly 0.5,
+		 * which the material turns into a mean multiplier of exactly 1.0 — so
+		 * the AVERAGE of any patch of a textured surface is the palette colour
+		 * to within a rounding error, and re-running the generator with a
+		 * different seed cannot move a surface's identity.
+		 *
+		 * nullptr is a decision, not an omission. Water and Shallow are the
+		 * ford's read from 20000 uu up and a graphic band is what makes it
+		 * legible; Extraction is a gameplay marker and the one saturated colour
+		 * in the sector; the three skirt bands are an even luminance fall-off
+		 * standing in for distance, and putting texture on them replaces
+		 * "further away" with "another field". A flat surface keeps the exact
+		 * material it had before textures existed — /Engine/BasicShapes — so it
+		 * pays no sample and cannot have regressed.
+		 */
+		const TCHAR* DetailTexturePath(ESarkoSurface Surface);
+
+		/**
+		 * How many world units one tile of that map covers. World units, not UV
+		 * repeats: the material derives its UVs from world position (see
+		 * Scripts/import-textures.py) precisely so texel density is a property
+		 * of the sector rather than of whichever mesh a surface landed on — the
+		 * floor and a crate are the same engine cube at scales 400 apart.
+		 *
+		 * Chosen against the judging camera, not against a close-up: the spring
+		 * arm is 1400 uu at -70 degrees, which puts about 2.5 uu under a pixel,
+		 * so a tile between 200 and 1600 uu puts its features in the 5-to-150
+		 * pixel band where they read as material instead of as noise or as a
+		 * stain. Zero for a flat surface.
+		 */
+		float DetailTileUU(ESarkoSurface Surface);
+
+		/**
+		 * How far the map may push base colour, as a fraction: the multiplier is
+		 * 1 - Strength at a black texel and 1 + Strength at a white one. The maps
+		 * have a standard deviation near 0.2, so a typical texel lands within
+		 * about 0.4 x Strength of the palette colour and the extremes are rare.
+		 * Zero for a flat surface.
+		 */
+		float DetailStrength(ESarkoSurface Surface);
+
+		/**
+		 * How far the map may push roughness, in absolute roughness units across
+		 * the map's full range — so the swing is +-half of this.
+		 *
+		 * Deliberately small everywhere. RoughnessFor's numbers are not taste:
+		 * they are what stops a 40000 uu plane catching a single specular sheet
+		 * across the whole sector (see the Water and Asphalt comments in the
+		 * .cpp), and a detail map is not a licence to undo that. Zero for a flat
+		 * surface.
+		 */
+		float DetailRoughnessSwing(ESarkoSurface Surface);
 	}
+
+	/**
+	 * The generated surface material, built node-by-node by
+	 * Scripts/import-textures.py because this project has no editor session in
+	 * which to author one by hand.
+	 *
+	 * It is a superset of /Engine/BasicShapes/BasicShapeMaterial: same "Color"
+	 * and "Roughness" parameters, plus a detail sample whose strengths default
+	 * to zero. A missing asset is survivable — SharedSurfaceMaterial falls back
+	 * to the engine material and the sector renders exactly as it did before —
+	 * which is why every call site below still speaks in colours.
+	 */
+	extern const TCHAR* const SurfaceMaterialPath;
 
 	/** Maps a JSON surface name to the enum. False for anything unlisted. */
 	bool ParseSurfaceName(const FString& Name, ESarkoSurface& Out);

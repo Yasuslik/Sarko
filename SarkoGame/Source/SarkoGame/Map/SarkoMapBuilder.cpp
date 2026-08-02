@@ -9,6 +9,7 @@
 #include "Engine/SkyLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
+#include "Engine/Texture.h"
 #include "Engine/TextureCube.h"
 #include "Loot/SarkoExtractionZone.h"
 #include "Loot/SarkoLootContainer.h"
@@ -124,6 +125,26 @@ namespace
 	 * it replaces: zero texture samples and zero texture memory where there were
 	 * two sampled textures (grid colour and grid normal) plus a CameraDepthFade.
 	 *
+	 * TEXTURE, SINCE. A surface with a generated detail map
+	 * (Palette::DetailTexturePath) is built on /Game/Generated/Materials/M_SarkoSurface
+	 * instead — the same two parameters plus one greyscale sample. That is not a
+	 * retreat from the paragraph above: the aliasing there was a texture with no
+	 * mip small enough, stretched 400x on mesh UVs. This one is world-aligned
+	 * (uu per tile, not repeats per mesh), band-limited when it is generated, and
+	 * mipped, so its texel size is a fixed number of world units at every scale
+	 * the sector contains.
+	 *
+	 * A surface with NO map keeps BasicShapeMaterial, byte for byte as before.
+	 * That is deliberate rather than incidental: water, the ford, the extraction
+	 * pads and the three skirt bands are the surfaces whose flatness is the
+	 * design, and giving them the new material would have cost them a sample to
+	 * multiply by one.
+	 *
+	 * If M_SarkoSurface fails to load — a fresh clone that has not run
+	 * Scripts/generate-textures.sh, a cook that dropped it — every surface falls
+	 * back to BasicShapeMaterial and the sector renders exactly as it did before
+	 * textures existed. Colour is never lost; only detail is.
+	 *
 	 * The parameter is called "Color" in current engine versions and "BaseColor"
 	 * in older copies, so both are set — the same belt-and-braces the loot
 	 * container and the extraction pad already use against this material.
@@ -164,7 +185,31 @@ namespace
 			Cache.Remove(Key);
 		}
 
-		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, BasicShapeMaterialPath);
+		// The detail map decides which base material this surface wants. A
+		// texture that is listed but missing on disk is a pipeline failure, not
+		// a reason to lose the surface: it falls through to the flat material
+		// with a log line, and the sector keeps its colours.
+		const TCHAR* DetailPath = SarkoMap::Palette::DetailTexturePath(Surface);
+		UTexture* Detail = DetailPath ? LoadObject<UTexture>(nullptr, DetailPath) : nullptr;
+		if (DetailPath && !Detail)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("SarkoMap: detail map '%s' for surface '%s' failed to load; the surface stays flat. Run Scripts/generate-textures.sh."),
+				DetailPath, *SarkoMap::SurfaceName(Surface));
+		}
+
+		UMaterialInterface* Base = Detail
+			? LoadObject<UMaterialInterface>(nullptr, SarkoMap::SurfaceMaterialPath)
+			: nullptr;
+		if (Detail && !Base)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("SarkoMap: '%s' failed to load; every surface stays flat. Run Scripts/generate-textures.sh."),
+				SarkoMap::SurfaceMaterialPath);
+			Detail = nullptr;
+		}
+		if (!Base)
+		{
+			Base = LoadObject<UMaterialInterface>(nullptr, BasicShapeMaterialPath);
+		}
 		if (!Base)
 		{
 			// Not fatal: the geometry is still there and still blocks bullets, it
@@ -185,6 +230,18 @@ namespace
 		Material->SetVectorParameterValue(TEXT("Color"), Tint);
 		Material->SetVectorParameterValue(TEXT("BaseColor"), Tint);
 		Material->SetScalarParameterValue(TEXT("Roughness"), SarkoMap::Palette::RoughnessFor(Surface));
+		if (Detail)
+		{
+			// Set together, and only together. M_SarkoSurface's strengths default
+			// to zero, so a run that set the texture and not the strengths would
+			// sample a map and multiply the colour by exactly one — a texture
+			// fetch per pixel buying nothing, and no visible symptom to notice it
+			// by.
+			Material->SetTextureParameterValue(TEXT("Detail"), Detail);
+			Material->SetScalarParameterValue(TEXT("DetailTileUU"), SarkoMap::Palette::DetailTileUU(Surface));
+			Material->SetScalarParameterValue(TEXT("DetailStrength"), SarkoMap::Palette::DetailStrength(Surface));
+			Material->SetScalarParameterValue(TEXT("DetailRoughness"), SarkoMap::Palette::DetailRoughnessSwing(Surface));
+		}
 		Material->AddToRoot();
 
 		Cache.Add(Key, Material);
