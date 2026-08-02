@@ -4,12 +4,16 @@ Unreal step of the third-party asset pipeline. Run by Scripts/import-assets.sh.
 Imports the meshes Scripts/prepare-assets.py produced into
 /Game/ThirdParty/<Pack>, then makes each one usable by ASarkoPropField:
 
- * BOX SIMPLE COLLISION. A HISM with QueryAndPhysics and no simple collision
-   does not stop a character capsule — sweeps use simple collision, and complex
-   collision only answers line traces. Without this every tree in the sector
-   would be scenery you walk through, and nothing would say so. The box is the
-   mesh's own bounds, which prepare-assets.py normalised to -50..50, so a part
-   placed with Extent E collides in exactly the box the kind table declares.
+ * VERIFIES SIMPLE COLLISION. A HISM with QueryAndPhysics and no simple
+   collision does not stop a character capsule — sweeps use simple collision,
+   and complex collision only answers line traces. Without it every tree in the
+   sector would be scenery you walk through, and nothing would say so.
+   Interchange's mesh pipeline already fits one convex hull per mesh, which is
+   both sufficient and tighter than the box this script used to add by hand (a
+   box around a tree stops the player a metre from the trunk). So this does not
+   generate collision, it CHECKS it: if a future pipeline default stops making
+   hulls, that is a silent gameplay change and it should fail here rather than
+   in a raid.
 
  * NANITE OFF and the SmallProp LOD group. This ships to phones.
 
@@ -33,11 +37,6 @@ PREPARED = os.environ["SARKO_PREPARED"]
 CONTENT_ROOT = "/Game/ThirdParty"
 
 manager = unreal.InterchangeManager.get_interchange_manager_scripted()
-# EditorStaticMeshLibrary, not StaticMeshEditorSubsystem: the subsystem is not
-# created in a commandlet (get_editor_subsystem returns None), while the
-# library is a plain BlueprintFunctionLibrary and works headlessly.
-mesh_tools = unreal.EditorStaticMeshLibrary
-
 params = unreal.ImportAssetParameters()
 params.is_automated = True
 
@@ -59,10 +58,13 @@ for pack in sorted(os.listdir(PREPARED)):
         if not isinstance(asset, unreal.StaticMesh):
             continue
 
-        # Every previous run's collision has to go first, or a re-import stacks a
-        # second box on the first and the mesh quietly collides twice.
-        mesh_tools.remove_collisions(asset)
-        mesh_tools.add_simple_collisions(asset, unreal.ScriptCollisionShapeType.BOX)
+        body = asset.get_editor_property("body_setup")
+        geometry = body.get_editor_property("agg_geom") if body else None
+        hulls = len(geometry.get_editor_property("convex_elems")) if geometry else 0
+        boxes = len(geometry.get_editor_property("box_elems")) if geometry else 0
+        if hulls + boxes == 0:
+            unreal.log_error("SARKO_IMPORT no simple collision on %s — it would not stop a pawn"
+                             % asset_path)
 
         nanite = asset.get_editor_property("nanite_settings")
         nanite.enabled = False
@@ -77,6 +79,8 @@ for pack in sorted(os.listdir(PREPARED)):
             "origin": [bounds.origin.x, bounds.origin.y, bounds.origin.z],
             # Triangle counts come from the Blender step, which counts the same
             # geometry before it is written and needs no editor API for it.
+            "hulls": hulls,
+            "boxes": boxes,
             "materials": asset.get_editor_property("static_materials").__len__(),
         }
 

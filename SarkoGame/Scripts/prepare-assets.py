@@ -12,12 +12,11 @@ prop convention as it arrives:
     is exactly the tree_dead case the table already treats as canopy-less.
 
  2. NORMALISE EVERY EXPORTED MESH to the engine-primitive convention: geometry
-    centred on its own origin and scaled to fit a 100 x 100 x 100 box. That is
+    centred on its own origin and scaled to fit the -50..50 uu box. That is
     what /Engine/BasicShapes/Cube already is, so ASarkoPropField::AddPart's
     `Extent / 50` scale keeps working for imported meshes with no code change at
     all, and a part's Extent stays exactly its half-extent in world units — which
-    is what the collision box added at import time, the kind table and every
-    extent assertion in the test suite all mean by it.
+    is what the kind table and every extent assertion in the test suite mean.
     The cost is that an extent whose proportions do not match the mesh's own
     stretches it; the JSON written below reports each source's true dimensions so
     the table can be authored in proportion. Aspect ratios are NOT baked in on
@@ -153,10 +152,12 @@ def normalise(obj):
     half-extent.
 
     Per axis, NOT uniformly, and that is the whole point: it makes the mesh's
-    imported bounds -50..50 uu on every axis, which is precisely what /Engine/BasicShapes/Cube
-    is. `Extent / 50` in ASarkoPropField::AddPart then produces a prop whose
-    world half-extents ARE its Extent — the same claim the box collision added at
-    import, the kind table and every extent assertion in the suite already make.
+    imported bounds -50..50 uu on every axis, which is precisely what
+    /Engine/BasicShapes/Cube is. `Extent / 50` in ASarkoPropField::AddPart then
+    produces a prop whose world half-extents ARE its Extent — the same claim the
+    kind table and every extent assertion in the suite already make. (The
+    collision is a convex hull fitted at import, so what the player actually
+    touches is contained by that box: tighter, never larger.)
     A uniform fit would keep the mesh's proportions and break that claim on two
     axes out of three, which is a silent lie in a number the tests trust.
 
