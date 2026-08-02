@@ -34,6 +34,11 @@ ASarkoEnemyCharacter::ASarkoEnemyCharacter()
 	AIControllerClass = ASarkoAIController::StaticClass();
 	AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
 
+	// Stated rather than inherited: Tick drives the hit flash on every machine,
+	// and a base-class default that changed would take the feedback with it
+	// silently.
+	PrimaryActorTick.bCanEverTick = true;
+
 	HealthComponent = CreateDefaultSubobject<USarkoHealthComponent>(TEXT("Health"));
 	HealthComponent->SetTeam(ESarkoTeam::Enemy);
 	WeaponComponent = CreateDefaultSubobject<USarkoWeaponComponent>(TEXT("Weapon"));
@@ -60,6 +65,47 @@ void ASarkoEnemyCharacter::BeginPlay()
 	if (HasAuthority() && HealthComponent)
 	{
 		HealthComponent->OnDied.AddUObject(this, &ASarkoEnemyCharacter::HandleDeath);
+	}
+}
+
+void ASarkoEnemyCharacter::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	const UWorld* World = GetWorld();
+	if (!World || !HealthComponent)
+	{
+		return;
+	}
+
+	const int32 Serial = static_cast<int32>(HealthComponent->GetDamageSerial());
+	const float Now = World->GetTimeSeconds();
+
+	if (Serial != SeenDamageSerial)
+	{
+		const bool bFirstObservation = (SeenDamageSerial == INDEX_NONE);
+		SeenDamageSerial = Serial;
+		// A machine seeing this pawn for the first time adopts its count instead
+		// of flashing for hits that landed before it was watching — a bot joined
+		// mid-raid at 3 hp must not blink once on arrival.
+		if (!bFirstObservation)
+		{
+			// THE FLASH. White through this pawn's OWN material instances (see
+			// SarkoBody::SetPaintTint), so four scavs sharing one archetype do not
+			// blink together when one of them is shot.
+			SarkoBody::SetPaintTint(*this, SarkoBody::FlashTint());
+			FlashEndSeconds = Now + GetDefault<USarkoRaidSettings>()->HitFlashSeconds;
+		}
+		return;
+	}
+
+	if (FlashEndSeconds >= 0.f && Now >= FlashEndSeconds)
+	{
+		// Back to hostile red. Restored on the frame the window closes rather than
+		// interpolated: at HitFlashSeconds this is a blink, and a blink that fades
+		// out reads as a lighting change instead of an impact.
+		SarkoBody::SetPaintTint(*this, SarkoBody::TintForSide(SarkoBody::ESide::Enemy));
+		FlashEndSeconds = -1.f;
 	}
 }
 

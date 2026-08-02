@@ -117,6 +117,49 @@ namespace
 	 *  translucent tint alone disappears against pale ground, and a control the
 	 *  player cannot find is worse than one they do not like the look of. */
 	const FLinearColor ThumbButtonPlate(0.f, 0.f, 0.f, 0.45f);
+
+	/**
+	 * THE DAMAGE ARC (spec §4.1), in points on the same 844x390 canvas.
+	 *
+	 * 96 pt of radius puts the arc clear of the pawn's own silhouette (the
+	 * character reads about 40 pt tall from this camera) and well inside the safe
+	 * frame's short edge, so an arc pointing straight up is still on screen. 44
+	 * degrees of span is wide enough to read as "that way" at a glance and narrow
+	 * enough that two arcs 90 degrees apart are unmistakably two.
+	 */
+	constexpr float DamageArcRadiusPt = 96.f;
+	constexpr float DamageArcSpanDegrees = 44.f;
+	constexpr float DamageArcStrokePt = 5.f;
+	/** Segments across the span. Nine chords over 44 degrees is smooth at 3x. */
+	constexpr int32 DamageArcSegments = 9;
+	/** Arterial red, and nothing else on this HUD is this colour. */
+	const FLinearColor DamageArcColour(0.95f, 0.12f, 0.10f);
+
+	/** THE HIT MARKER (spec §4.2): four ticks around the victim, leaving a gap in
+	 *  the middle so the body itself is never covered by its own confirmation. */
+	constexpr float HitMarkerInnerPt = 7.f;
+	constexpr float HitMarkerOuterPt = 16.f;
+	constexpr float HitMarkerStrokePt = 2.5f;
+	const FLinearColor HitMarkerColour(1.f, 1.f, 1.f, 0.92f);
+
+	/**
+	 * THE LOW-HEALTH VIGNETTE (spec §4.4).
+	 *
+	 * Six bands of 9 pt each pulled in from every edge of the safe frame: 54 pt of
+	 * a 390 pt short edge, so the middle two thirds of the screen — where the
+	 * player and everything they are shooting at live — is never touched. The
+	 * alpha ramps to zero inward, which is what makes six flat rectangles read as
+	 * a gradient.
+	 *
+	 * MaxAlpha is deliberately low. This is drawn UNDER every readout (see
+	 * DrawHUD's call order), but the health bar and the two survival meters sit
+	 * 16 pt from the top-right corner, inside the band region — so the vignette
+	 * has to be a tint the meters win against, not a wash they have to fight.
+	 */
+	constexpr int32 VignetteBands = 6;
+	constexpr float VignetteBandPt = 9.f;
+	constexpr float VignetteMaxAlpha = 0.42f;
+	const FLinearColor VignetteColour(0.55f, 0.03f, 0.02f);
 }
 
 void ASarkoHUD::DrawHUD()
@@ -177,6 +220,16 @@ void ASarkoHUD::DrawHUD()
 
 		MeasuredAtScale = NewScale;
 	}
+
+	// COMBAT FEEDBACK FIRST, and the order is the answer to spec §4.4's
+	// requirement that the vignette must not fight the survival meters: it is
+	// painted before every readout on this HUD, so the health bar, the two meters
+	// and the clock are all drawn OVER it rather than under it. The arcs and the
+	// marker follow for the same reason — they are world-anchored and can land
+	// anywhere, including under the top row.
+	DrawLowHealthVignette();
+	DrawDamageArcs();
+	DrawHitMarker();
 
 	DrawStick(PC->GetMoveStick(), FLinearColor(1.f, 1.f, 1.f, 0.35f));
 	DrawStick(PC->GetAimStick(), FLinearColor(1.f, 0.85f, 0.2f, 0.45f));
@@ -282,6 +335,199 @@ void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, const FLinearColor& Col
 	}
 	const float Dot = Px(StickDotPt);
 	DrawRect(Colour, Stick.Current.X - Dot * 0.5f, Stick.Current.Y - Dot * 0.5f, Dot, Dot);
+}
+
+bool ASarkoHUD::ProjectToScreen(const FVector& WorldLocation, FVector2D& OutScreen) const
+{
+	// AHUD::Project's Z is the distance in front of the camera; a non-positive
+	// one is a point behind it, and its X/Y are then mirrored garbage. The
+	// world-locked top-down camera makes that nearly unreachable, but "nearly"
+	// is not a reason to draw a marker at a coordinate that means nothing.
+	const FVector Projected = Project(WorldLocation);
+	if (Projected.Z <= 0.f)
+	{
+		return false;
+	}
+	OutScreen = FVector2D(Projected.X, Projected.Y);
+	return true;
+}
+
+void ASarkoHUD::DrawDamageArcs()
+{
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	const USarkoHealthComponent* Health = Pawn ? Pawn->HealthComponent : nullptr;
+	if (!Health)
+	{
+		return;
+	}
+
+	const UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.f;
+
+	// A new hit is a new arc. Polled once per frame — one byte compared, and the
+	// push happens a few times a fight rather than a few times a second.
+	const int32 Serial = static_cast<int32>(Health->GetDamageSerial());
+	if (Serial != SeenDamageSerial)
+	{
+		const bool bFirstObservation = (SeenDamageSerial == INDEX_NONE);
+		SeenDamageSerial = Serial;
+		if (!bFirstObservation)
+		{
+			DamageArcs.Add(Health->GetLastDamageYawDegrees(), Now);
+		}
+	}
+
+	const float Lifetime = GetDefault<USarkoRaidSettings>()->DamageArcSeconds;
+	const float Radius = Px(DamageArcRadiusPt);
+	const float Stroke = Px(DamageArcStrokePt);
+
+	// The pawn's own screen position, not the safe frame's centre: the top-down
+	// camera trails the pawn, so the two are not the same point and an arc drawn
+	// around the wrong one points at the wrong place by exactly that offset.
+	FVector2D Centre;
+	if (!ProjectToScreen(Pawn->GetActorLocation(), Centre))
+	{
+		return;
+	}
+
+	// WORLD YAW TO SCREEN. The camera is world-locked but its yaw is not
+	// guaranteed to be zero, so the mapping is measured rather than assumed: one
+	// extra projection of a point 500 uu along the reported direction gives the
+	// screen-space vector that direction corresponds to, exactly. Two projections
+	// per arc, at most four arcs, allocating nothing.
+	for (int32 Index = 0; Index < DamageArcs.Num(); ++Index)
+	{
+		const SarkoFeedback::FDamageArc& Arc = DamageArcs.Get(Index);
+		const float Alpha = SarkoFeedback::FadeAlpha(Now - Arc.StartSeconds, Lifetime);
+		if (Alpha <= 0.f)
+		{
+			continue;
+		}
+
+		const FVector WorldDirection = FRotator(0.f, Arc.YawDegrees, 0.f).Vector();
+		FVector2D Probe;
+		if (!ProjectToScreen(Pawn->GetActorLocation() + WorldDirection * 500.f, Probe))
+		{
+			continue;
+		}
+		const FVector2D ScreenDirection = (Probe - Centre).GetSafeNormal();
+		if (ScreenDirection.IsNearlyZero())
+		{
+			continue;
+		}
+
+		// Atan2 with Y first and NEGATED, because screen Y grows downward while
+		// the angle sweep below is drawn with a +Y-down sin: without the flip the
+		// arc mirrors about the horizontal and points at the reflection of the
+		// shooter, which is right half the time and therefore the worst kind of
+		// wrong.
+		const float CentreRadians = FMath::Atan2(ScreenDirection.Y, ScreenDirection.X);
+		const float Span = FMath::DegreesToRadians(DamageArcSpanDegrees);
+
+		FLinearColor Colour = DamageArcColour;
+		Colour.A = Alpha;
+
+		for (int32 Segment = 0; Segment < DamageArcSegments; ++Segment)
+		{
+			const float A0 = SarkoFeedback::ArcSegmentAngle(CentreRadians, Span, Segment, DamageArcSegments);
+			const float A1 = SarkoFeedback::ArcSegmentAngle(CentreRadians, Span, Segment + 1, DamageArcSegments);
+			DrawLine(
+				Centre.X + FMath::Cos(A0) * Radius, Centre.Y + FMath::Sin(A0) * Radius,
+				Centre.X + FMath::Cos(A1) * Radius, Centre.Y + FMath::Sin(A1) * Radius,
+				Colour, Stroke);
+		}
+	}
+}
+
+void ASarkoHUD::DrawHitMarker()
+{
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	if (!Pawn)
+	{
+		return;
+	}
+
+	FVector VictimLocation;
+	float Age = 0.f;
+	if (!Pawn->GetHitMarker(VictimLocation, Age))
+	{
+		return;
+	}
+
+	FVector2D Screen;
+	if (!ProjectToScreen(VictimLocation, Screen))
+	{
+		return;
+	}
+
+	// Four ticks with a hole in the middle, drawn AT THE VICTIM. A cross at screen
+	// centre would be the convention from games with a crosshair; this one has an
+	// aim cone pointing somewhere else entirely, and a marker in the middle of the
+	// screen would be confirming a hit next to a piece of geometry the player was
+	// not shooting at.
+	const float Inner = Px(HitMarkerInnerPt);
+	const float Outer = Px(HitMarkerOuterPt);
+	const float Stroke = Px(HitMarkerStrokePt);
+
+	// Full opacity for the whole 0.15 s rather than a fade: this is a yes/no
+	// answer, and a fading yes reads as a maybe.
+	const FLinearColor Colour = HitMarkerColour;
+
+	DrawLine(Screen.X - Outer, Screen.Y, Screen.X - Inner, Screen.Y, Colour, Stroke);
+	DrawLine(Screen.X + Inner, Screen.Y, Screen.X + Outer, Screen.Y, Colour, Stroke);
+	DrawLine(Screen.X, Screen.Y - Outer, Screen.X, Screen.Y - Inner, Colour, Stroke);
+	DrawLine(Screen.X, Screen.Y + Inner, Screen.X, Screen.Y + Outer, Colour, Stroke);
+}
+
+void ASarkoHUD::DrawLowHealthVignette()
+{
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	const USarkoHealthComponent* Health = Pawn ? Pawn->HealthComponent : nullptr;
+	if (!Health)
+	{
+		return;
+	}
+
+	const float Intensity = SarkoFeedback::VignetteIntensity(
+		Health->GetHealth(), GetDefault<USarkoRaidSettings>()->LowHealthVignetteHealth);
+	if (Intensity <= 0.f)
+	{
+		return;
+	}
+
+	// The reload button's curve, so this HUD has ONE animation vocabulary for
+	// "this needs attention" — the survival meters already borrow it. Bounded away
+	// from zero for the same reason they bound theirs: an effect that vanishes on
+	// the trough reads as a rendering fault rather than as urgency.
+	const float Pulse = FMath::Max(0.45f, SarkoUI::ReloadPulseAlpha(GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f));
+	const float PeakAlpha = VignetteMaxAlpha * Intensity * Pulse;
+
+	const float Band = Px(VignetteBandPt);
+	const FVector2D Size = Safe.GetSize();
+
+	// Bands from the edge inward, alpha ramping to nothing. Twenty-four DrawRects
+	// on the frames the player is nearly dead, and none on any other frame — and
+	// they are computed rather than cached because the arithmetic is four
+	// multiplies and a cache keyed on the safe frame would be more state than the
+	// thing it saves.
+	for (int32 Index = 0; Index < VignetteBands; ++Index)
+	{
+		FLinearColor Colour = VignetteColour;
+		Colour.A = PeakAlpha * (1.f - static_cast<float>(Index) / static_cast<float>(VignetteBands));
+		const float Offset = Band * static_cast<float>(Index);
+
+		// Top and bottom span the full width; the sides are inset by the bands
+		// already drawn above and below them, so the corners are not painted twice
+		// (which would stack alpha into a dark blob exactly where the eye is least
+		// able to tell a vignette from a bug).
+		DrawRect(Colour, Safe.Min.X, Safe.Min.Y + Offset, Size.X, Band);
+		DrawRect(Colour, Safe.Min.X, Safe.Max.Y - Offset - Band, Size.X, Band);
+
+		const float SideY = Safe.Min.Y + Band * static_cast<float>(VignetteBands);
+		const float SideHeight = FMath::Max(0.f, Size.Y - Band * static_cast<float>(VignetteBands) * 2.f);
+		DrawRect(Colour, Safe.Min.X + Offset, SideY, Band, SideHeight);
+		DrawRect(Colour, Safe.Max.X - Offset - Band, SideY, Band, SideHeight);
+	}
 }
 
 void ASarkoHUD::DrawAimCone()

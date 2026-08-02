@@ -6,6 +6,7 @@
 #include "EngineUtils.h"
 #include "Loot/SarkoBackpack.h"
 #include "Net/UnrealNetwork.h"
+#include "Pawn/SarkoCharacter.h"
 #include "Pawn/SarkoHealthComponent.h"
 #include "Pawn/SarkoSurvival.h"
 #include "TimerManager.h"
@@ -258,6 +259,19 @@ void USarkoWeaponComponent::ServerFire(FVector Origin, FVector Direction)
 		if (USarkoHealthComponent* Health = HitActor->FindComponentByClass<USarkoHealthComponent>())
 		{
 			Health->ApplyDamage(DamageOverride > 0.f ? DamageOverride : Settings.WeaponDamage, Owner);
+
+			// THE HIT MARKER (spec §4.2), and this is the only place it can
+			// honestly be raised: the server traced, the server found the actor,
+			// the server applied the damage. A client that drew a marker off its
+			// own prediction would claim hits that cover rejected.
+			//
+			// Cast rather than a shared interface because there is exactly one
+			// pawn class with a HUD to draw one on — a bot landing a shot has
+			// nobody to tell.
+			if (ASarkoCharacter* ShootingPlayer = Cast<ASarkoCharacter>(Owner))
+			{
+				ShootingPlayer->NotifyHitConfirmed(HitActor->GetActorLocation());
+			}
 
 			// The SHOOTER is in combat too, and that is the half a "since I was
 			// last hit" timer would miss: a player winning a firefight would

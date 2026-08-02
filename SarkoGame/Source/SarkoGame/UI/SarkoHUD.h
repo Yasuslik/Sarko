@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Fonts/SlateFontInfo.h"
 #include "GameFramework/HUD.h"
+#include "UI/SarkoCombatFeedback.h"
 
 #include "SarkoHUD.generated.h"
 
@@ -96,6 +97,51 @@ private:
 	void DrawAimCone();
 	void DrawTopBar();
 	void DrawHealth();
+
+	/**
+	 * THE DIRECTIONAL DAMAGE ARC (spec §4.1). A short arc on a circle around the
+	 * pawn, pointing at whoever hit it, fading over DamageArcSeconds.
+	 *
+	 * The most valuable of the four feedback items because the camera is
+	 * world-locked: there is no way to turn and look, so "where did that come
+	 * from" is a question the player literally cannot answer otherwise. The world
+	 * direction arrives on the health component in one byte
+	 * (USarkoHealthComponent::GetLastDamageYawDegrees), riding along with the
+	 * damage rather than on a channel of its own.
+	 *
+	 * Overlapping arcs are allowed and bounded (SarkoFeedback::FDamageArcRing):
+	 * being shot from two sides at once is exactly when this matters most, and a
+	 * TArray on a draw path would allocate mid-firefight.
+	 */
+	void DrawDamageArcs();
+
+	/**
+	 * THE HIT MARKER (spec §4.2). A four-tick cross over the VICTIM, for
+	 * HitMarkerSeconds.
+	 *
+	 * At the victim rather than at screen centre, because there is no crosshair
+	 * on a twin-stick touch game and screen centre is not where the player is
+	 * looking — the aim cone points somewhere else entirely. The server confirms
+	 * the hit (it is the side that traces and applies the damage) and notifies
+	 * this client alone.
+	 */
+	void DrawHitMarker();
+
+	/**
+	 * THE LOW-HEALTH VIGNETTE (spec §4.4). Alpha bands pulled in from the safe
+	 * frame's edges below LowHealthVignetteHealth.
+	 *
+	 * DrawRect bands rather than a material, because a post-process material is a
+	 * binary asset and this project authors none. Drawn EARLY in DrawHUD, before
+	 * every readout, which is the whole answer to "it must not fight the survival
+	 * meters' legibility": the meters are painted over it, not under it.
+	 */
+	void DrawLowHealthVignette();
+
+	/** Screen position of a world point, or false when it is behind the camera —
+	 *  which for a world-locked top-down camera means off the map, but the arcs
+	 *  and the marker both project and neither may draw a garbage pixel. */
+	bool ProjectToScreen(const FVector& WorldLocation, FVector2D& OutScreen) const;
 
 	/**
 	 * Hunger and thirst: two 150 x 5 pt bars stacked under the health bar.
@@ -255,4 +301,21 @@ private:
 	float CachedPromptWidth = 0.f;
 	float CachedPromptHeight = 0.f;
 	bool bPromptCached = false;
+
+	/**
+	 * The live damage arcs, fixed capacity, no allocation. See DrawDamageArcs.
+	 */
+	SarkoFeedback::FDamageArcRing DamageArcs;
+
+	/**
+	 * The damage serial this HUD has already turned into an arc.
+	 *
+	 * INDEX_NONE until the first draw, so a HUD that comes up on a pawn which has
+	 * already been hit — a client joining, or a possession change — records what
+	 * it finds rather than drawing an arc for a bullet that landed before it was
+	 * watching. Polled rather than delegated: see USarkoHealthComponent::
+	 * GetDamageSerial for why a counter is the one signal that behaves the same on
+	 * a client and on a listen server.
+	 */
+	int32 SeenDamageSerial = INDEX_NONE;
 };

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Math/Color.h"
 
 class ACharacter;
 
@@ -44,4 +45,27 @@ namespace SarkoBody
 
 	/** Skeletal mesh asset path for a side. Exposed so a headless test can prove it resolves. */
 	const TCHAR* MeshPathForSide(ESide Side);
+
+	/** The paint colour a side wears when nothing is happening to it. */
+	FLinearColor TintForSide(ESide Side);
+
+	/** The hit flash's colour (spec §4.3). White, because the bodies are red and
+	 *  blue and a flash has to be legible against both from directly above. */
+	FLinearColor FlashTint();
+
+	/**
+	 * Repaints one character's body, through the dynamic material instances
+	 * AttachCharacterMesh already created for it.
+	 *
+	 * PER INSTANCE, and that is the thing this function exists to guarantee. The
+	 * enemies share an archetype and therefore a material asset, so a naive tint
+	 * would be set on the shared instance and flash every scav on the map at once
+	 * — one bot takes a bullet, four bodies blink. AttachCharacterMesh calls
+	 * CreateAndSetMaterialInstanceDynamicFromMaterial per slot on the pawn's OWN
+	 * mesh component, so each pawn already owns its own MIDs; this reaches them
+	 * back through GetMaterial and never touches anything on disk.
+	 *
+	 * Called twice per hit (white, then back), not per frame.
+	 */
+	void SetPaintTint(ACharacter& Character, const FLinearColor& Tint);
 }

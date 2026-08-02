@@ -45,6 +45,43 @@ const TCHAR* SarkoBody::MeshPathForSide(ESide Side)
 	return Side == ESide::Enemy ? EnemyMeshPath : PlayerMeshPath;
 }
 
+FLinearColor SarkoBody::TintForSide(ESide Side)
+{
+	return Side == ESide::Enemy ? EnemyTint : PlayerTint;
+}
+
+FLinearColor SarkoBody::FlashTint()
+{
+	// Not FLinearColor::White but past it: the Paint Tint parameter multiplies
+	// the mannequin's own texture, so plain white leaves a dark body dark. Above
+	// one it blows the albedo out, which from a top-down camera at 1400 uu is the
+	// difference between "did something happen" and an unmistakable blink.
+	return FLinearColor(3.f, 3.f, 3.f);
+}
+
+void SarkoBody::SetPaintTint(ACharacter& Character, const FLinearColor& Tint)
+{
+	USkeletalMeshComponent* MeshComponent = Character.GetMesh();
+	if (!MeshComponent)
+	{
+		return;
+	}
+
+	const int32 MaterialCount = MeshComponent->GetNumMaterials();
+	for (int32 Slot = 0; Slot < MaterialCount; ++Slot)
+	{
+		// The dynamic instance AttachCharacterMesh already made for THIS pawn's
+		// mesh component. A failed cast means the slot was never given one (a
+		// material that would not instance), and skipping it is right: creating
+		// one here would be creating it on a draw-adjacent path, once per hit,
+		// for a body that has already shown it cannot be tinted.
+		if (UMaterialInstanceDynamic* Dynamic = Cast<UMaterialInstanceDynamic>(MeshComponent->GetMaterial(Slot)))
+		{
+			Dynamic->SetVectorParameterValue(PaintTintParameter, Tint);
+		}
+	}
+}
+
 void SarkoBody::AttachCharacterMesh(ACharacter& Character, ESide Side)
 {
 	USkeletalMeshComponent* MeshComponent = Character.GetMesh();
@@ -79,8 +116,11 @@ void SarkoBody::AttachCharacterMesh(ACharacter& Character, ESide Side)
 	MeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
 	// A dynamic instance per material slot, so the tint is per-pawn and the
-	// shared material instance on disk is never touched.
-	const FLinearColor Tint = Side == ESide::Enemy ? EnemyTint : PlayerTint;
+	// shared material instance on disk is never touched. This is also what makes
+	// the hit flash per-instance (SetPaintTint above): every scav on the map
+	// shares one archetype and one material asset, so without a MID of its own a
+	// flash on one bot would blink all four.
+	const FLinearColor Tint = TintForSide(Side);
 	const int32 MaterialCount = MeshComponent->GetNumMaterials();
 	for (int32 Slot = 0; Slot < MaterialCount; ++Slot)
 	{

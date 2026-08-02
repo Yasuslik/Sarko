@@ -4,6 +4,7 @@
 #include "Engine/World.h"
 #include "Net/UnrealNetwork.h"
 #include "Pawn/SarkoSurvival.h"
+#include "UI/SarkoCombatFeedback.h"
 
 bool SarkoCombat::IsFoe(ESarkoTeam OwnerTeam, ESarkoTeam CandidateTeam)
 {
@@ -22,6 +23,18 @@ void USarkoHealthComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(USarkoHealthComponent, Health);
 	DOREPLIFETIME(USarkoHealthComponent, MaxHealth);
 	DOREPLIFETIME(USarkoHealthComponent, bDead);
+	// "That pawn was hit" — every machine, because the white flash happens on the
+	// machine that is looking at the body.
+	DOREPLIFETIME(USarkoHealthComponent, DamageSerial);
+	// "…and it came from over there" — the victim only. The camera is world-locked
+	// with no cursor, so this is information the player cannot otherwise get, and
+	// therefore information nobody else may be handed for free.
+	DOREPLIFETIME_CONDITION(USarkoHealthComponent, LastDamageYawByte, COND_OwnerOnly);
+}
+
+float USarkoHealthComponent::GetLastDamageYawDegrees() const
+{
+	return SarkoFeedback::ByteToYaw(LastDamageYawByte);
 }
 
 void USarkoHealthComponent::InitialiseMaxHealth(float NewMaxHealth)
@@ -87,6 +100,32 @@ void USarkoHealthComponent::ApplyDamage(float Amount, AActor* DamageInstigator)
 	}
 
 	Health = FMath::Max(0.f, Health - Amount);
+
+	// THE DAMAGE DIRECTION (spec §4.1), riding along with the health above rather
+	// than on a channel of its own. The server is the only side that knows the
+	// instigator, and this is the only moment it knows it.
+	//
+	// From the VICTIM toward the SHOOTER: the HUD draws an arc pointing at where
+	// the shot came from, which under a world-locked camera with no cursor is
+	// information the player has no other way to obtain. A hit with no instigator
+	// (a fall, a future hazard) leaves the previous direction alone and only bumps
+	// the serial — a stale arrow is worse than no arrow, and the serial still
+	// drives the flash and the flinch.
+	if (DamageInstigator)
+	{
+		if (const AActor* Owner = GetOwner())
+		{
+			const FVector ToShooter = DamageInstigator->GetActorLocation() - Owner->GetActorLocation();
+			if (!ToShooter.IsNearlyZero())
+			{
+				LastDamageYawByte = SarkoFeedback::YawToByte(ToShooter.Rotation().Yaw);
+			}
+		}
+	}
+	// Wraps at 256 by design: consumers compare it with the value they last saw,
+	// so all that is ever asked of it is that it CHANGES. Two hundred and fifty-six
+	// hits inside one frame is not a case.
+	++DamageSerial;
 
 	// Regeneration is gated on this (SarkoSurvival::RegenPerSecond): a pawn that
 	// was shot a moment ago is in combat, whatever else is true. Set before the

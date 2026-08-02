@@ -84,6 +84,25 @@ public:
 	/** Muzzle position for traces and effects. */
 	FVector GetMuzzleLocation() const;
 
+	/**
+	 * Server only: a shot from this pawn connected, over there (spec §4.2).
+	 *
+	 * Called by USarkoWeaponComponent at the one moment the server knows a hit
+	 * landed — it is the side that traces and the side that applies the damage, so
+	 * a client-side "I think I hit them" would be a guess, and a wrong hit marker
+	 * is worse than none. Sent OWNER-ONLY: whether a shot connected is private to
+	 * the shooter, and broadcasting it would tell every other client that somebody
+	 * is being hit at a position they cannot see.
+	 */
+	void NotifyHitConfirmed(const FVector& VictimLocation);
+
+	/**
+	 * The last confirmed hit's world position and the time it landed, for the HUD.
+	 * False once the marker has expired, so the caller never has to know its
+	 * lifetime — HitMarkerSeconds lives in the settings and is applied here.
+	 */
+	bool GetHitMarker(FVector& OutVictimLocation, float& OutAgeSeconds) const;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	TObjectPtr<USarkoWeaponComponent> WeaponComponent;
 
@@ -248,6 +267,23 @@ private:
 	void ServerRequestReload();
 
 	/**
+	 * The hit marker, to exactly one client (spec §4.2).
+	 *
+	 * Client and not Multicast because landing a shot is the shooter's business:
+	 * a multicast would hand every other machine the position of a pawn taking
+	 * damage somewhere off their screen, which is the same leak the damage
+	 * direction's COND_OwnerOnly exists to close.
+	 *
+	 * Unreliable: it is a 0.15 s cosmetic confirmation fired several times a
+	 * fight, and a dropped one costs nothing — where a reliable one would put
+	 * cosmetics on the same queue as the reload the player is waiting for.
+	 * FVector_NetQuantize because a marker is drawn at a pawn-sized target and
+	 * does not need centimetres.
+	 */
+	UFUNCTION(Client, Unreliable)
+	void ClientHitConfirmed(FVector_NetQuantize VictimLocation);
+
+	/**
 	 * Server RPC. Reliable: a dropped begin would leave a player holding the
 	 * button with nothing happening, which reads as a broken container.
 	 *
@@ -377,6 +413,11 @@ private:
 	/** World time of the last movement noise report. Server-side; see
 	 *  ReportMovementNoise for why it is throttled at all. */
 	float LastNoiseReportSeconds = -1000.f;
+
+	/** The hit marker's own state, on the shooting client only. Purely cosmetic:
+	 *  the server decided the hit before this was ever written. */
+	FVector HitMarkerLocation = FVector::ZeroVector;
+	float HitMarkerSeconds = -1000.f;
 
 	/** Server-side channel state. Not replicated: the HUD's bar is local and cosmetic. */
 	int32 LootChannelIndex = INDEX_NONE;

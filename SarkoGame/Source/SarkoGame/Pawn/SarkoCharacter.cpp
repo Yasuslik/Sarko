@@ -938,6 +938,42 @@ void ASarkoCharacter::ServerRequestFire_Implementation(FVector Direction)
 	WeaponComponent->ServerFire(GetMuzzleLocation(), Direction);
 }
 
+void ASarkoCharacter::NotifyHitConfirmed(const FVector& VictimLocation)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	// One RPC per connecting shot, which is a few times a fight. On a listen
+	// server or a standalone raid the owning connection is this machine, so the
+	// implementation below simply runs here — which is what makes the marker
+	// photographable from a headless -game run at all.
+	ClientHitConfirmed(VictimLocation);
+}
+
+void ASarkoCharacter::ClientHitConfirmed_Implementation(FVector_NetQuantize VictimLocation)
+{
+	HitMarkerLocation = VictimLocation;
+	HitMarkerSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+}
+
+bool ASarkoCharacter::GetHitMarker(FVector& OutVictimLocation, float& OutAgeSeconds) const
+{
+	const UWorld* World = GetWorld();
+	if (!World || HitMarkerSeconds < 0.f)
+	{
+		return false;
+	}
+	const float Age = World->GetTimeSeconds() - HitMarkerSeconds;
+	if (Age < 0.f || Age > GetDefault<USarkoRaidSettings>()->HitMarkerSeconds)
+	{
+		return false;
+	}
+	OutVictimLocation = HitMarkerLocation;
+	OutAgeSeconds = Age;
+	return true;
+}
+
 void ASarkoCharacter::ReportMovementNoise(float DeltaSeconds)
 {
 	// SERVER ONLY, and from the server's own copy of the velocity (spec §7). The

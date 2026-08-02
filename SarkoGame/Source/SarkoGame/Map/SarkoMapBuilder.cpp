@@ -1,6 +1,7 @@
 #include "Map/SarkoMapBuilder.h"
 
 #include "Components/DirectionalLightComponent.h"
+#include "Core/SarkoRaidSettings.h"
 #include "Components/LightComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -431,7 +432,15 @@ void SarkoMap::SpawnExtractionZones(UWorld& World, const FSarkoMapDefinition& De
 			UE_LOG(LogTemp, Error, TEXT("SarkoMap: failed to spawn extraction zone %d"), Index);
 			continue;
 		}
-		Zone->SetupFromSpot(Index, Spot.Name, Spot.RadiusUU);
+		// OpensAfterSeconds and the raid's length both travel with the zone now
+		// (spec §4.5): a pad that says ЗАЧИНЕНО on the HUD while drawing
+		// extraction green on the ground is two answers to one question. The
+		// duration is the map's own, with the settings fallback the game mode and
+		// the HUD both use, so all three agree about what "four minutes in" means.
+		const float RaidDuration = Definition.RaidDurationSeconds > 0.f
+			? Definition.RaidDurationSeconds
+			: GetDefault<USarkoRaidSettings>()->RaidDurationSeconds;
+		Zone->SetupFromSpot(Index, Spot.Name, Spot.RadiusUU, Spot.OpensAfterSeconds, RaidDuration);
 		Zone->FinishSpawning(SpawnTransform);
 	}
 

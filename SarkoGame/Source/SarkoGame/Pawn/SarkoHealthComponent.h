@@ -92,6 +92,35 @@ public:
 
 	FSarkoDiedSignature OnDied;
 
+	/**
+	 * How many hits this pawn has taken, wrapping at 256.
+	 *
+	 * A COUNTER and not a bool, because what every consumer actually asks is "did
+	 * a new hit land since I last looked" — the HUD's damage arcs and the enemy
+	 * body's white flash both poll it and compare. Polling rather than a delegate
+	 * on purpose: a client learns about damage through replication and a listen
+	 * server learns about it by being the one applying it, and a counter is the
+	 * one signal that behaves identically on both. It is also the only shape that
+	 * survives two hits in one frame without pretending they were one.
+	 *
+	 * Replicated to EVERYONE: "that pawn was hit" is already visible in the health
+	 * it replicates alongside, and the enemy's flash has to happen on the machine
+	 * looking at it.
+	 */
+	uint8 GetDamageSerial() const { return DamageSerial; }
+
+	/**
+	 * Which way the last hit came FROM, in world degrees, decoded from the byte
+	 * on the wire (SarkoFeedback::ByteToYaw).
+	 *
+	 * Owner-only, unlike the serial above: this is the one piece of combat
+	 * information the victim has and nobody else should. The camera is
+	 * world-locked and has no cursor, so "where was I shot from" is a fact the
+	 * player cannot otherwise obtain — and by the same token it is a fact an
+	 * opponent must not be handed for free.
+	 */
+	float GetLastDamageYawDegrees() const;
+
 protected:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Health")
 	float Health = 100.f;
@@ -101,6 +130,21 @@ protected:
 
 	UPROPERTY(Replicated)
 	bool bDead = false;
+
+	/** See GetDamageSerial. Replicated to everyone; the enemy flash needs it. */
+	UPROPERTY(Replicated)
+	uint8 DamageSerial = 0;
+
+	/**
+	 * The direction of the last hit, quantised to 1.4 degrees.
+	 *
+	 * ONE BYTE, riding along with the health this component already replicates on
+	 * exactly the events it describes — spec §4 is explicit that the damage
+	 * direction must not open a channel of its own. COND_OwnerOnly: see
+	 * GetLastDamageYawDegrees.
+	 */
+	UPROPERTY(Replicated)
+	uint8 LastDamageYawByte = 0;
 
 	/**
 	 * Not replicated: the server is the only side that ever collects
