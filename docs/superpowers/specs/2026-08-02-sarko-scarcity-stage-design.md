@@ -38,6 +38,17 @@ keeps looting under pressure without making the tutorial route tight. (One field
 5. **Encounter ② relocates into the freight cars** (trigger −14500,−13600; post −13000,−15200)
    — the second fight happens among cover, not across a 4800 uu open field.
 
+6. **The edge stops looking like the end of the data** (owner, 2026-08-02). A non-colliding
+   ground *skirt* extends ~4000 uu beyond the border on all sides (the camera sees ~1570 uu
+   laterally — double margin), carrying dense instanced `treeline` masses, the pylon line
+   continuing outward, and two or three darkening tone bands so the world fades into
+   wilderness instead of cutting to black. North (the ТЗ's world border) is thickest forest;
+   east/south skirt merely grounds the already-visible bridge and water tower so they stop
+   floating over void. And the safety net best practice demands: **KillZ recovery** — a pawn
+   that somehow leaves the world (physics, an unfound hole) teleports to the nearest valid
+   route point with a loud log line, losing a second, not the raid. The border is made
+   beautiful, but never trusted alone.
+
 ## 4. Feedback without sound (pure Canvas/C++)
 
 There is no hit feedback of any kind today. In fun-per-effort order:
