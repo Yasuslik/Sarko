@@ -1,10 +1,13 @@
 #include "Misc/AutomationTest.h"
 
 #include "Core/SarkoRaidSettings.h"
+#include "Engine/StaticMesh.h"
 #include "Map/SarkoMapBuilder.h"
+#include "Map/SarkoMapKinds.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "PhysicsEngine/BodySetup.h"
 #include "UObject/SoftObjectPath.h"
 
 #if WITH_AUTOMATION_TESTS
@@ -314,12 +317,13 @@ bool FSarkoEngineMeshPathsResolve::RunTest(const FString& Parameters)
 	// Every engine asset this project reaches by literal string, in one place.
 	// A moved or renamed engine asset produces a log line at runtime and nothing
 	// else — geometry simply does not appear, or keeps the grid material.
+	// Sphere and Cone are gone from this list because they are gone from the
+	// project: they were the rock, the bush and the two round canopies, and all
+	// four of those are imported meshes now. A path listed here that nothing
+	// reaches for is a claim about the engine rather than about this game.
 	const TArray<FString> Paths = {
 		TEXT("/Engine/BasicShapes/Cube.Cube"),
 		TEXT("/Engine/BasicShapes/Cylinder.Cylinder"),
-		TEXT("/Engine/BasicShapes/Sphere.Sphere"),
-		// The conifer canopy, and the only thing that uses it.
-		TEXT("/Engine/BasicShapes/Cone.Cone"),
 		TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"),
 		TEXT("/Engine/MapTemplates/Sky/DaylightAmbientCubemap.DaylightAmbientCubemap"),
 	};
@@ -327,6 +331,90 @@ bool FSarkoEngineMeshPathsResolve::RunTest(const FString& Parameters)
 	{
 		const FString Package = FSoftObjectPath(Path).GetLongPackageName();
 		TestTrue(FString::Printf(TEXT("'%s' exists"), *Path), FPackageName::DoesPackageExist(Package));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoThirdPartyMeshBoundsAreNormalised,
+	"Sarko.Config.ThirdPartyMeshBoundsAreNormalised",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * Every imported mesh is the same shape as the engine cube: bounds -50..50 uu
+ * on all three axes, centred on its own origin.
+ *
+ * This is the load-bearing assumption of the whole prop system and it lives
+ * outside the code — Scripts/prepare-assets.py stretches each mesh into that box
+ * in Blender, and nothing in C++ can tell whether it did. ASarkoPropField::AddPart
+ * scales an instance by `Extent / 50` on the strength of it, the box simple
+ * collision added at import is cut to those bounds, and every extent in the kind
+ * table (and every extent assertion in this suite) means "the prop's half-extent
+ * in world units" only because of it.
+ *
+ * If a re-import lost the normalisation, the failure would be silent and total:
+ * a mesh that arrived at its modelled 2.4 m would come out at a scale of
+ * Extent/50 anyway, so a tree 7 m tall would spawn 3 m tall, its collision box
+ * would no longer match the number the spawn-clearance test checked, and every
+ * test in the suite would still pass. Hence: assert the shape of the ASSET.
+ */
+bool FSarkoThirdPartyMeshBoundsAreNormalised::RunTest(const FString& Parameters)
+{
+	// Gathered from the kind table rather than listed, so a mesh added to a kind
+	// tomorrow is covered without anyone remembering this test exists.
+	TSet<FString> MeshPaths;
+	for (const FName& Kind : SarkoMap::AllPropKindNames())
+	{
+		FSarkoPropKind Resolved;
+		if (!SarkoMap::FindPropKind(Kind, Resolved))
+		{
+			continue;
+		}
+		for (const FSarkoPropPart& Part : Resolved.Parts)
+		{
+			const FString Path = Part.Mesh.ToString();
+			if (Path.StartsWith(TEXT("/Game/ThirdParty/")))
+			{
+				MeshPaths.Add(Path);
+			}
+		}
+	}
+	TestTrue(TEXT("the kind table actually uses imported meshes"), MeshPaths.Num() >= 8);
+
+	for (const FString& Path : MeshPaths)
+	{
+		UStaticMesh* Mesh = Cast<UStaticMesh>(FSoftObjectPath(Path).TryLoad());
+		if (!Mesh)
+		{
+			AddError(FString::Printf(TEXT("'%s' does not load — run Scripts/import-assets.sh"), *Path));
+			continue;
+		}
+
+		const FBoxSphereBounds Bounds = Mesh->GetBounds();
+		TestTrue(FString::Printf(TEXT("'%s' is 100 uu on every axis (%s)"), *Path, *Bounds.BoxExtent.ToString()),
+			Bounds.BoxExtent.Equals(FVector(50.f), 0.5f));
+		TestTrue(FString::Printf(TEXT("'%s' is centred on its origin (%s)"), *Path, *Bounds.Origin.ToString()),
+			Bounds.Origin.IsNearlyZero(0.5f));
+
+		// A HISM set to QueryAndPhysics with no simple collision does not stop a
+		// character capsule — sweeps use simple collision and complex collision
+		// only answers line traces. Every one of these meshes is something the
+		// player walks into or hides behind, so SOMETHING simple has to be there.
+		//
+		// Any element, not specifically a box: Interchange fits one convex hull
+		// per mesh on import, and a hull is both sufficient and better than the
+		// box this project first tried to add by hand — a box around a branching
+		// tree stops the player a metre out from the trunk. What matters is that
+		// the hull is inside the mesh's bounds, which the extent assertions above
+		// have just pinned, so a kind's Extent remains an upper bound on what the
+		// player can touch.
+		const UBodySetup* Body = Mesh->GetBodySetup();
+		const int32 SimpleElements = Body
+			? Body->AggGeom.BoxElems.Num() + Body->AggGeom.ConvexElems.Num()
+				+ Body->AggGeom.SphereElems.Num() + Body->AggGeom.SphylElems.Num()
+			: 0;
+		TestTrue(FString::Printf(TEXT("'%s' has simple collision (%d elements)"), *Path, SimpleElements),
+			SimpleElements >= 1);
 	}
 	return true;
 }

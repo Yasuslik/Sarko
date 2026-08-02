@@ -6,17 +6,45 @@ namespace
 {
 	const FString Cube = TEXT("/Engine/BasicShapes/Cube.Cube");
 	const FString Cylinder = TEXT("/Engine/BasicShapes/Cylinder.Cylinder");
-	const FString Sphere = TEXT("/Engine/BasicShapes/Sphere.Sphere");
+
 	/**
-	 * The fourth primitive, and it exists in this table for exactly one job: a
-	 * conifer canopy. From the game's camera (a 1400 uu boom at -70 degrees, so
-	 * 20 degrees off vertical) a sphere and a cone have the same circular
-	 * silhouette, and the 20 degrees is all the difference there is to work with
-	 * — which is precisely why it is worth having both. A stand of nothing but
-	 * spheres reads as a field of green bubbles; one cone in three gives the
-	 * skyline the notches that say "trees".
+	 * The imported meshes, all CC0, all from Quaternius — see
+	 * Content/ThirdParty/LICENSES.md for what was taken and what was rejected.
+	 *
+	 * EVERY ONE OF THESE IS NORMALISED TO THE SAME -50..50 uu BOX AS THE ENGINE
+	 * CUBE, by Scripts/prepare-assets.py. That is the whole reason a real mesh can
+	 * be dropped into this table without touching a line of ASarkoPropField:
+	 * `Extent / 50` is still the scale and an Extent is still exactly the prop's
+	 * half-extent in world units. What the player collides with is the convex
+	 * hull Interchange fits at import, which is CONTAINED BY that box rather than
+	 * equal to it — tighter, never larger, which is the right way round: an
+	 * extent is an upper bound on the prop, so the spawn-clearance and
+	 * wall-clearance assertions that reason in extents stay true.
+	 * Sarko.Config.ThirdPartyMeshBoundsAreNormalised asserts it rather
+	 * than trusting it, because a re-import that lost the normalisation would
+	 * change the size of every prop in the sector and break no compile.
+	 *
+	 * The price of the normalisation is that an Extent whose PROPORTIONS differ
+	 * from the mesh's own stretches it. So the extents below are authored in each
+	 * mesh's own proportions wherever the map allows: a single-box kind's
+	 * Extent.Z is pinned by the pos.z of every prop already placed with it, so
+	 * X and Y are derived from Z and the mesh's true dimensions, and only the two
+	 * fully-pinned kinds (car_wreck, water_tower) keep an extent that distorts —
+	 * by 17% and 8%, which is a slightly tall car and a slightly stretched tower
+	 * and neither is visible from 1400 uu up.
 	 */
-	const FString Cone = TEXT("/Engine/BasicShapes/Cone.Cone");
+	const FString MeshTree = TEXT("/Game/ThirdParty/UltimateNature/CommonTree_3.CommonTree_3");
+	const FString MeshTreeCanopy = TEXT("/Game/ThirdParty/UltimateNature/CommonTree_3_Canopy.CommonTree_3_Canopy");
+	const FString MeshTreeSmall = TEXT("/Game/ThirdParty/UltimateNature/CommonTree_4.CommonTree_4");
+	const FString MeshTreeSmallCanopy = TEXT("/Game/ThirdParty/UltimateNature/CommonTree_4_Canopy.CommonTree_4_Canopy");
+	const FString MeshPine = TEXT("/Game/ThirdParty/UltimateNature/PineTree_5.PineTree_5");
+	const FString MeshPineCanopy = TEXT("/Game/ThirdParty/UltimateNature/PineTree_5_Canopy.PineTree_5_Canopy");
+	const FString MeshTreeDead = TEXT("/Game/ThirdParty/UltimateNature/CommonTree_Dead_3.CommonTree_Dead_3");
+	const FString MeshRock = TEXT("/Game/ThirdParty/UltimateNature/Rock_6.Rock_6");
+	const FString MeshBush = TEXT("/Game/ThirdParty/UltimateNature/Bush_1_Canopy.Bush_1_Canopy");
+	const FString MeshLog = TEXT("/Game/ThirdParty/UltimateNature/WoodLog.WoodLog");
+	const FString MeshCar = TEXT("/Game/ThirdParty/Cars/NormalCar1.NormalCar1");
+	const FString MeshWaterTower = TEXT("/Game/ThirdParty/ZombieApocalypse/WaterTower.WaterTower");
 
 	/** One box, centred on the prop's origin. The shape of every legacy kind. */
 	FSarkoPropKind Box(const FString& Mesh, const FVector& Extent, bool bBlocks, ESarkoSurface Surface)
@@ -105,12 +133,24 @@ namespace
 	{
 		static const TMap<FName, FSarkoPropKind> Table = {
 			{ TEXT("wall"),        Box(Cube,     FVector(400.f, 60.f, 140.f),  true, ESarkoSurface::Structure) },
-			{ TEXT("car_wreck"),   Box(Cube,     FVector(230.f, 95.f, 75.f),   true, ESarkoSurface::Structure) },
+			// A real car body now, and the extent is untouched, so not one of the
+			// fifty-one wrecks moved. NormalCar1 is 4.22 x 1.81 x 1.18 m, and this
+			// extent is 4.60 x 1.90 x 1.50 — 4% narrower and 17% taller than the
+			// mesh's own proportions. That 17% is the one visible compromise in
+			// the table and it was taken deliberately: pos.z is 75 on every one of
+			// the fifty-one, so the alternative to a slightly tall car is moving
+			// all of them.
+			{ TEXT("car_wreck"),   Box(MeshCar,  FVector(230.f, 95.f, 75.f),   true, ESarkoSurface::Structure) },
 			{ TEXT("bus"),         Box(Cube,     FVector(600.f, 130.f, 160.f), true, ESarkoSurface::Structure) },
 			{ TEXT("house"),       Box(Cube,     FVector(500.f, 400.f, 300.f), true, ESarkoSurface::Structure) },
 			{ TEXT("fuel_pump"),   Box(Cube,     FVector(60.f, 40.f, 110.f),   true, ESarkoSurface::Structure) },
 			{ TEXT("freight_car"), Box(Cube,     FVector(700.f, 150.f, 200.f), true, ESarkoSurface::Structure) },
-			{ TEXT("water_tower"), Box(Cylinder, FVector(220.f, 220.f, 700.f), true, ESarkoSurface::Structure) },
+			// The sector's one landmark that the brief names by itself, and it was
+			// a grey cylinder. The mesh is a legged tower with a tank on top; the
+			// extent is untouched (the tower is 5.4 x 5.3 x 9.4 m and this is
+			// 4.4 x 4.4 x 14.0, so it is stretched 8% tall against its width) and
+			// the single placed instance did not move.
+			{ TEXT("water_tower"), Box(MeshWaterTower, FVector(220.f, 220.f, 700.f), true, ESarkoSurface::Structure) },
 			{ TEXT("sandbag"),     Box(Cube,     FVector(180.f, 70.f, 55.f),   true, ESarkoSurface::Structure) },
 			{ TEXT("crate"),       Box(Cube,     FVector(70.f, 70.f, 70.f),    true, ESarkoSurface::Structure) },
 			{ TEXT("pipe"),        Box(Cylinder, FVector(90.f, 90.f, 600.f),   true, ESarkoSurface::Structure) },
@@ -125,20 +165,33 @@ namespace
 			// small ones — every entry below is one actor except the three
 			// composites, and the north needs ~90 of them in total.
 
-			// A boulder, 210 x 180 x 130 uu. Sphere rather than cube so the
-			// silhouette is not a fourth kind of box. 130 uu is 0.74x the pawn —
-			// chest-high: cover you shoot over standing, and the tallest thing in
-			// the shoot-over set except the wreck.
-			{ TEXT("rock"),             Box(Sphere,   FVector(105.f, 90.f, 65.f),   true,  ESarkoSurface::Structure) },
-			// The one thing the player walks through, 270 x 260 x 90 uu. Wide and
-			// LOW on purpose: at 90 uu (0.51x the pawn, thigh-high) it is visibly
-			// shorter than the 110 uu floor of real cover, so nobody crouches
-			// behind it and discovers by walking through that it was never there.
-			{ TEXT("bush"),             Box(Sphere,   FVector(135.f, 130.f, 45.f),  false, ESarkoSurface::Vegetation) },
-			// A fallen log, 660 uu long and 110 uu thick — 0.63x the pawn,
-			// waist-high cover. A box, not a cylinder: FSarkoPropPart has no roll,
-			// so a cylinder would stand upright like a stump.
-			{ TEXT("log"),              Box(Cube,     FVector(330.f, 55.f, 55.f),   true,  ESarkoSurface::Timber) },
+			// A boulder, 210 x 168 x 130 uu. Was a sphere; the mesh's own
+			// proportions are 1.14 x 0.91 x 0.71 m, which at the pinned 65 uu
+			// half-height gives 105 x 84 — six units off the sphere's 105 x 90, so
+			// the footprint barely moved and the silhouette stopped being a ball.
+			// 130 uu is still 0.74x the pawn — chest-high: cover you shoot over
+			// standing, and the tallest thing in the shoot-over set except the wreck.
+			{ TEXT("rock"),             Box(MeshRock, FVector(105.f, 84.f, 65.f),   true,  ESarkoSurface::Structure) },
+			// The one thing the player walks through, and it SHRANK: 122 x 96 x 90
+			// uu against the sphere's 270 x 260 x 90. The bush mesh is 1.69 x 1.33
+			// x 1.24 m, a shrub rather than a thicket, and at the pinned 45 uu
+			// half-height its own proportions come out this small. Taking it is the
+			// honest option — the alternative is a 2.7 m bush, which is what a
+			// sphere stretched to the old extent would now visibly be.
+			// Still LOW on purpose: at 90 uu (0.51x the pawn, thigh-high) it is
+			// visibly shorter than the 110 uu floor of real cover, so nobody
+			// crouches behind it and discovers by walking through that it was
+			// never there. The mesh is the foliage half of Bush_1 — the pack ships
+			// no woody part for it, which is why this kind is a canopy mesh used
+			// as a ground prop rather than a split like the trees.
+			{ TEXT("bush"),             Box(MeshBush, FVector(61.f, 48.f, 45.f),    false, ESarkoSurface::Vegetation) },
+			// A fallen log, now 392 uu long against the box's 660 and 110 uu thick
+			// — 0.63x the pawn, waist-high cover, unchanged. The mesh is 2.67 m
+			// long; at the pinned 55 uu half-height its own proportions give 196,
+			// and stretching a 2.7 m log to 6.6 m would make the bark a smear.
+			// Scripts/prepare-assets.py turns it so its length is X, which is what
+			// the fourteen authored yaws were chosen against.
+			{ TEXT("log"),              Box(MeshLog,  FVector(196.f, 47.f, 55.f),   true,  ESarkoSurface::Timber) },
 			// Fence: 800 uu long, 24 uu thin, 184 uu tall — 1.05x the pawn, so it
 			// is a sight blocker rather than cover. A line of them reads as a
 			// boundary from above and cuts line of sight at ground level.
@@ -211,50 +264,77 @@ namespace
 			// now meaningful rather than an apology — a treeline is the edge of the
 			// world, a tree is cover you walk into.
 
-			// The default deciduous tree. Trunk 110 uu across running 0..520 uu
-			// (3.0x the pawn); canopy a 600 uu ball hanging 420..860 uu, so its
-			// underside is 2.4x the pawn's height and there is a clear storey to
-			// walk and fight in beneath it. Canopy and trunk overlap by 100 uu, so
-			// when the canopy fades out the trunk is not left with a gap over it.
-			{ TEXT("tree"),             Composite({
-				Part(Cylinder, FVector(55.f, 55.f, 260.f),   FVector(0.f, 0.f, 260.f), true, ESarkoSurface::Bark),
-				Canopy(Sphere, FVector(300.f, 300.f, 220.f), FVector(0.f, 0.f, 640.f)),
-			}) },
-
-			// The conifer, and the tallest thing in the forest: trunk 90 uu across
-			// running 0..680 uu (3.9x the pawn), cone canopy 540 uu across from 570
-			// to 1230 uu (7.0x). The cone is the reason this kind exists — see the
-			// Cone constant above. Its canopy floor is the highest of the four, so a
-			// stand of these is the most open one to fight in.
-			{ TEXT("tree_tall"),        Composite({
-				Part(Cylinder, FVector(45.f, 45.f, 340.f),   FVector(0.f, 0.f, 340.f), true, ESarkoSurface::Bark),
-				Canopy(Cone,   FVector(270.f, 270.f, 330.f), FVector(0.f, 0.f, 900.f)),
-			}) },
-
-			// The undergrowth tree. Trunk 80 uu across, 0..350 uu (2.0x the pawn),
-			// canopy 430 uu across from 300 to 620 uu. 300 uu is the tightest
-			// headroom in the table and it is still 1.7x the pawn — a player walking
-			// under one is never touching it, which is what keeps the fade a purely
-			// visual event.
-			{ TEXT("tree_small"),       Composite({
-				Part(Cylinder, FVector(40.f, 40.f, 175.f),   FVector(0.f, 0.f, 175.f), true, ESarkoSurface::Bark),
-				Canopy(Sphere, FVector(215.f, 215.f, 160.f), FVector(0.f, 0.f, 460.f)),
-			}) },
-
-			// A dead trunk with its top snapped off: 100 uu across from 0 to 460 uu,
-			// then a 56 uu spar from 450 to 750 uu. NO CANOPY at all, which makes it
-			// the one tree that never fades — a permanent vertical landmark inside a
-			// stand whose roof comes and goes, and the thing that stops a faded
-			// clearing from looking like nothing was ever there.
+			// Every one of the four is now a real mesh, and the SPLIT is the whole
+			// reason Scripts/prepare-assets.py runs Blender at all: Quaternius
+			// ships a tree as ONE mesh with a Wood slot and two green ones, and
+			// this table needs the green half as its own part so it can be
+			// non-colliding and fadeable. The two halves are exported from one
+			// source in one pass, so a trunk and its canopy are cut from the same
+			// tree and their offsets below are that tree's own geometry measured
+			// and multiplied by a single scale — not two shapes hand-fitted to
+			// each other.
 			//
-			// Composite rather than a single tapered box on purpose: two parts also
-			// keeps it on the pos.z = 0 authoring convention its three neighbours
-			// use, so a whole stand is authored with one z value instead of trees at
-			// 0 and dead trees at 230.
-			{ TEXT("tree_dead"),        Composite({
-				Part(Cylinder, FVector(50.f, 50.f, 230.f), FVector(0.f, 0.f, 230.f), true, ESarkoSurface::Bark),
-				Part(Cylinder, FVector(28.f, 28.f, 150.f), FVector(0.f, 0.f, 600.f), true, ESarkoSurface::Bark),
+			// Each kind's scale was chosen by the CANOPY FLOOR, not by taste. A
+			// Quaternius tree at its modelled size hangs its leaves 1.4 m up, which
+			// is below the 264 uu (1.5x pawn) headroom the canopy contract requires
+			// — so the tree is scaled until its own underside clears that, and the
+			// rest of its dimensions follow. That is why these are 5 to 7 m trees
+			// rather than 3 m ones, and why the number is not round.
+
+			// The default deciduous tree, scaled 2.2x. Trunk 178 x 141 uu across
+			// running 0..660 uu (3.8x the pawn); canopy 343 x 282 uu hanging
+			// 327..761, so its underside is 1.8x the pawn's height and there is a
+			// clear storey to walk and fight in beneath it. Trunk and canopy
+			// overlap by 334 uu, so when the canopy fades the trunk is not left
+			// with a gap over it — the overlap is the branches, which belong to
+			// the wood half and stay.
+			{ TEXT("tree"),             Composite({
+				Part(MeshTree, FVector(89.f, 70.f, 330.f),         FVector(0.f, 0.f, 330.f), true, ESarkoSurface::Bark),
+				Canopy(MeshTreeCanopy, FVector(224.f, 182.f, 217.f), FVector(0.f, 0.f, 544.f)),
 			}) },
+
+			// The conifer, scaled 2.6x, and the slimmest trunk in the forest at
+			// 107 x 112 uu — a pine really is a pole, and this is the one tree
+			// whose modelled trunk is close to the 90 uu the old cylinder claimed.
+			// It runs 0..644 uu; the canopy is 382 x 348 uu from 287 to 701. Its
+			// canopy floor is the highest of the three, so a stand of these is the
+			// most open one to fight in — which was the old cone kind's job too,
+			// and is now the shape's own doing rather than a primitive's.
+			{ TEXT("tree_tall"),        Composite({
+				Part(MeshPine, FVector(54.f, 56.f, 322.f),         FVector(0.f, 0.f, 322.f), true, ESarkoSurface::Bark),
+				Canopy(MeshPineCanopy, FVector(248.f, 226.f, 207.f), FVector(0.f, 0.f, 494.f)),
+			}) },
+
+			// The undergrowth tree, scaled 1.95x. Trunk 212 x 160 uu, 0..462 uu
+			// (2.5x the pawn) — the widest trunk here, because this mesh's woody
+			// half is mostly low branches rather than a bole, and the box that
+			// contains them is what the player collides with. Canopy 351 x 308 uu
+			// from 293 to 543: 293 uu is the tightest headroom in the table and it
+			// is still 1.5x the pawn, which is what keeps the fade a purely visual
+			// event.
+			{ TEXT("tree_small"),       Composite({
+				Part(MeshTreeSmall, FVector(106.f, 80.f, 231.f),         FVector(0.f, 0.f, 231.f), true, ESarkoSurface::Bark),
+				Canopy(MeshTreeSmallCanopy, FVector(229.f, 200.f, 125.f), FVector(0.f, 0.f, 418.f)),
+			}) },
+
+			// The dead tree: the same species as `tree` with its leaves gone —
+			// which is literally true, because Quaternius models its dead trees as
+			// the living one's wood half, and CommonTree_Dead_3 and CommonTree_3
+			// are the same 944 triangles. Scaled 1.9x rather than 2.2x, so a dead
+			// one stands a little shorter than its living neighbours.
+			//
+			// NO CANOPY at all, which makes it the one tree that never fades — a
+			// permanent vertical landmark inside a stand whose roof comes and goes,
+			// and the thing that stops a faded clearing from looking like nothing
+			// was ever there.
+			//
+			// It is a SINGLE box now, where it used to be two, so it follows the
+			// single-box authoring convention: the sixteen placed dead trees carry
+			// pos.z = 285 in bridge.json instead of the 0 they carried as a
+			// composite. That is the one map edit in this change, it is sixteen z
+			// values, and every one of them puts the tree back on the same ground
+			// at the same x and y.
+			{ TEXT("tree_dead"),        Box(MeshTreeDead, FVector(77.f, 60.f, 285.f), true, ESarkoSurface::Bark) },
 
 			// The forest as a BORDER, which is a different object from the four
 			// kinds above and stays one. Tile these along an edge — 1200 uu long
@@ -289,6 +369,13 @@ bool SarkoMap::FindPropKind(FName Kind, FSarkoPropKind& OutKind)
 		return true;
 	}
 	return false;
+}
+
+TArray<FName> SarkoMap::AllPropKindNames()
+{
+	TArray<FName> Names;
+	KindTable().GetKeys(Names);
+	return Names;
 }
 
 FVector SarkoMap::PartWorldLocation(const FVector& PropLocation, float PropYawDegrees, const FSarkoPropPart& Part)
