@@ -355,9 +355,29 @@ bool FSarkoPropKindsAreComplete::RunTest(const FString& Parameters)
 		TestTrue(FString::Printf(TEXT("kind '%s' still blocks movement"), *Expected.Key.ToString()),
 			Resolved.Parts[0].bBlocksMovement);
 		// The mesh matters as much as the extent: swapping a cylinder for a cube
-		// keeps every number in this table true and still changes the map.
-		TestTrue(FString::Printf(TEXT("kind '%s' keeps a basic-shape mesh"), *Expected.Key.ToString()),
-			Resolved.Parts[0].Mesh.ToString().StartsWith(TEXT("/Engine/BasicShapes/")));
+		// keeps every number in this table true and still changes the map. So it
+		// is pinned BY PATH, per kind, rather than by "is it a primitive" — which
+		// is what this line used to say and what stopped being the point the day
+		// two of these eleven got real art. car_wreck is a car body and
+		// water_tower is a legged tower with a tank on it; both kept their extents
+		// to the unit, so all fifty-two placed props stayed exactly where they
+		// were, and the rest of the table is still primitives because nothing in
+		// the packs fits their proportions.
+		static const TMap<FName, FString> ExpectedMesh = {
+			{ TEXT("wall"),        TEXT("/Engine/BasicShapes/Cube.Cube") },
+			{ TEXT("car_wreck"),   TEXT("/Game/ThirdParty/Cars/NormalCar1.NormalCar1") },
+			{ TEXT("bus"),         TEXT("/Engine/BasicShapes/Cube.Cube") },
+			{ TEXT("house"),       TEXT("/Engine/BasicShapes/Cube.Cube") },
+			{ TEXT("fuel_pump"),   TEXT("/Engine/BasicShapes/Cube.Cube") },
+			{ TEXT("freight_car"), TEXT("/Engine/BasicShapes/Cube.Cube") },
+			{ TEXT("water_tower"), TEXT("/Game/ThirdParty/ZombieApocalypse/WaterTower.WaterTower") },
+			{ TEXT("sandbag"),     TEXT("/Engine/BasicShapes/Cube.Cube") },
+			{ TEXT("crate"),       TEXT("/Engine/BasicShapes/Cube.Cube") },
+			{ TEXT("pipe"),        TEXT("/Engine/BasicShapes/Cylinder.Cylinder") },
+			{ TEXT("bridge_deck"), TEXT("/Engine/BasicShapes/Cube.Cube") },
+		};
+		TestEqual(FString::Printf(TEXT("kind '%s' keeps its mesh"), *Expected.Key.ToString()),
+			Resolved.Parts[0].Mesh.ToString(), ExpectedMesh[Expected.Key]);
 		// Every legacy kind was painted Palette::Structure before surfaces existed,
 		// so anything else here repaints the shipped map — with ONE deliberate
 		// exception, named rather than excluded by a loosened rule. ТЗ §5 asks for
@@ -806,8 +826,19 @@ bool FSarkoNewPropKindsExist::RunTest(const FString& Parameters)
 			const FSarkoPropPart& Piece = Resolved.Parts[Index];
 			TestTrue(FString::Printf(TEXT("'%s' part %d has a positive extent"), *Kind.ToString(), Index),
 				Piece.Extent.GetMin() > 0.f);
-			TestTrue(FString::Printf(TEXT("'%s' part %d names an engine mesh"), *Kind.ToString(), Index),
-				Piece.Mesh.ToString().StartsWith(TEXT("/Engine/BasicShapes/")));
+			// Was "names an engine mesh", and it stopped being true the day the
+			// forest got real art. The claim worth keeping is that a part names
+			// a mesh THIS PROJECT SHIPS: an engine primitive or something under
+			// /Game/ThirdParty. A path to neither is a prop that silently does not
+			// appear (SpawnProps logs and skips), which is exactly the failure
+			// this line was added to catch.
+			// Sarko.Config.ThirdPartyMeshBoundsAreNormalised is the other half —
+			// it loads the /Game ones and checks they are the shape the extents
+			// below assume.
+			const FString MeshPath = Piece.Mesh.ToString();
+			TestTrue(FString::Printf(TEXT("'%s' part %d names a mesh this project ships (%s)"),
+				*Kind.ToString(), Index, *MeshPath),
+				MeshPath.StartsWith(TEXT("/Engine/BasicShapes/")) || MeshPath.StartsWith(TEXT("/Game/ThirdParty/")));
 			// Gated deliberately. Offset is measured from the PROP's origin, and
 			// it is the JSON `pos.z` that carries a single-box kind's half-height
 			// (the authoring convention this task documents). Ungated, this line

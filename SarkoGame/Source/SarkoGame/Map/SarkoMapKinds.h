@@ -97,6 +97,17 @@ namespace SarkoMap
 	bool FindPropKind(FName Kind, FSarkoPropKind& OutKind);
 
 	/**
+	 * Every kind the table defines.
+	 *
+	 * Exists so a test can assert something about ALL of them without keeping its
+	 * own copy of the list — which is how a check ends up silently not covering
+	 * the kind added last week. Sarko.Config.ThirdPartyMeshBoundsAreNormalised is
+	 * the caller that needs it: a mesh reached only through this table is a mesh
+	 * nothing else in the project can enumerate.
+	 */
+	TArray<FName> AllPropKindNames();
+
+	/**
 	 * Where one part of a prop stands in world space.
 	 *
 	 * A part's Offset is authored in the prop's OWN frame, so it has to rotate
