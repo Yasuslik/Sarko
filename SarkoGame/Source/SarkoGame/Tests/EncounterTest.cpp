@@ -172,8 +172,13 @@ bool FSarkoBotArchetypeTable::RunTest(const FString& Parameters)
 	{
 		TestTrue(FString::Printf(TEXT("'%s' fires from inside the screen (%.0f uu <= 1380)"),
 			*Row.Id.ToString(), Row.FiringRangeUU), Row.FiringRangeUU <= 1380.f);
-		TestTrue(FString::Printf(TEXT("'%s' hears at least as far as it shoots"), *Row.Id.ToString()),
-			Row.HearingRadiusUU >= Row.FiringRangeUU);
+		// "Hears at least as far as it shoots" is now a statement about the
+		// loudest event there is rather than about a radius the bot owns (spec
+		// §7); Sarko.Noise.ArchetypeSensitivity asserts it against
+		// NoiseLoudRadiusUU. What survives here is the property that keeps the
+		// column meaningful at all.
+		TestTrue(FString::Printf(TEXT("'%s' can hear (%.2fx)"), *Row.Id.ToString(), Row.HearingSensitivity),
+			Row.HearingSensitivity > 0.f);
 		TestTrue(FString::Printf(TEXT("'%s' has a positive health pool, damage and cadence"), *Row.Id.ToString()),
 			Row.MaxHealth > 0.f && Row.Damage > 0.f && Row.FireIntervalSeconds > 0.f && Row.WalkSpeed > 0.f);
 	}
@@ -193,6 +198,104 @@ bool FSarkoBotArchetypeTable::RunTest(const FString& Parameters)
 		DistinctSpeeds.Add(Row.WalkSpeed);
 	}
 	TestEqual(TEXT("the three archetypes actually differ"), DistinctSpeeds.Num(), SarkoAI::GetBotArchetypes().Num());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoEncounterRotationIsSeeded,
+	"Sarko.Encounter.RotationIsSeeded",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * Raid 2 must not be raid 1, and the tutorial must be raid 1 every time.
+ *
+ * Both halves of spec §5 are one pure function, and both are worth pinning
+ * because they fail in opposite, silent directions. A shuffle that is not
+ * deterministic makes `?Seed=` a lie — the reproduction tool reproduces a
+ * different set of fights than the run being reproduced, which is worse than no
+ * tool. A shuffle that reaches the tutorial makes the first raid a person ever
+ * plays teach its lessons in a random sequence, which is not teaching.
+ */
+bool FSarkoEncounterRotationIsSeeded::RunTest(const FString& Parameters)
+{
+	using namespace SarkoEncounter;
+
+	// Eight rows, three of them the curriculum — bridge.json's own shape, so a
+	// change to the map that broke this shape fails the map test and a change to
+	// the algorithm fails here.
+	const TArray<int32> Orders = { 10, 20, 30, 40, 50, 60, 70, 80 };
+	const TArray<bool> Optional = { false, false, false, true, true, true, true, true };
+
+	// THE TUTORIAL: the three teaching rows, in authored order, and nothing else.
+	{
+		const TArray<int32> Tutorial = BuildActivationOrder(Orders, Optional, /*bTutorial*/ true, 12345);
+		TestEqual(TEXT("a tutorial raid activates exactly the three teaching rows"), Tutorial.Num(), 3);
+		TestEqual(TEXT("the gas station first"), Tutorial.IsValidIndex(0) ? Tutorial[0] : -1, 0);
+		TestEqual(TEXT("the depot approach second"), Tutorial.IsValidIndex(1) ? Tutorial[1] : -1, 1);
+		TestEqual(TEXT("the warehouse last"), Tutorial.IsValidIndex(2) ? Tutorial[2] : -1, 2);
+
+		// And the seed does not touch it. This is the assertion that would have
+		// caught "shuffle everything, then filter" — a version that passes the
+		// count above and reorders the curriculum.
+		for (int32 Seed = 1; Seed <= 25; ++Seed)
+		{
+			const TArray<int32> Again = BuildActivationOrder(Orders, Optional, true, Seed);
+			TestTrue(FString::Printf(TEXT("seed %d does not reorder the curriculum"), Seed), Again == Tutorial);
+		}
+	}
+
+	// A NORMAL RAID takes every row.
+	const TArray<int32> First = BuildActivationOrder(Orders, Optional, /*bTutorial*/ false, 4242);
+	TestEqual(TEXT("a normal raid activates every row"), First.Num(), Orders.Num());
+	{
+		TSet<int32> Unique(First);
+		TestEqual(TEXT("and each row exactly once — a shuffle, not a resample"), Unique.Num(), Orders.Num());
+	}
+
+	// DETERMINISM. Same seed, same order, every call.
+	TestTrue(TEXT("the same seed gives the same order"),
+		BuildActivationOrder(Orders, Optional, false, 4242) == First);
+	TestTrue(TEXT("and again"),
+		BuildActivationOrder(Orders, Optional, false, 4242) == First);
+
+	// VARIATION. Not "some seed differs" — that would pass with 63 of 64 seeds
+	// producing one order. Over 64 seeds the rotation must produce a real spread,
+	// or the seed is decorative and raid 2 is raid 1 with extra steps.
+	TSet<FString> Distinct;
+	for (int32 Seed = 1; Seed <= 64; ++Seed)
+	{
+		FString Key;
+		for (const int32 Index : BuildActivationOrder(Orders, Optional, false, Seed))
+		{
+			Key += FString::Printf(TEXT("%d,"), Index);
+		}
+		Distinct.Add(Key);
+	}
+	TestTrue(FString::Printf(TEXT("64 seeds produce many different activation orders (%d)"), Distinct.Num()),
+		Distinct.Num() >= 32);
+
+	// The shuffle reads the AUTHORED ORDERS, not the array's construction: two
+	// files that disagree only about where a row is written must produce the same
+	// raid for the same seed, or moving a line in JSON silently rerolls the world.
+	{
+		const TArray<int32> Rotated = { 80, 10, 20, 30, 40, 50, 60, 70 };
+		const TArray<bool> RotatedOptional = { true, false, false, false, true, true, true, true };
+		const TArray<int32> Shuffled = BuildActivationOrder(Rotated, RotatedOptional, false, 4242);
+		// Same seed, same authored orders, rows written in a different sequence:
+		// the ORDERS in the result must match, index for index.
+		bool bSameRaid = Shuffled.Num() == First.Num();
+		for (int32 Slot = 0; bSameRaid && Slot < Shuffled.Num(); ++Slot)
+		{
+			bSameRaid = Rotated[Shuffled[Slot]] == Orders[First[Slot]];
+		}
+		TestTrue(TEXT("moving a row within the file does not change the raid a seed produces"), bSameRaid);
+	}
+
+	// Degenerate inputs, because InitialiseEncounters calls this on whatever the
+	// map file happens to hold.
+	TestEqual(TEXT("no rows is no order"), BuildActivationOrder({}, {}, false, 7).Num(), 0);
+	TestEqual(TEXT("a tutorial with no teaching rows activates nothing"),
+		BuildActivationOrder({ 10 }, { true }, true, 7).Num(), 0);
 	return true;
 }
 

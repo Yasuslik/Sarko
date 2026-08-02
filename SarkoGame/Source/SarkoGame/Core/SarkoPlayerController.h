@@ -220,6 +220,33 @@ public:
 	void CheatEmptyMagazine();
 
 	/**
+	 * Presses the reload button, Cycles times, IntervalSeconds apart, emptying the
+	 * magazine before each press.
+	 *
+	 * A headless run has no fingers, and reload is manual-only since spec §3 — so
+	 * without this there is no way at all to exercise the path that spec §1 just
+	 * made the centre of the game, in a running raid, against a real grid. Each
+	 * cycle logs nothing itself: USarkoWeaponComponent::FinishReload and
+	 * ::StartReload already say what happened, and a harness that narrated over
+	 * them would be quoting itself rather than the code.
+	 *
+	 * IntervalSeconds must exceed USarkoRaidSettings::ReloadSeconds or the next
+	 * press lands while the previous reload is still in flight and StartReload
+	 * drops it — which is correct behaviour and a useless observation.
+	 */
+	UFUNCTION(Exec)
+	void CheatDrainAndReload(int32 Cycles, float IntervalSeconds);
+
+	/**
+	 * One reload press, after DelaySeconds. Separate from the cycle above because
+	 * the interesting press is often the one on a magazine that is NOT empty — an
+	 * empty bag with rounds still in the gun is the dry-click-on-reload path, and
+	 * emptying the magazine first would hide it behind the other dry click.
+	 */
+	UFUNCTION(Exec)
+	void CheatReload(float DelaySeconds);
+
+	/**
 	 * Frames the whole sector from above and takes a screenshot. This is the
 	 * design loop for a hand-authored map: edit the data file, run offscreen,
 	 * look at the frame, adjust. Without it the layout is written blind.
@@ -320,6 +347,36 @@ public:
 	UFUNCTION(Exec)
 	void SarkoDebugStandInZone(int32 ZoneIndex, float DelaySeconds);
 
+	/**
+	 * THE NOISE MODEL'S VERIFICATION SEAMS (spec §7). Three, and none of them
+	 * fakes an outcome — they arrange a situation and let the production code
+	 * log what it does.
+	 *
+	 * A headless raid cannot reach a firefight on its own: encounters spawn only
+	 * when the player walks into a trigger AND every authored door is far enough
+	 * away and out of sight, which is a walk no -ExecCmds line can take. So a bot
+	 * is placed directly, through the same ApplyArchetypeAndPost the encounter
+	 * director calls, and then everything that matters — what a shot emits, what
+	 * a walk emits, what the bot hears, where it walks — runs through
+	 * USarkoNoiseSubsystem and ASarkoAIController unchanged and says so in the log.
+	 *
+	 * SarkoDebugMove drives ASarkoCharacter::SetMoveIntent, which is the exact
+	 * function the move stick drives, at a chosen deflection: that is what makes
+	 * "walking is quiet, running is audible" observable at all in a run with no
+	 * fingers. Scale is the stick's deflection, 0..1.
+	 *
+	 * Bodies are `#if !UE_BUILD_SHIPPING` in the .cpp; the declarations cannot be,
+	 * because UHT rejects a UFUNCTION inside a preprocessor block.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugSpawnBot(FString ArchetypeId, float X, float Y, float DelaySeconds);
+
+	UFUNCTION(Exec)
+	void SarkoDebugMove(float DirX, float DirY, float Scale, float HoldSeconds, float DelaySeconds);
+
+	UFUNCTION(Exec)
+	void SarkoDebugFire(float DirX, float DirY, float DelaySeconds);
+
 private:
 	void UpdateSticks();
 
@@ -404,6 +461,24 @@ private:
 	 * @return true if the keyboard supplied a movement intent this frame
 	 */
 	bool ApplyDesktopTestInput(class ASarkoCharacter& Pawn, float CameraYaw);
+
+	/**
+	 * The headless stick, held for as long as SarkoDebugMove asked for.
+	 *
+	 * Applied from PlayerTick beside ApplyDesktopTestInput and for the same
+	 * reason: this class reassigns the move intent from MoveStick every frame, so
+	 * an intent written once from a console command is gone before the pawn has
+	 * accelerated. A run that verifies "walking is quiet" against a pawn that
+	 * never moved would be verifying nothing.
+	 *
+	 * @return true if it supplied a movement intent this frame
+	 */
+	bool ApplyDebugMoveInput(class ASarkoCharacter& Pawn);
+
+	/** The held deflection, and the world time it is released at. Zero intent
+	 *  means the seam is idle and the real stick has the pawn. */
+	FVector2D DebugMoveIntent = FVector2D::ZeroVector;
+	float DebugMoveUntilSeconds = -1.f;
 #endif
 
 	FSarkoTouchStick MoveStick;

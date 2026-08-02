@@ -1,7 +1,9 @@
 #include "Loot/SarkoExtractionZone.h"
 
 #include "Components/StaticMeshComponent.h"
+#include "Core/SarkoRaidGameState.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/World.h"
 #include "Map/SarkoMapDefinition.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
@@ -75,15 +77,36 @@ float SarkoExtract::SecondsUntilOpen(float OpensAfterSeconds, float ElapsedSecon
 namespace
 {
 	/** Extraction green, per the ТЗ §14 palette. Flat and unmistakable from above. */
-	const FLinearColor PadTint(0.16f, 0.62f, 0.24f);
+	const FLinearColor PadOpenTint(0.16f, 0.62f, 0.24f);
+
+	/**
+	 * A closed pad (spec §4.5). The same grey the HUD's closed banner uses, so
+	 * the ground and the label agree — and deliberately not a dark green, which
+	 * from a top-down camera at 1400 uu reads as green.
+	 */
+	const FLinearColor PadClosedTint(0.30f, 0.31f, 0.30f);
 
 	/** 4 uu thin, so the pawn walks over it rather than onto it. */
 	constexpr float PadHalfHeight = 2.f;
+
+	/**
+	 * How often a closed pad asks whether it has opened yet.
+	 *
+	 * Twice a second, against a countdown displayed in whole seconds: the pad
+	 * cannot turn green visibly later than the banner it sits under. Cheap
+	 * regardless — one float comparison, on at most a handful of actors, and only
+	 * while any of them is still closed.
+	 */
+	constexpr float ExtractionStateTickSeconds = 0.5f;
 }
 
 ASarkoExtractionZone::ASarkoExtractionZone()
 {
-	PrimaryActorTick.bCanEverTick = false;
+	// Ticking is decided in BeginPlay, once the zone knows whether it has
+	// anything to wait for. A pad that is open from the first frame never ticks.
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = false;
+	PrimaryActorTick.TickInterval = ExtractionStateTickSeconds;
 	bReplicates = false;
 
 	Pad = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Pad"));
@@ -115,16 +138,78 @@ void ASarkoExtractionZone::BeginPlay()
 	Pad->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Pad->SetMobility(EComponentMobility::Static);
 
-	if (UMaterialInstanceDynamic* Material = Pad->CreateAndSetMaterialInstanceDynamicFromMaterial(0, BaseMaterial))
+	// One dynamic instance per pad, made here and repainted through
+	// ApplyStateTint afterwards — the pads share a material asset, so a tint
+	// applied to anything but a per-actor instance would recolour every zone on
+	// the map together.
+	Pad->CreateAndSetMaterialInstanceDynamicFromMaterial(0, BaseMaterial);
+
+	// The opening state at spawn. A zone with no `opensAfterSeconds` — every
+	// extraction on this map but the west cordon — is open from the first frame
+	// and is painted green once, here, and never looked at again.
+	const bool bOpenNow = SarkoExtract::IsZoneOpen(OpensAfterSeconds, 0.f);
+	ApplyStateTint(bOpenNow);
+	SetActorTickEnabled(!bOpenNow);
+}
+
+void ASarkoExtractionZone::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	// Presentation, never authority: ASarkoRaidGameMode::ExtractTick decides
+	// whether a dwell accrues, from its own clock. This derives the same elapsed
+	// time the HUD's banner derives, from the same replicated RemainingSeconds and
+	// the same map duration, so the ground and the label cannot say different
+	// things about the same second.
+	const ASarkoRaidGameState* RaidState = GetWorld() ? GetWorld()->GetGameState<ASarkoRaidGameState>() : nullptr;
+	if (!RaidState)
 	{
-		Material->SetVectorParameterValue(TEXT("Color"), PadTint);
-		Material->SetVectorParameterValue(TEXT("BaseColor"), PadTint);
+		return;
+	}
+
+	const float Elapsed = FMath::Max(0.f, RaidDurationSeconds - RaidState->RemainingSeconds);
+	if (SarkoExtract::IsZoneOpen(OpensAfterSeconds, Elapsed))
+	{
+		ApplyStateTint(true);
+		// Nothing closes again, so there is nothing left to watch for.
+		SetActorTickEnabled(false);
 	}
 }
 
-void ASarkoExtractionZone::SetupFromSpot(int32 InIndex, const FString& InName, float InRadiusUU)
+void ASarkoExtractionZone::ApplyStateTint(bool bOpen)
+{
+	if (!Pad)
+	{
+		return;
+	}
+	// Idempotent by the flag rather than by the material: SetVectorParameterValue
+	// on an unchanged value still dirties the instance's uniform buffer, and this
+	// runs from a tick.
+	if (bPaintedOpen == bOpen && bOpen)
+	{
+		return;
+	}
+	bPaintedOpen = bOpen;
+
+	const FLinearColor Tint = bOpen ? PadOpenTint : PadClosedTint;
+	if (UMaterialInstanceDynamic* Material = Cast<UMaterialInstanceDynamic>(Pad->GetMaterial(0)))
+	{
+		// Both names, as before: /Engine/BasicShapes' material exposes one of them
+		// and which one has moved between engine versions.
+		Material->SetVectorParameterValue(TEXT("Color"), Tint);
+		Material->SetVectorParameterValue(TEXT("BaseColor"), Tint);
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("SarkoExtractionZone %d ('%s'): pad drawn %s (opens after %.0f s)"),
+		ZoneIndex, *ZoneName, bOpen ? TEXT("GREEN — open") : TEXT("GREY — closed"), OpensAfterSeconds);
+}
+
+void ASarkoExtractionZone::SetupFromSpot(int32 InIndex, const FString& InName, float InRadiusUU,
+	float InOpensAfterSeconds, float InRaidDurationSeconds)
 {
 	ZoneIndex = InIndex;
 	ZoneName = InName;
 	RadiusUU = FMath::Max(50.f, InRadiusUU);
+	OpensAfterSeconds = FMath::Max(0.f, InOpensAfterSeconds);
+	RaidDurationSeconds = FMath::Max(0.f, InRaidDurationSeconds);
 }

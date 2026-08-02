@@ -59,6 +59,20 @@ public:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 
+	/**
+	 * KillZ. The pawn has left the world; ASarkoRaidGameMode::RecoverFallenPawn
+	 * puts it back on the nearest player spawn instead of deleting it.
+	 *
+	 * Overridden rather than left to the engine because AActor::FellOutOfWorld
+	 * DESTROYS the actor: for the player that is a raid lost with the whole haul
+	 * in the bag, for a reason nobody can see, and for a bot it is an encounter
+	 * that silently never finishes. Falling out is always a bug in the world —
+	 * the border exists so it cannot happen — so the response is to log loudly
+	 * and cost a second, not to punish the player for it. Super is still called
+	 * when recovery is impossible, because falling forever is worse than dying.
+	 */
+	virtual void FellOutOfWorld(const class UDamageType& DmgType) override;
+
 	/** Called every frame by the controller from the left stick. */
 	void SetMoveIntent(FVector2D Intent);
 
@@ -69,6 +83,25 @@ public:
 
 	/** Muzzle position for traces and effects. */
 	FVector GetMuzzleLocation() const;
+
+	/**
+	 * Server only: a shot from this pawn connected, over there (spec §4.2).
+	 *
+	 * Called by USarkoWeaponComponent at the one moment the server knows a hit
+	 * landed — it is the side that traces and the side that applies the damage, so
+	 * a client-side "I think I hit them" would be a guess, and a wrong hit marker
+	 * is worse than none. Sent OWNER-ONLY: whether a shot connected is private to
+	 * the shooter, and broadcasting it would tell every other client that somebody
+	 * is being hit at a position they cannot see.
+	 */
+	void NotifyHitConfirmed(const FVector& VictimLocation);
+
+	/**
+	 * The last confirmed hit's world position and the time it landed, for the HUD.
+	 * False once the marker has expired, so the caller never has to know its
+	 * lifetime — HitMarkerSeconds lives in the settings and is applied here.
+	 */
+	bool GetHitMarker(FVector& OutVictimLocation, float& OutAgeSeconds) const;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
 	TObjectPtr<USarkoWeaponComponent> WeaponComponent;
@@ -178,6 +211,16 @@ protected:
 	/** Server only: stops movement and disables collision so the corpse does not block shots. */
 	void HandleDeath(AActor* Killer);
 
+	/**
+	 * Server only, throttled: tells the world how loudly this pawn is moving
+	 * (spec §7). Called from Tick.
+	 *
+	 * Silent when standing, quiet when walking, audible when running — measured
+	 * from the server's own velocity, which is the only version of the pawn's
+	 * speed no client can lie about.
+	 */
+	void ReportMovementNoise(float DeltaSeconds);
+
 	UPROPERTY(VisibleAnywhere, Category = "Camera")
 	TObjectPtr<USpringArmComponent> CameraBoom;
 
@@ -222,6 +265,23 @@ private:
 	 */
 	UFUNCTION(Server, Reliable)
 	void ServerRequestReload();
+
+	/**
+	 * The hit marker, to exactly one client (spec §4.2).
+	 *
+	 * Client and not Multicast because landing a shot is the shooter's business:
+	 * a multicast would hand every other machine the position of a pawn taking
+	 * damage somewhere off their screen, which is the same leak the damage
+	 * direction's COND_OwnerOnly exists to close.
+	 *
+	 * Unreliable: it is a 0.15 s cosmetic confirmation fired several times a
+	 * fight, and a dropped one costs nothing — where a reliable one would put
+	 * cosmetics on the same queue as the reload the player is waiting for.
+	 * FVector_NetQuantize because a marker is drawn at a pawn-sized target and
+	 * does not need centimetres.
+	 */
+	UFUNCTION(Client, Unreliable)
+	void ClientHitConfirmed(FVector_NetQuantize VictimLocation);
 
 	/**
 	 * Server RPC. Reliable: a dropped begin would leave a player holding the
@@ -349,6 +409,15 @@ private:
 	FVector2D MoveIntent = FVector2D::ZeroVector;
 	float MoveScale = 0.f;
 	bool bIsAiming = false;
+
+	/** World time of the last movement noise report. Server-side; see
+	 *  ReportMovementNoise for why it is throttled at all. */
+	float LastNoiseReportSeconds = -1000.f;
+
+	/** The hit marker's own state, on the shooting client only. Purely cosmetic:
+	 *  the server decided the hit before this was ever written. */
+	FVector HitMarkerLocation = FVector::ZeroVector;
+	float HitMarkerSeconds = -1000.f;
 
 	/** Server-side channel state. Not replicated: the HUD's bar is local and cosmetic. */
 	int32 LootChannelIndex = INDEX_NONE;

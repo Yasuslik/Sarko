@@ -215,6 +215,54 @@ int32 SarkoGrid::AddToGrid(TArray<FSarkoItemStack>& Stacks, const FSarkoItemCata
 	return Remaining;
 }
 
+int32 SarkoGrid::CountItem(const TArray<FSarkoItemStack>& Stacks, FName Item)
+{
+	int32 Total = 0;
+	for (const FSarkoItemStack& Stack : Stacks)
+	{
+		if (Stack.Item == Item && Stack.Quantity > 0)
+		{
+			Total += Stack.Quantity;
+		}
+	}
+	return Total;
+}
+
+int32 SarkoGrid::RemoveFromGrid(TArray<FSarkoItemStack>& Stacks, FName Item, int32 Quantity)
+{
+	// A negative or zero request is a no-op rather than an error: it arrives from
+	// arithmetic (MagazineSize - AmmoInMagazine) that is allowed to come out at
+	// zero, and the caller has nothing useful to do with a failure.
+	int32 Remaining = FMath::Max(0, Quantity);
+	int32 Removed = 0;
+
+	// Backwards. See the header: the trailing stack is the least-full one, and
+	// removing from the back moves the fewest cells on screen.
+	for (int32 Index = Stacks.Num() - 1; Index >= 0 && Remaining > 0; --Index)
+	{
+		FSarkoItemStack& Stack = Stacks[Index];
+		if (Stack.Item != Item || Stack.Quantity <= 0)
+		{
+			continue;
+		}
+
+		const int32 Take = FMath::Min(Stack.Quantity, Remaining);
+		Stack.Quantity -= Take;
+		Remaining -= Take;
+		Removed += Take;
+
+		if (Stack.Quantity <= 0)
+		{
+			// RemoveAt and not RemoveAtSwap, for SarkoLoot::TransferOne's reason:
+			// the panel draws these in order, and a swap makes an untouched cell
+			// jump across the grid while the player is looking at it.
+			Stacks.RemoveAt(Index);
+		}
+	}
+
+	return Removed;
+}
+
 void SarkoGrid::SortForStash(TArray<FSarkoItemStack>& Stacks, const FSarkoItemCatalog& Catalog)
 {
 	Stacks.StableSort([&Catalog](const FSarkoItemStack& A, const FSarkoItemStack& B)

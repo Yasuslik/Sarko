@@ -7,14 +7,37 @@
 #include "AI/SarkoBotArchetypes.h"
 #include "Combat/SarkoWeapon.h"
 #include "Components/CapsuleComponent.h"
+#include "Engine/World.h"
+#include "Core/SarkoRaidGameMode.h"
 #include "Core/SarkoRaidSettings.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Pawn/SarkoHealthComponent.h"
+
+void ASarkoEnemyCharacter::FellOutOfWorld(const UDamageType& DmgType)
+{
+	// One net, called from two pawn classes that share no base of their own.
+	if (ASarkoRaidGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<ASarkoRaidGameMode>() : nullptr)
+	{
+		if (Mode->RecoverFallenPawn(*this))
+		{
+			return;
+		}
+	}
+	// Could not recover — no authority, no raid game mode, or no layout to
+	// return to. The engine's own behaviour (destroy) is the lesser evil: a pawn
+	// that is neither destroyed nor moved keeps falling for the rest of the raid.
+	Super::FellOutOfWorld(DmgType);
+}
 
 ASarkoEnemyCharacter::ASarkoEnemyCharacter()
 {
 	AIControllerClass = ASarkoAIController::StaticClass();
 	AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
+
+	// Stated rather than inherited: Tick drives the hit flash on every machine,
+	// and a base-class default that changed would take the feedback with it
+	// silently.
+	PrimaryActorTick.bCanEverTick = true;
 
 	HealthComponent = CreateDefaultSubobject<USarkoHealthComponent>(TEXT("Health"));
 	HealthComponent->SetTeam(ESarkoTeam::Enemy);
@@ -42,6 +65,47 @@ void ASarkoEnemyCharacter::BeginPlay()
 	if (HasAuthority() && HealthComponent)
 	{
 		HealthComponent->OnDied.AddUObject(this, &ASarkoEnemyCharacter::HandleDeath);
+	}
+}
+
+void ASarkoEnemyCharacter::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	const UWorld* World = GetWorld();
+	if (!World || !HealthComponent)
+	{
+		return;
+	}
+
+	const int32 Serial = static_cast<int32>(HealthComponent->GetDamageSerial());
+	const float Now = World->GetTimeSeconds();
+
+	if (Serial != SeenDamageSerial)
+	{
+		const bool bFirstObservation = (SeenDamageSerial == INDEX_NONE);
+		SeenDamageSerial = Serial;
+		// A machine seeing this pawn for the first time adopts its count instead
+		// of flashing for hits that landed before it was watching — a bot joined
+		// mid-raid at 3 hp must not blink once on arrival.
+		if (!bFirstObservation)
+		{
+			// THE FLASH. White through this pawn's OWN material instances (see
+			// SarkoBody::SetPaintTint), so four scavs sharing one archetype do not
+			// blink together when one of them is shot.
+			SarkoBody::SetPaintTint(*this, SarkoBody::FlashTint());
+			FlashEndSeconds = Now + GetDefault<USarkoRaidSettings>()->HitFlashSeconds;
+		}
+		return;
+	}
+
+	if (FlashEndSeconds >= 0.f && Now >= FlashEndSeconds)
+	{
+		// Back to hostile red. Restored on the frame the window closes rather than
+		// interpolated: at HitFlashSeconds this is a blink, and a blink that fades
+		// out reads as a lighting change instead of an impact.
+		SarkoBody::SetPaintTint(*this, SarkoBody::TintForSide(SarkoBody::ESide::Enemy));
+		FlashEndSeconds = -1.f;
 	}
 }
 
@@ -80,7 +144,7 @@ void ASarkoEnemyCharacter::ApplyArchetypeAndPost(FName ArchetypeId, const FVecto
 	}
 	if (ASarkoAIController* AIController = Cast<ASarkoAIController>(GetController()))
 	{
-		AIController->SetPerception(Archetype.HearingRadiusUU, Archetype.FiringRangeUU, Archetype.FireIntervalSeconds);
+		AIController->SetPerception(Archetype.HearingSensitivity, Archetype.FiringRangeUU, Archetype.FireIntervalSeconds);
 	}
 }
 

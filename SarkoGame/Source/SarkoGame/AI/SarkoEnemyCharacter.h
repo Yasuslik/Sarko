@@ -26,6 +26,36 @@ public:
 	virtual void BeginPlay() override;
 
 	/**
+	 * Drives the white hit flash (spec §4.3), and nothing else.
+	 *
+	 * On EVERY machine, not just the server: the flash is a fact about a body
+	 * somebody is looking at. It is driven by polling
+	 * USarkoHealthComponent::GetDamageSerial rather than by a delegate or a
+	 * multicast, because a counter that replicates works identically on a client
+	 * (where the change arrives with the health) and on a listen server (where
+	 * this pawn is the one being damaged locally) — the same trick
+	 * USarkoCharacterAnimComponent uses to infer a shot from the magazine count.
+	 *
+	 * Two material writes per hit, not one per frame: the tick compares a byte
+	 * and returns.
+	 */
+	virtual void Tick(float DeltaSeconds) override;
+
+	/**
+	 * KillZ. The pawn has left the world; ASarkoRaidGameMode::RecoverFallenPawn
+	 * puts it back on the nearest player spawn instead of deleting it.
+	 *
+	 * Overridden rather than left to the engine because AActor::FellOutOfWorld
+	 * DESTROYS the actor: for the player that is a raid lost with the whole haul
+	 * in the bag, for a reason nobody can see, and for a bot it is an encounter
+	 * that silently never finishes. Falling out is always a bug in the world —
+	 * the border exists so it cannot happen — so the response is to log loudly
+	 * and cost a second, not to punish the player for it. Super is still called
+	 * when recovery is impossible, because falling forever is worse than dying.
+	 */
+	virtual void FellOutOfWorld(const class UDamageType& DmgType) override;
+
+	/**
 	 * Server only, called by the encounter director immediately after
 	 * SpawnActor. Pushes the archetype's numbers into the components that own
 	 * them and tells the controller where this bot holds.
@@ -48,4 +78,15 @@ protected:
 	/** Drives the mesh's pose. Purely cosmetic; the same component the player uses. */
 	UPROPERTY(VisibleAnywhere, Category = "Visuals")
 	TObjectPtr<USarkoCharacterAnimComponent> AnimComponent;
+
+private:
+	/**
+	 * The damage serial this machine has already reacted to. INDEX_NONE until the
+	 * first tick, so a client that joins a raid already in progress records the
+	 * count it finds rather than flashing once for a hit it never saw.
+	 */
+	int32 SeenDamageSerial = INDEX_NONE;
+
+	/** When the current flash ends, or a negative time for "not flashing". */
+	float FlashEndSeconds = -1.f;
 };

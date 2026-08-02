@@ -130,7 +130,20 @@ public:
 
 	virtual void BeginPlay() override;
 
-	void SetupFromSpot(int32 InIndex, const FString& InName, float InRadiusUU);
+	/**
+	 * Watches for the moment this zone opens, and stops the moment it has (spec
+	 * §4.5).
+	 *
+	 * Ticked at all only because a closed pad has to become an open one while the
+	 * player is looking at it — «Западный кордон» opens four minutes into the raid
+	 * and the change is the whole point of the countdown on the HUD. Throttled to
+	 * ExtractionStateTickSeconds and disabled outright once green, so a pad that
+	 * was open from the first frame never ticks once.
+	 */
+	virtual void Tick(float DeltaSeconds) override;
+
+	void SetupFromSpot(int32 InIndex, const FString& InName, float InRadiusUU,
+		float InOpensAfterSeconds, float InRaidDurationSeconds);
 
 	UPROPERTY(BlueprintReadOnly, Category = "Extraction")
 	int32 ZoneIndex = INDEX_NONE;
@@ -141,7 +154,30 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "Extraction")
 	float RadiusUU = 500.f;
 
+	/** From the map file. Zero means open from the first frame, which is every
+	 *  extraction except the west cordon. */
+	UPROPERTY(BlueprintReadOnly, Category = "Extraction")
+	float OpensAfterSeconds = 0.f;
+
 private:
+	/**
+	 * Paints the pad for a state, and remembers which state it painted.
+	 *
+	 * Grey while closed, extraction green once open. The HUD has said ЗАЧИНЕНО
+	 * over a closed zone since the map surgery, and until now the pad under it
+	 * went on drawing green — the label and the ground disagreeing about the one
+	 * thing the player is standing there to find out.
+	 */
+	void ApplyStateTint(bool bOpen);
+
 	UPROPERTY(VisibleAnywhere, Category = "Extraction")
 	TObjectPtr<UStaticMeshComponent> Pad;
+
+	/** The raid's full length, so elapsed time can be derived from the replicated
+	 *  RemainingSeconds — the same derivation ASarkoHUD::DrawExtraction makes, from
+	 *  the same map file, so the pad and the banner cannot disagree. */
+	float RaidDurationSeconds = 0.f;
+
+	/** What the pad is currently painted as. Starts false so the first paint always lands. */
+	bool bPaintedOpen = false;
 };

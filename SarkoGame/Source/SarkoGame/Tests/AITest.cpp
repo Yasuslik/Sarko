@@ -17,56 +17,78 @@ bool FSarkoAIStateTransitions::RunTest(const FString& Parameters)
 	using namespace SarkoAI;
 
 	const float HysteresisRangeUU = 150.f;
+	const float SightRangeUU = 2500.f;
 	const bool bNoInvestigation = false;
 
 	TestEqual(TEXT("no target at all means patrol"),
-		static_cast<int32>(DecideState(ESarkoAIState::Idle, /*bHasTarget*/ false, 0.f, false, 2500.f, 1200.f, HysteresisRangeUU, bNoInvestigation)),
+		static_cast<int32>(DecideState(ESarkoAIState::Idle, /*bHasTarget*/ false, 0.f, false, SightRangeUU, 1200.f, HysteresisRangeUU, bNoInvestigation)),
 		static_cast<int32>(ESarkoAIState::Patrol));
 
-	// THE LINE-OF-SIGHT GATE, and the one assertion in this file that changed
-	// meaning with the realism stage. This used to read "a heard but unseen
-	// target is chased" — which is aggro through a wall (ТЗ §11 forbids it), and
-	// with a 2000 uu firing range it was aggro through a wall from off the
-	// player's screen. Heard and unseen now means Investigate: walk to the noise.
-	TestEqual(TEXT("a heard but unseen target is investigated, not chased"),
-		static_cast<int32>(DecideState(ESarkoAIState::Patrol, true, 2000.f, /*bHasLineOfSight*/ false, 2500.f, 1200.f, HysteresisRangeUU, bNoInvestigation)),
+	// THE STEALTH CASE, and the assertion that changed meaning with spec §7.
+	//
+	// It used to read "a heard but unseen target is investigated", where "heard"
+	// meant nothing more than "within 2500 uu" — so standing perfectly still in a
+	// bush produced an investigation, and there was no way to be quiet. Being
+	// near a bot is not a sound. With no noise event to react to, an unseen
+	// target is simply not perceived, whatever the distance.
+	TestEqual(TEXT("an unseen target that has made no noise is not perceived at all"),
+		static_cast<int32>(DecideState(ESarkoAIState::Patrol, true, 2000.f, /*bHasLineOfSight*/ false, SightRangeUU, 1200.f, HysteresisRangeUU, bNoInvestigation)),
+		static_cast<int32>(ESarkoAIState::Patrol));
+
+	// And its discriminating twin: the same unseen target, once it has made a
+	// noise the caller heard, IS investigated. Only bInvestigationActive differs
+	// between these two, which is what proves noise — and nothing else — is the
+	// thing that now causes an investigation.
+	TestEqual(TEXT("the same target becomes an investigation the moment it makes a noise"),
+		static_cast<int32>(DecideState(ESarkoAIState::Patrol, true, 2000.f, /*bHasLineOfSight*/ false, SightRangeUU, 1200.f, HysteresisRangeUU, /*bInvestigationActive*/ true)),
 		static_cast<int32>(ESarkoAIState::Investigate));
 
-	// And the discriminating half: at a distance that WOULD be inside the firing
-	// range, no sight still means no shot. Without this, "gated on LOS" could be
-	// satisfied by a function that only gates the far case.
-	TestEqual(TEXT("an unseen target inside the firing range is still not shot at"),
-		static_cast<int32>(DecideState(ESarkoAIState::Shoot, true, 400.f, /*bHasLineOfSight*/ false, 2500.f, 1200.f, HysteresisRangeUU, bNoInvestigation)),
+	// THE LINE-OF-SIGHT GATE: at a distance that WOULD be inside the firing
+	// range, no sight still means no shot — a bot closing on or firing at a
+	// target it cannot see is aggro through a wall (ТЗ §11). Without this case,
+	// "gated on LOS" could be satisfied by a function that only gates the far one.
+	TestEqual(TEXT("an unseen target inside the firing range is still not shot at, even while it is being investigated"),
+		static_cast<int32>(DecideState(ESarkoAIState::Shoot, true, 400.f, /*bHasLineOfSight*/ false, SightRangeUU, 1200.f, HysteresisRangeUU, /*bInvestigationActive*/ true)),
 		static_cast<int32>(ESarkoAIState::Investigate));
 
 	TestEqual(TEXT("a visible target in range is shot at"),
-		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, 900.f, true, 2500.f, 1200.f, HysteresisRangeUU, bNoInvestigation)),
+		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, 900.f, true, SightRangeUU, 1200.f, HysteresisRangeUU, bNoInvestigation)),
 		static_cast<int32>(ESarkoAIState::Shoot));
 
 	TestEqual(TEXT("a visible target beyond firing range is closed on"),
-		static_cast<int32>(DecideState(ESarkoAIState::Shoot, true, 2200.f, true, 2500.f, 1200.f, HysteresisRangeUU, bNoInvestigation)),
+		static_cast<int32>(DecideState(ESarkoAIState::Shoot, true, 2200.f, true, SightRangeUU, 1200.f, HysteresisRangeUU, bNoInvestigation)),
 		static_cast<int32>(ESarkoAIState::Chase));
 
-	TestEqual(TEXT("a target outside hearing range is forgotten"),
-		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, 9000.f, false, 2500.f, 1200.f, HysteresisRangeUU, bNoInvestigation)),
+	// THE SIGHT BOUND, which §7 had to add explicitly: the hearing radius used to
+	// provide it as a side effect, so deleting hearing without this would have
+	// given every bot unlimited vision down any open sight line on the map.
+	TestEqual(TEXT("a target in plain view but beyond the sight range is not seen"),
+		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, SightRangeUU + 1.f, /*bHasLineOfSight*/ true, SightRangeUU, 1200.f, HysteresisRangeUU, bNoInvestigation)),
+		static_cast<int32>(ESarkoAIState::Patrol));
+	TestEqual(TEXT("and the boundary itself belongs to seeing"),
+		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, SightRangeUU, /*bHasLineOfSight*/ true, SightRangeUU, 1200.f, HysteresisRangeUU, bNoInvestigation)),
+		static_cast<int32>(ESarkoAIState::Chase));
+
+	TestEqual(TEXT("an unseen, unheard target is forgotten"),
+		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, 9000.f, false, SightRangeUU, 1200.f, HysteresisRangeUU, bNoInvestigation)),
 		static_cast<int32>(ESarkoAIState::Patrol));
 
-	// An investigation in progress survives the target leaving hearing — the bot
-	// is walking to a REMEMBERED position, not following a live one. This is the
+	// An investigation in progress survives the target moving away — the bot is
+	// walking to a REMEMBERED position, not following a live one. This is the
 	// only reason the flag is a parameter: without it, a player who breaks
 	// contact makes the bot forget mid-stride and the noise never gets looked at.
-	TestEqual(TEXT("a bot already walking to a noise keeps walking after the target is out of earshot"),
-		static_cast<int32>(DecideState(ESarkoAIState::Investigate, true, 9000.f, false, 2500.f, 1200.f, HysteresisRangeUU, /*bInvestigationActive*/ true)),
+	TestEqual(TEXT("a bot already walking to a noise keeps walking after the target has gone quiet"),
+		static_cast<int32>(DecideState(ESarkoAIState::Investigate, true, 9000.f, false, SightRangeUU, 1200.f, HysteresisRangeUU, /*bInvestigationActive*/ true)),
 		static_cast<int32>(ESarkoAIState::Investigate));
 
 	TestEqual(TEXT("and drops to patrol once that investigation is over"),
-		static_cast<int32>(DecideState(ESarkoAIState::Investigate, true, 9000.f, false, 2500.f, 1200.f, HysteresisRangeUU, /*bInvestigationActive*/ false)),
+		static_cast<int32>(DecideState(ESarkoAIState::Investigate, true, 9000.f, false, SightRangeUU, 1200.f, HysteresisRangeUU, /*bInvestigationActive*/ false)),
 		static_cast<int32>(ESarkoAIState::Patrol));
 
 	// Sight beats a live investigation: the memory is moot the moment the thing
 	// it remembers is visible.
 	TestEqual(TEXT("seeing the target ends the investigation immediately"),
-		static_cast<int32>(DecideState(ESarkoAIState::Investigate, true, 800.f, /*bHasLineOfSight*/ true, 2500.f, 1200.f, HysteresisRangeUU, /*bInvestigationActive*/ true)),
+		static_cast<int32>(DecideState(ESarkoAIState::Investigate, true, 800.f, /*bHasLineOfSight*/ true, SightRangeUU, 1200.f, HysteresisRangeUU, /*bInvestigationActive*/ true)),
 		static_cast<int32>(ESarkoAIState::Shoot));
 	return true;
 }
@@ -145,16 +167,16 @@ bool FSarkoAIStateHysteresis::RunTest(const FString& Parameters)
 	// entirely (as it used to).
 	using namespace SarkoAI;
 
-	const float HearingRadius = 2500.f;
+	const float SightRangeUU = 2500.f;
 	const float FiringRange = 1200.f;
 	const float HysteresisRangeUU = 150.f;
 
 	TestEqual(TEXT("already shooting exactly at the firing range stays in Shoot"),
-		static_cast<int32>(DecideState(ESarkoAIState::Shoot, true, FiringRange, true, HearingRadius, FiringRange, HysteresisRangeUU, /*bInvestigationActive*/ false)),
+		static_cast<int32>(DecideState(ESarkoAIState::Shoot, true, FiringRange, true, SightRangeUU, FiringRange, HysteresisRangeUU, /*bInvestigationActive*/ false)),
 		static_cast<int32>(ESarkoAIState::Shoot));
 
 	TestEqual(TEXT("chasing at exactly the firing range enters Shoot"),
-		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, FiringRange, true, HearingRadius, FiringRange, HysteresisRangeUU, /*bInvestigationActive*/ false)),
+		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, FiringRange, true, SightRangeUU, FiringRange, HysteresisRangeUU, /*bInvestigationActive*/ false)),
 		static_cast<int32>(ESarkoAIState::Shoot));
 
 	// The discriminating case: identical distance, inside the hysteresis
@@ -163,14 +185,14 @@ bool FSarkoAIStateHysteresis::RunTest(const FString& Parameters)
 	// differ with it, or the parameter is decorative.
 	const float DistanceInHysteresisBand = FiringRange + HysteresisRangeUU * 0.5f;
 	TestEqual(TEXT("already shooting, just past the firing range but inside the hysteresis band, stays in Shoot"),
-		static_cast<int32>(DecideState(ESarkoAIState::Shoot, true, DistanceInHysteresisBand, true, HearingRadius, FiringRange, HysteresisRangeUU, /*bInvestigationActive*/ false)),
+		static_cast<int32>(DecideState(ESarkoAIState::Shoot, true, DistanceInHysteresisBand, true, SightRangeUU, FiringRange, HysteresisRangeUU, /*bInvestigationActive*/ false)),
 		static_cast<int32>(ESarkoAIState::Shoot));
 	TestEqual(TEXT("chasing at that same distance stays in Chase instead of entering Shoot"),
-		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, DistanceInHysteresisBand, true, HearingRadius, FiringRange, HysteresisRangeUU, /*bInvestigationActive*/ false)),
+		static_cast<int32>(DecideState(ESarkoAIState::Chase, true, DistanceInHysteresisBand, true, SightRangeUU, FiringRange, HysteresisRangeUU, /*bInvestigationActive*/ false)),
 		static_cast<int32>(ESarkoAIState::Chase));
 
 	TestEqual(TEXT("already shooting beyond the hysteresis band drops back to Chase"),
-		static_cast<int32>(DecideState(ESarkoAIState::Shoot, true, FiringRange + HysteresisRangeUU * 2.f, true, HearingRadius, FiringRange, HysteresisRangeUU, /*bInvestigationActive*/ false)),
+		static_cast<int32>(DecideState(ESarkoAIState::Shoot, true, FiringRange + HysteresisRangeUU * 2.f, true, SightRangeUU, FiringRange, HysteresisRangeUU, /*bInvestigationActive*/ false)),
 		static_cast<int32>(ESarkoAIState::Chase));
 
 	return true;

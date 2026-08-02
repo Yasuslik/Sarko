@@ -62,6 +62,25 @@ struct FSarkoCoverBlock
 	 */
 	UPROPERTY()
 	bool bBlocksMovement = true;
+
+	/**
+	 * This block is EDGE SKIRT: scenery beyond the world border, which the player
+	 * can see and can never reach.
+	 *
+	 * It buys exactly one thing — exemption from the playable-area bound. Every
+	 * other entry in a map file must satisfy |x|, |y| <= extentUU, and since
+	 * SarkoMap::CheckPlayableBounds that is a PARSE ERROR naming the entry rather
+	 * than an assertion in one test over one file. A skirt entry may sit outside
+	 * it, up to SarkoMap::SkirtMarginUU beyond, and nothing else may.
+	 *
+	 * The flag rather than a wider bound because the bound is the protection: a
+	 * container, a spawn or an encounter door authored at x -21000 is a piece of
+	 * gameplay in the void, and widening the number to let the scenery in would
+	 * have let those in with it, silently. One field says which of the two a row
+	 * is, and the file has to say it out loud.
+	 */
+	UPROPERTY()
+	bool bSkirt = false;
 };
 
 /**
@@ -93,6 +112,38 @@ namespace SarkoMap
 	// The palette (ESarkoSurface, Palette::ColourFor, the named constants) lives
 	// in Map/SarkoMapPalette.h, included above: the kind table needs it too, and
 	// it must not have to include the spawner to get a colour.
+
+	/**
+	 * How far beyond a map's own extentUU an entry flagged `skirt` may stand.
+	 *
+	 * The edge skirt is authored ~4000 uu out on three sides and ~5000 in the
+	 * north (the ТЗ's world border, and the only edge a player walks along at
+	 * arm's length), and props on it carry their own extents. 6000 leaves room
+	 * for both without becoming a licence: a skirt entry at 30000 is a typo, and
+	 * a typo out there is invisible from every frame anybody takes.
+	 */
+	constexpr float SkirtMarginUU = 6000.f;
+
+	/**
+	 * The world's floor plane in z, and the height below it at which a pawn is
+	 * declared to have left the world.
+	 *
+	 * The engine's default KillZ is -1000000, which at a character's terminal
+	 * velocity is about four minutes of falling: "the raid froze" as far as the
+	 * player is concerned, with the haul still in the bag. -2000 is ten pawn
+	 * heights below a floor whose top is z = 0, so nothing legitimate is ever
+	 * near it, and a pawn that reaches it is recovered rather than deleted (see
+	 * ASarkoRaidGameMode::RecoverFallenPawn).
+	 */
+	constexpr float WorldKillZ = -2000.f;
+
+	/**
+	 * Pure: the candidate nearest to From, or false when there are none. Used to
+	 * pick the recovery point for a pawn that has left the world, and pure so
+	 * that "the nearest spawn" is a testable claim rather than a loop nobody
+	 * reads.
+	 */
+	bool NearestPoint(const FVector& From, const TArray<FVector>& Candidates, FVector& OutPoint);
 
 	/**
 	 * The sector's lighting, in the header so the numbers the readability

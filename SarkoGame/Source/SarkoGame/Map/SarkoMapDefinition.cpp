@@ -481,7 +481,8 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 			// Both optional, both defaulted on the struct, so a block written
 			// before surfaces existed keeps the grey cover it always had.
 			if (!ReadOptionalSurface(*Object, Block.Surface, OutError) ||
-				!ReadOptionalBool(*Object, TEXT("blocksMovement"), Block.bBlocksMovement, OutError))
+				!ReadOptionalBool(*Object, TEXT("blocksMovement"), Block.bBlocksMovement, OutError) ||
+				!ReadOptionalBool(*Object, TEXT("skirt"), Block.bSkirt, OutError))
 			{
 				OutError = FString::Printf(TEXT("blocks[%d]: %s"), Index, *OutError);
 				return false;
@@ -674,6 +675,11 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 				return false;
 			}
 			Prop.Yaw = static_cast<float>(Yaw);
+			if (!ReadOptionalBool(*Object, TEXT("skirt"), Prop.bSkirt, OutError))
+			{
+				OutError = FString::Printf(TEXT("props[%d]: %s"), Index, *OutError);
+				return false;
+			}
 			OutDefinition.Props.Add(Prop);
 		}
 	}
@@ -1037,6 +1043,14 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 			{
 				return false;
 			}
+			// OPTIONAL and defaulted false, unlike oneShot beside it: the three
+			// teaching rows predate the field and say nothing, which is exactly
+			// what "this row is part of the tutorial" should look like in a file.
+			if (!ReadOptionalBool(*Object, TEXT("optional"), Encounter.bOptional, OutError))
+			{
+				OutError = FString::Printf(TEXT("%s%s"), *Context, *OutError);
+				return false;
+			}
 			if (Encounter.BudgetCost < 1)
 			{
 				OutError = FString::Printf(TEXT("%s'budgetCost' must be at least 1, found %d"), *Context, Encounter.BudgetCost);
@@ -1181,6 +1195,15 @@ bool SarkoMap::ParseDefinition(const FString& Json, FSarkoMapDefinition& OutDefi
 
 			OutDefinition.Encounters.Add(Encounter);
 		}
+	}
+
+	// THE PLAYABLE BOUND. Checked here rather than per section because it is one
+	// rule about the whole file, and because the sections that need it most —
+	// containers, encounters, spawns — are the ones that had no bound at all
+	// until the edge skirt forced the question. See CheckPlayableBounds.
+	if (!CheckPlayableBounds(OutDefinition, OutError))
+	{
+		return false;
 	}
 
 	// The one cross-section rule: encounters without a budget is a map whose
@@ -1346,6 +1369,126 @@ bool SarkoMap::CollectIds(const FSarkoMapDefinition& Definition, TArray<FString>
 		for (int32 S = 0; S < Definition.Encounters[I].Spawns.Num(); ++S)
 		{
 			if (!Take(Definition.Encounters[I].Spawns[S].Id, TEXT("encounters[].spawns"), S))
+			{
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+bool SarkoMap::CheckPlayableBounds(const FSarkoMapDefinition& Definition, FString& OutError)
+{
+	OutError.Reset();
+
+	const float Playable = Definition.ExtentUU;
+	if (Playable <= 0.f)
+	{
+		// ParseDefinition has already refused a non-positive extentUU; this is
+		// here so the function is safe to call on a hand-built definition.
+		return true;
+	}
+	const float Skirt = Playable + SarkoMap::SkirtMarginUU;
+
+	// A named failure, every time. "an entry is outside the sector" sent someone
+	// through 600 props once; this says which row, which coordinate, and by how
+	// much it misses.
+	const auto Check = [&OutError](const FVector& Point, bool bIsSkirt, float Limit,
+		const TCHAR* Section, const FString& Id, int32 Index) -> bool
+	{
+		const float Worst = FMath::Max(FMath::Abs(static_cast<float>(Point.X)), FMath::Abs(static_cast<float>(Point.Y)));
+		if (Worst <= Limit)
+		{
+			return true;
+		}
+		const FString Name = Id.IsEmpty() ? FString::Printf(TEXT("[%d]"), Index) : FString::Printf(TEXT("'%s'"), *Id);
+		OutError = bIsSkirt
+			? FString::Printf(
+				TEXT("%s %s is a skirt entry at (%.0f, %.0f), which is %.0f uu past the skirt limit of %.0f — skirt is scenery just beyond the border, not a second map"),
+				Section, *Name, Point.X, Point.Y, Worst - Limit, Limit)
+			: FString::Printf(
+				TEXT("%s %s is at (%.0f, %.0f), %.0f uu outside the playable area (|x|,|y| <= %.0f). Only 'blocks' and 'props' may leave it, and only with \"skirt\": true"),
+				Section, *Name, Point.X, Point.Y, Worst - Limit, Limit);
+		return false;
+	};
+
+	for (int32 Index = 0; Index < Definition.Blocks.Num(); ++Index)
+	{
+		const FSarkoCoverBlock& Block = Definition.Blocks[Index];
+		if (!Check(Block.Location, Block.bSkirt, Block.bSkirt ? Skirt : Playable, TEXT("blocks"), Block.Id, Index))
+		{
+			return false;
+		}
+	}
+	for (int32 Index = 0; Index < Definition.Props.Num(); ++Index)
+	{
+		const FSarkoMapProp& Prop = Definition.Props[Index];
+		if (!Check(Prop.Location, Prop.bSkirt, Prop.bSkirt ? Skirt : Playable, TEXT("props"), Prop.Id, Index))
+		{
+			return false;
+		}
+	}
+
+	// Everything below is GAMEPLAY, and none of it carries a skirt flag: there
+	// is no such thing as a container, an exit or an enemy the player cannot
+	// reach. This is the half of the rule that is worth having.
+	for (int32 Index = 0; Index < Definition.Buildings.Num(); ++Index)
+	{
+		const FSarkoBuilding& Building = Definition.Buildings[Index];
+		if (!Check(Building.Location, false, Playable, TEXT("buildings"), Building.Id, Index))
+		{
+			return false;
+		}
+	}
+	for (int32 Index = 0; Index < Definition.Containers.Num(); ++Index)
+	{
+		const FSarkoLootContainerSpot& Spot = Definition.Containers[Index];
+		if (!Check(Spot.Location, false, Playable, TEXT("containers"), Spot.Id, Index))
+		{
+			return false;
+		}
+	}
+	for (int32 Index = 0; Index < Definition.PlayerSpawns.Num(); ++Index)
+	{
+		const FString Id = Definition.PlayerSpawnIds.IsValidIndex(Index) ? Definition.PlayerSpawnIds[Index] : FString();
+		if (!Check(Definition.PlayerSpawns[Index].GetLocation(), false, Playable, TEXT("playerSpawns"), Id, Index))
+		{
+			return false;
+		}
+	}
+	for (int32 Index = 0; Index < Definition.BotSpawns.Num(); ++Index)
+	{
+		const FSarkoBotSpot& Spot = Definition.BotSpawns[Index];
+		if (!Check(Spot.Location, false, Playable, TEXT("botSpawns"), Spot.Id, Index))
+		{
+			return false;
+		}
+	}
+	for (int32 Index = 0; Index < Definition.Extractions.Num(); ++Index)
+	{
+		const FSarkoExtractionSpot& Spot = Definition.Extractions[Index];
+		if (!Check(Spot.Location, false, Playable, TEXT("extractions"), Spot.Id, Index))
+		{
+			return false;
+		}
+	}
+	for (int32 Index = 0; Index < Definition.Encounters.Num(); ++Index)
+	{
+		const FSarkoEncounter& Encounter = Definition.Encounters[Index];
+		const FVector Trigger(Encounter.Trigger.Location.X, Encounter.Trigger.Location.Y, 0.f);
+		if (!Check(Trigger, false, Playable, TEXT("encounter triggers"), Encounter.Id, Index))
+		{
+			return false;
+		}
+		for (int32 SpawnIndex = 0; SpawnIndex < Encounter.Spawns.Num(); ++SpawnIndex)
+		{
+			const FSarkoEncounterSpawn& Spawn = Encounter.Spawns[SpawnIndex];
+			if (!Check(Spawn.Location, false, Playable, TEXT("encounter spawn points"), Spawn.Id, SpawnIndex))
+			{
+				return false;
+			}
+			const FVector Post(Spawn.PostPos.X, Spawn.PostPos.Y, 0.f);
+			if (!Check(Post, false, Playable, TEXT("encounter posts"), Spawn.Id, SpawnIndex))
 			{
 				return false;
 			}

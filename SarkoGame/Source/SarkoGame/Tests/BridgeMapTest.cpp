@@ -1,9 +1,11 @@
 #include "Misc/AutomationTest.h"
 
 #include "AI/SarkoBotArchetypes.h"
+#include "AI/SarkoNoise.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Loot/SarkoExtractionZone.h"
 #include "Map/SarkoBuildings.h"
+#include "Map/SarkoMapBuilder.h"
 #include "Map/SarkoMapDefinition.h"
 #include "Map/SarkoMapKinds.h"
 
@@ -76,12 +78,20 @@ namespace
 		return Points;
 	}
 
-	/** The number of enemies the tutorial's authored encounters actually put on the map. */
+	/**
+	 * The number of enemies the tutorial's authored encounters actually put on
+	 * the map — the NON-OPTIONAL rows only, since the rotation (spec §5) added
+	 * five rows a tutorial raid can never reach.
+	 */
 	int32 TutorialEnemyCount(const FSarkoMapDefinition& Map)
 	{
 		int32 Total = 0;
 		for (const FSarkoEncounter& Encounter : Map.Encounters)
 		{
+			if (Encounter.bOptional)
+			{
+				continue;
+			}
 			Total += FMath::Min(Encounter.BudgetCost, Encounter.MaxAlive);
 		}
 		return Total;
@@ -105,7 +115,11 @@ bool FSarkoBridgeMapIsValid::RunTest(const FString& Parameters)
 
 	const float Extent = Map.ExtentUU;
 	TestEqual(TEXT("the sector is 400 m across"), Extent, 20000.f);
-	TestEqual(TEXT("the tutorial raid is 15 minutes"), Map.RaidDurationSeconds, 900.f);
+	// TEN MINUTES, not fifteen (spec §2). The measured route is ~186 s of walking:
+	// in a 900 s raid the clock was scenery and the last five minutes were surplus,
+	// and 600 s is the one number that turns it into a budget without making the
+	// authored route tight.
+	TestEqual(TEXT("the raid is 10 minutes"), Map.RaidDurationSeconds, 600.f);
 
 	// MapExtent (settings) and extentUU (map file) are two copies of one number.
 	// Disagreement is silent and ugly in both directions: too small and the AI
@@ -142,8 +156,36 @@ bool FSarkoBridgeMapIsValid::RunTest(const FString& Parameters)
 		TestTrue(FString::Printf(TEXT("%s is inside the sector"), What),
 			FMath::Abs(Point.X) <= Extent && FMath::Abs(Point.Y) <= Extent);
 	};
-	for (const FSarkoCoverBlock& Block : Map.Blocks)          { CheckInside(Block.Location, TEXT("a block")); }
-	for (const FSarkoMapProp& Prop : Map.Props)               { CheckInside(Prop.Location, TEXT("a prop")); }
+	// SCENERY IS THE EXCEPTION, AND IT IS THE ONLY ONE. The edge skirt (spec
+	// §3.6) is ground and trees that stand OUTSIDE the sector so the border fades
+	// instead of cutting to black, and a row flagged `skirt` is allowed out there
+	// by SarkoMap::SkirtMarginUU and no further. Everything else on the file —
+	// containers, spawns, doors, posts, exits — is still bounded to the sector,
+	// and now by the PARSER (SarkoMap::CheckPlayableBounds) rather than by this
+	// test alone: a playable entry in the void is a named load failure on every
+	// map, not one assertion about one file.
+	int32 SkirtBlocks = 0;
+	int32 SkirtProps = 0;
+	const auto CheckScenery = [this, Extent, &CheckInside](const FVector& Point, bool bSkirt, const TCHAR* What, int32& Counter)
+	{
+		if (!bSkirt)
+		{
+			CheckInside(Point, What);
+			return;
+		}
+		++Counter;
+		const float Worst = FMath::Max(FMath::Abs(static_cast<float>(Point.X)), FMath::Abs(static_cast<float>(Point.Y)));
+		TestTrue(FString::Printf(TEXT("%s flagged skirt is actually outside the sector"), What), Worst > Extent);
+		TestTrue(FString::Printf(TEXT("%s flagged skirt stays within the skirt margin"), What),
+			Worst <= Extent + SarkoMap::SkirtMarginUU);
+	};
+	for (const FSarkoCoverBlock& Block : Map.Blocks)          { CheckScenery(Block.Location, Block.bSkirt, TEXT("a block"), SkirtBlocks); }
+	for (const FSarkoMapProp& Prop : Map.Props)               { CheckScenery(Prop.Location, Prop.bSkirt, TEXT("a prop"), SkirtProps); }
+	// A guard against the guard: with no skirt entries at all the two loops above
+	// would be the old test wearing a new name, and the border would be back to
+	// ending in black with nothing failing.
+	TestTrue(FString::Printf(TEXT("the sector has an edge skirt (%d blocks, %d props)"), SkirtBlocks, SkirtProps),
+		SkirtBlocks >= 8 && SkirtProps >= 100);
 	for (const FSarkoLootContainerSpot& C : Map.Containers)   { CheckInside(C.Location, TEXT("a container")); }
 	for (const FSarkoBotSpot& B : Map.BotSpawns)              { CheckInside(B.Location, TEXT("a bot spawn")); }
 	const TArray<FEncounterPoint> EncounterPoints = EncounterSpawnPoints(Map);
@@ -665,7 +707,11 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 	// The owner's Bridge_West numbers, as numbers. The full map's 42/16 move to
 	// docs/design/bridge-full-map-tz.md as the acceptance bar for Stage D; this
 	// is the bar for the sector that ships now.
-	TestEqual(TEXT("nineteen containers"), Map.Containers.Num(), 19);
+	// TWENTY-ONE since the west fork (spec §3.2): the two cement-works crates are
+	// containers now. Promoted, not added — the prop at (-17400,-7000) left the
+	// props list in the same edit, or the yard would hold two boxes in one box's
+	// worth of space.
+	TestEqual(TEXT("twenty-one containers"), Map.Containers.Num(), 21);
 	TestEqual(TEXT("four player spawns"), Map.PlayerSpawns.Num(), 4);
 	// FOUR since the map-comfort pass: E1/E2/E3 from ТЗ §12, plus the west
 	// cordon. Two of the four are reachable now — E1 from the first second, and
@@ -679,25 +725,53 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 	// home. The `botSpawns` shape stays supported for non-tutorial content; this
 	// map simply authors none.
 	TestEqual(TEXT("no statically posted bots"), Map.BotSpawns.Num(), 0);
-	TestEqual(TEXT("three encounters"), Map.Encounters.Num(), 3);
+
+	// EIGHT ROWS, THREE OF THEM THE TUTORIAL'S (spec §5). Raid 2 was raid 1: three
+	// one-shot fights in three fixed places, and a `normal` budget of 8 that four
+	// authored points could never spend. The five new rows are flagged `optional`,
+	// which means exactly one thing — a tutorial raid cannot reach them. The
+	// teaching rows are the ones that say nothing, because a row's default has to
+	// be "this is part of the curriculum".
+	TestEqual(TEXT("eight encounters"), Map.Encounters.Num(), 8);
+	TArray<const FSarkoEncounter*> Teaching;
+	for (const FSarkoEncounter& Encounter : Map.Encounters)
+	{
+		if (!Encounter.bOptional)
+		{
+			Teaching.Add(&Encounter);
+		}
+	}
+	TestEqual(TEXT("three of them are the tutorial's, and they are the ones with no 'optional' key"), Teaching.Num(), 3);
 	TestEqual(TEXT("a tutorial budget of four"), Map.EncounterBudget.Tutorial, 4);
 	TestEqual(TEXT("and the first fight is one enemy"), Map.EncounterBudget.FirstFightMaxAlive, 1);
 
+	int32 TeachingCost = 0;
 	int32 TotalCost = 0;
 	for (const FSarkoEncounter& Encounter : Map.Encounters)
 	{
 		TotalCost += Encounter.BudgetCost;
+		if (!Encounter.bOptional)
+		{
+			TeachingCost += Encounter.BudgetCost;
+		}
 	}
-	TestEqual(TEXT("the three encounters spend the tutorial budget exactly"), TotalCost, Map.EncounterBudget.Tutorial);
+	TestEqual(TEXT("the three teaching encounters spend the tutorial budget exactly"), TeachingCost, Map.EncounterBudget.Tutorial);
 	TestEqual(TEXT("and put four enemies on the map, in the order 1, 1, 2"), TutorialEnemyCount(Map), 4);
 
+	// THE POOL COSTS MORE THAN THE BUDGET, and that is the rotation. Eight rows
+	// costing ten against a normal budget of eight means four or five of the eight
+	// happen in any one raid, and which ones is a function of the seed — same
+	// enemy count, same caps, different geography. A pool that fitted inside the
+	// budget would be a fixed script with extra rows.
+	TestTrue(FString::Printf(TEXT("the pool costs more than a normal raid can spend (%d against %d)"),
+		TotalCost, Map.EncounterBudget.Normal), TotalCost > Map.EncounterBudget.Normal);
+	TestTrue(FString::Printf(TEXT("but not so much more that half the map never fires (%d against %d)"),
+		TotalCost, Map.EncounterBudget.Normal), TotalCost <= Map.EncounterBudget.Normal * 2);
+
 	// Order is what makes "the first fight is the gas station" data rather than
-	// luck: it is the tie-break when two triggers arm in the same evaluation.
-	TArray<const FSarkoEncounter*> ByOrder;
-	for (const FSarkoEncounter& Encounter : Map.Encounters)
-	{
-		ByOrder.Add(&Encounter);
-	}
+	// luck: in a TUTORIAL raid it is the activation sequence outright, and in any
+	// raid it is the tie-break when two triggers arm in the same evaluation.
+	TArray<const FSarkoEncounter*> ByOrder = Teaching;
 	ByOrder.Sort([](const FSarkoEncounter& A, const FSarkoEncounter& B) { return A.Order < B.Order; });
 	TestEqual(TEXT("the gas station is first"), ByOrder[0]->Id, FString(TEXT("bridge_enc_gas_station")));
 	TestEqual(TEXT("and it is one enemy"), ByOrder[0]->MaxAlive, 1);
@@ -707,7 +781,7 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 	TestEqual(TEXT("and it is the two-bot fight the escalation builds to"), ByOrder[2]->MaxAlive, 2);
 	for (const FSarkoEncounter& Encounter : Map.Encounters)
 	{
-		TestTrue(FString::Printf(TEXT("tutorial encounter '%s' is one-shot"), *Encounter.Id), Encounter.bOneShot);
+		TestTrue(FString::Printf(TEXT("encounter '%s' is one-shot"), *Encounter.Id), Encounter.bOneShot);
 	}
 
 	// Two triggers that overlap are two events that happen at once, which is how
@@ -723,15 +797,17 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 			Separation > ByOrder[1]->Trigger.RadiusUU + ByOrder[2]->Trigger.RadiusUU);
 	}
 
-	// 3 junk / 7 common / 6 good / 1 med / 2 military.
+	// 3 junk / 8 common / 7 good / 1 med / 2 military — the west fork added one of
+	// each: a `good` in the cement works' near yard and a `common` at its deep end,
+	// which is what makes the fork a bargain rather than a second jackpot.
 	TMap<FName, int32> Tiers;
 	for (const FSarkoLootContainerSpot& Spot : Map.Containers)
 	{
 		Tiers.FindOrAdd(Spot.Tier)++;
 	}
 	TestEqual(TEXT("three junk"), Tiers.FindRef(TEXT("junk")), 3);
-	TestEqual(TEXT("seven common"), Tiers.FindRef(TEXT("common")), 7);
-	TestEqual(TEXT("six good"), Tiers.FindRef(TEXT("good")), 6);
+	TestEqual(TEXT("eight common"), Tiers.FindRef(TEXT("common")), 8);
+	TestEqual(TEXT("seven good"), Tiers.FindRef(TEXT("good")), 7);
 	TestEqual(TEXT("one med"), Tiers.FindRef(TEXT("med")), 1);
 	TestEqual(TEXT("two military"), Tiers.FindRef(TEXT("military")), 2);
 
@@ -790,9 +866,21 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 	// fight (the warehouse is exactly that, on purpose). Two bots from two
 	// unrelated encounters converging on it is the bug.
 	//
-	// Hearing is per archetype, not the project default: the whole reason
-	// archetypes carry their own hearing radius is that "how far a bot listens"
-	// is a property of the bot.
+	// RESTATED FOR THE NOISE MODEL (spec §7). "Inside a bot's hearing" is no
+	// longer a fact about geometry alone, because how far a sound reaches now
+	// depends on what the player did. The player's LOUDEST INVOLUNTARY noise is a
+	// run — walking is quieter and standing is silent, and both are choices —
+	// so the invariant is measured at NoiseAudibleRadiusUU, scaled by each
+	// archetype's own sensitivity. A player who arrives at a crate on foot, at
+	// any speed, is inside at most one encounter's earshot.
+	//
+	// FIRING is deliberately NOT held to this: a gunshot carries 2600 uu and
+	// there are eight points on this map where two encounters' posts can both
+	// hear one (asserted below, so the fact stays true and visible). That is the
+	// price of shooting rather than a placement bug — and it does not touch the
+	// tutorial's "first fight is one bot" law, because noise cannot spawn
+	// anything: SarkoEncounter::AllowedSpawnCount and the raid budget are the
+	// only things that can, and a bot that has not spawned cannot hear.
 	{
 		const TArray<FEncounterPoint> Posts = EncounterSpawnPoints(Map);
 		TArray<TPair<FString, FVector2D>> MustStandOn;
@@ -805,11 +893,12 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 			MustStandOn.Emplace(Spot.Id, FVector2D(Spot.Location.X, Spot.Location.Y));
 		}
 
-		int32 HeardByAnyone = 0;
-		for (const TPair<FString, FVector2D>& Point : MustStandOn)
+		const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+
+		// How many encounters' posts hear a noise of this radius made at Point.
+		const auto ListeningEncountersAt = [&](const FVector2D& At, float BaseRadiusUU, FString& OutListeners)
 		{
-			TSet<int32> ListeningEncounters;
-			FString Listeners;
+			TSet<int32> Listening;
 			for (const FEncounterPoint& Post : Posts)
 			{
 				FSarkoBotArchetype Archetype;
@@ -822,20 +911,30 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 						*Post.Id, *Post.Archetype.ToString()));
 					continue;
 				}
-				const float Distance = FVector2D::Distance(Point.Value, Post.PostPos);
-				if (Distance <= Archetype.HearingRadiusUU)
+				const float Reach = BaseRadiusUU * Archetype.HearingSensitivity;
+				const float Distance = FVector2D::Distance(At, Post.PostPos);
+				if (SarkoNoise::IsAudible(Distance, BaseRadiusUU, Archetype.HearingSensitivity))
 				{
-					ListeningEncounters.Add(Post.EncounterIndex);
-					Listeners += FString::Printf(TEXT("%s (%s, %.0f uu of %.0f) "),
-						*Post.Id, *Post.EncounterId, Distance, Archetype.HearingRadiusUU);
+					Listening.Add(Post.EncounterIndex);
+					OutListeners += FString::Printf(TEXT("%s (%s, %.0f uu of %.0f) "),
+						*Post.Id, *Post.EncounterId, Distance, Reach);
 				}
 			}
+			return Listening;
+		};
+
+		int32 HeardByAnyone = 0;
+		for (const TPair<FString, FVector2D>& Point : MustStandOn)
+		{
+			FString Listeners;
+			const TSet<int32> ListeningEncounters =
+				ListeningEncountersAt(Point.Value, Settings.NoiseAudibleRadiusUU, Listeners);
 			if (ListeningEncounters.Num() > 0)
 			{
 				++HeardByAnyone;
 			}
 			TestTrue(FString::Printf(
-				TEXT("'%s' is inside the hearing of at most one encounter's posts — heard by: %s"),
+				TEXT("a player RUNNING to '%s' is inside the hearing of at most one encounter's posts — heard by: %s"),
 				*Point.Key, Listeners.IsEmpty() ? TEXT("nobody") : *Listeners),
 				ListeningEncounters.Num() <= 1);
 		}
@@ -843,8 +942,25 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 		// A guard against the guard. If every post drifted out of earshot of
 		// every container this test would pass by testing nothing — and a map
 		// where no crate is ever guarded is a map with no tension in it.
-		TestTrue(FString::Printf(TEXT("some containers ARE guarded (%d of %d points are heard by someone)"),
+		TestTrue(FString::Printf(TEXT("some containers ARE guarded (%d of %d points are heard by a runner)"),
 			HeardByAnyone, MustStandOn.Num()), HeardByAnyone >= 4);
+
+		// AND THE OTHER HALF, which is the point of §7 rather than a lapse in it:
+		// a GUNSHOT reaches further than any footstep and can pull two unrelated
+		// encounters onto one crate. If this ever stops being true the sector has
+		// drifted so far apart that firing costs the player nothing, and the
+		// stealth verb has no counterpart worth avoiding.
+		int32 HeardByTwoWhenFiring = 0;
+		for (const TPair<FString, FVector2D>& Point : MustStandOn)
+		{
+			FString Listeners;
+			if (ListeningEncountersAt(Point.Value, Settings.NoiseLoudRadiusUU, Listeners).Num() > 1)
+			{
+				++HeardByTwoWhenFiring;
+			}
+		}
+		TestTrue(FString::Printf(TEXT("firing IS loud enough to be a decision (%d point(s) reach two encounters' posts)"),
+			HeardByTwoWhenFiring), HeardByTwoWhenFiring > 0);
 	}
 
 	// ТЗ §8: "бот не виден при появлении". The nearest post is a whole zone
@@ -907,11 +1023,17 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 	if (West)
 	{
 		TestTrue(TEXT("the west cordon is reachable"), InActiveThird(West->Location));
-		TestEqual(TEXT("and it opens for the last five minutes of a fifteen-minute raid"),
-			West->OpensAfterSeconds, 600.f);
-		TestTrue(TEXT("which is a real wait, not a formality"),
-			West->OpensAfterSeconds > Map.RaidDurationSeconds * 0.5f
-				&& West->OpensAfterSeconds < Map.RaidDurationSeconds);
+		// 240, forced by spec §2 and matching what spec §3.3 asks for anyway. It
+		// was 600 — the last five minutes of a 900 s raid — and the raid is 600 s
+		// now, so 600 would have been a pad that opens exactly as the clock expires:
+		// a dead extraction dressed as a choice, and an assertion below that could
+		// never hold. 240 makes it a live option while the player is still deep in
+		// the west, which is when "run for it or loot one more crate" is a question.
+		TestEqual(TEXT("and it opens four minutes in"), West->OpensAfterSeconds, 240.f);
+		TestTrue(TEXT("which is a real wait, and a real window: shut for a while, then open for most of the raid"),
+			West->OpensAfterSeconds > 0.f
+				&& West->OpensAfterSeconds >= Map.RaidDurationSeconds * 0.25f
+				&& West->OpensAfterSeconds <= Map.RaidDurationSeconds * 0.6f);
 		// It has to be a genuine alternative or it is scenery: closer to the last
 		// loot on the route than E1 is, and on the far side of no crossing.
 		const FSarkoLootContainerSpot* Mil02 = Map.Containers.FindByPredicate(
@@ -1008,12 +1130,24 @@ bool FSarkoBridgeWestIsEnclosed::RunTest(const FString& Parameters)
 			What, FirstHole, Holes), Holes, 0);
 	};
 
-	// The east closure. Each run stops at the ravine, where the rim walls close
-	// everything between x = -13600 and -1100 already — so the two runs plus the
-	// rims are one continuous flank, and the step between them is invisible
-	// because it happens inside a gorge nobody can walk along.
-	RequireSolidAlongY(-6100.f, 2100.f, 20000.f, TEXT("the east closure, north of the ravine"));
-	RequireSolidAlongY(-9100.f, -20000.f, -2100.f, TEXT("the east closure, south of the ravine"));
+	// The east closure. Each run stops at the ravine's rim walls, which close
+	// everything between x = -13600 and -1100 from y 1500 to 2100 (and its
+	// southern mirror) — so the runs and the rims are one continuous flank.
+	RequireSolidAlongY(-6100.f, 1500.f, 20000.f, TEXT("the east closure, north of the ravine"));
+	RequireSolidAlongY(-9100.f, -20000.f, -1500.f, TEXT("the east closure, south of the ravine"));
+
+	// AND THE GORGE FLOOR, which is the piece that was missing.
+	//
+	// The old note here said the step between the two runs "happens inside a
+	// gorge nobody can walk along". The rim walls close x -13600..-1100 ACROSS —
+	// north to south — and not ALONG: the bed between them is flat, non-colliding
+	// ravine surface for the sector's whole width. A player who crossed at the
+	// pipes and turned east instead of climbing out walked the gorge past both
+	// closure lines and out at the bridge's gap into the east two thirds, where
+	// E2 and E3 are authored, open from second zero, and were reachable. See
+	// bridge_west_closure_ravine, and the reachability test below, which is the
+	// one that would have caught it — a sample line only ever proves the line.
+	RequireSolidAlongY(-9100.f, -1500.f, 1500.f, TEXT("the east closure across the ravine floor"));
 
 	// The world border. Without it the rail depot at y = -19000 is 1000 uu from
 	// the floor's edge, and walking off a 400 m plane is a fall, a KillZ death and
@@ -1037,6 +1171,179 @@ bool FSarkoBridgeWestIsEnclosed::RunTest(const FString& Parameters)
 	TestTrue(TEXT("the mouth is where the extraction is"),
 		SarkoMap::IsPointInsideBlocksXY(FVector2D(-16200.f, 19850.f), Solid) &&
 		SarkoMap::IsPointInsideBlocksXY(FVector2D(-14800.f, 19850.f), Solid));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoBridgeWestHasNoWayOut,
+	"Sarko.Map.BridgeWestHasNoWayOut",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * Nothing east of the closure is REACHABLE — measured by walking, not by sampling.
+ *
+ * This test exists because the sampling tests above passed for the whole life of
+ * the sector while a pawn could walk out of it. Every "the barrier is unbroken"
+ * assertion in FSarkoBridgeWestIsEnclosed walks ONE line and proves exactly that
+ * line; the hole was not on any of them. It was the ravine floor: the rim walls
+ * close the gorge across and not along, so the pipe crossing opened onto a
+ * 3000 uu corridor running east under both closure lines and out at the bridge's
+ * own gap into the east two thirds — with E2 (-1000,+19500) and E3
+ * (+14500,+19500) authored, open from second zero, and standing in it.
+ *
+ * A flood fill is the only shape of test that can say "and there is no OTHER
+ * way", which is the claim the closure actually makes. It is a pure function of
+ * the map file — a grid, a queue and SarkoMap's own point-in-block predicate —
+ * so it costs no world and no actors.
+ *
+ * The grid step is 100 uu, a quarter of the pawn's width and the same step the
+ * sample lines use. Every barrier on this map is at least 300 uu thick, so no
+ * wall can fall between two samples; and a point-sized walker is strictly more
+ * mobile than a 70 uu pawn, so a fill that cannot get out proves a pawn cannot.
+ */
+bool FSarkoBridgeWestHasNoWayOut::RunTest(const FString& Parameters)
+{
+	FSarkoMapDefinition Map;
+	FString Error;
+	if (!LoadBridge(Map, Error))
+	{
+		AddError(FString::Printf(TEXT("bridge.json failed to load: %s"), *Error));
+		return false;
+	}
+
+	// Building walls included: they are solid geometry a pawn cannot cross, and
+	// leaving them out would only ever make the fill more permissive — but a
+	// building is also the one thing that could wall off a legitimate region and
+	// make this test pass by fencing the player in, which is worth seeing.
+	const FSarkoMapLayout Layout = SarkoMap::ToLayout(Map);
+	TArray<FSarkoCoverBlock> Solid = SolidOnly(Layout.Cover);
+	// Props too — a freight car is a wall that happens to be authored in another
+	// section, and the sector's borders are partly dressed with treeline props.
+	for (const FSarkoMapProp& Prop : Map.Props)
+	{
+		FSarkoPropKind Kind;
+		if (!SarkoMap::FindPropKind(Prop.Kind, Kind))
+		{
+			continue;
+		}
+		for (const FSarkoPropPart& Part : Kind.Parts)
+		{
+			if (!Part.bBlocksMovement)
+			{
+				continue;
+			}
+			FSarkoCoverBlock Box;
+			Box.Id = Prop.Id.IsEmpty() ? Prop.Kind.ToString() : Prop.Id;
+			Box.Location = SarkoMap::PartWorldLocation(Prop.Location, Prop.Yaw, Part);
+			Box.Rotation = FRotator(0.f, Prop.Yaw, 0.f);
+			Box.Extent = Part.Extent;
+			Solid.Add(Box);
+		}
+	}
+
+	const float Step = 100.f;
+	const float Extent = Map.ExtentUU;
+	const int32 Half = FMath::FloorToInt(Extent / Step);          // 200 cells each way
+	const int32 Side = Half * 2 + 1;
+	const auto CellCentre = [Step, Half](int32 IX, int32 IY)
+	{
+		return FVector2D((IX - Half) * Step, (IY - Half) * Step);
+	};
+
+	TArray<bool> Blocked;
+	Blocked.SetNumZeroed(Side * Side);
+	for (int32 IX = 0; IX < Side; ++IX)
+	{
+		for (int32 IY = 0; IY < Side; ++IY)
+		{
+			Blocked[IX * Side + IY] = SarkoMap::IsPointInsideBlocksXY(CellCentre(IX, IY), Solid);
+		}
+	}
+
+	TArray<bool> Seen;
+	Seen.SetNumZeroed(Side * Side);
+	TArray<int32> Frontier;
+	for (const FTransform& Spawn : Map.PlayerSpawns)
+	{
+		const FVector Location = Spawn.GetLocation();
+		const int32 IX = FMath::Clamp(FMath::RoundToInt(Location.X / Step) + Half, 0, Side - 1);
+		const int32 IY = FMath::Clamp(FMath::RoundToInt(Location.Y / Step) + Half, 0, Side - 1);
+		const int32 Index = IX * Side + IY;
+		if (Blocked[Index])
+		{
+			AddError(TEXT("a player spawn is inside geometry, so the raid begins stuck"));
+			continue;
+		}
+		if (!Seen[Index])
+		{
+			Seen[Index] = true;
+			Frontier.Add(Index);
+		}
+	}
+	TestTrue(TEXT("the fill starts somewhere"), Frontier.Num() > 0);
+
+	float FurthestEast = -Extent;
+	FVector2D FurthestPoint = FVector2D::ZeroVector;
+	int32 Reached = 0;
+	while (Frontier.Num() > 0)
+	{
+		const int32 Index = Frontier.Pop(EAllowShrinking::No);
+		++Reached;
+		const int32 IX = Index / Side;
+		const int32 IY = Index % Side;
+		const FVector2D Here = CellCentre(IX, IY);
+		if (Here.X > FurthestEast)
+		{
+			FurthestEast = Here.X;
+			FurthestPoint = Here;
+		}
+		const int32 Neighbours[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+		for (const int32(&Offset)[2] : Neighbours)
+		{
+			const int32 NX = IX + Offset[0];
+			const int32 NY = IY + Offset[1];
+			if (NX < 0 || NY < 0 || NX >= Side || NY >= Side)
+			{
+				continue;
+			}
+			const int32 Next = NX * Side + NY;
+			if (Seen[Next] || Blocked[Next])
+			{
+				continue;
+			}
+			Seen[Next] = true;
+			Frontier.Add(Next);
+		}
+	}
+
+	AddInfo(FString::Printf(TEXT("%d of %d cells are reachable; the furthest east is (%.0f, %.0f)"),
+		Reached, Side * Side, FurthestPoint.X, FurthestPoint.Y));
+
+	// The closure's own line. North of the ravine it stands at x = -6100 and
+	// south of it at x = -9100, so -5900 (the north block's east face) is the
+	// eastmost coordinate any reachable cell may have.
+	TestTrue(FString::Printf(TEXT("nothing east of the closure is reachable — the furthest east a pawn can walk is (%.0f, %.0f)"),
+		FurthestPoint.X, FurthestPoint.Y), FurthestEast <= -5900.f);
+
+	// And the two exits that are behind it stay behind it. Named separately from
+	// the line above because THIS is the consequence that matters: an extraction
+	// the tutorial has never heard of, in content that does not exist yet.
+	for (const FSarkoExtractionSpot& Spot : Map.Extractions)
+	{
+		const bool bMeantToBeReachable = Spot.Id == TEXT("bridge_extract_north_path")
+			|| Spot.Id == TEXT("bridge_extract_west_cordon");
+		const int32 IX = FMath::Clamp(FMath::RoundToInt(Spot.Location.X / Step) + Half, 0, Side - 1);
+		const int32 IY = FMath::Clamp(FMath::RoundToInt(Spot.Location.Y / Step) + Half, 0, Side - 1);
+		const bool bReached = Seen[IX * Side + IY];
+		TestEqual(FString::Printf(TEXT("extraction '%s' is reachable exactly when it is meant to be"), *Spot.Id),
+			bReached, bMeantToBeReachable);
+	}
+
+	// A guard against the guard: a fill that walled itself in at the first cell
+	// would satisfy every assertion above. The active third is roughly a third of
+	// a 400x400 m sector, so a real fill reaches tens of thousands of cells.
+	TestTrue(FString::Printf(TEXT("the fill actually explored the sector (%d cells)"), Reached),
+		Reached > 20000);
 	return true;
 }
 

@@ -1,6 +1,7 @@
 #include "Map/SarkoMapBuilder.h"
 
 #include "Components/DirectionalLightComponent.h"
+#include "Core/SarkoRaidSettings.h"
 #include "Components/LightComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -249,6 +250,28 @@ namespace
 	}
 }
 
+bool SarkoMap::NearestPoint(const FVector& From, const TArray<FVector>& Candidates, FVector& OutPoint)
+{
+	// Squared distance, and XY rather than 3D: a pawn that has left the world is
+	// a long way DOWN, and z would then be a large term every candidate shares —
+	// it cannot change which is nearest, and it can hide the difference between
+	// two spawns 2000 uu apart under a 100000 uu fall. "Nearest" here means
+	// nearest on the ground the pawn fell off.
+	double Best = TNumericLimits<double>::Max();
+	bool bFound = false;
+	for (const FVector& Candidate : Candidates)
+	{
+		const double Squared = FVector::DistSquaredXY(From, Candidate);
+		if (Squared < Best)
+		{
+			Best = Squared;
+			OutPoint = Candidate;
+			bFound = true;
+		}
+	}
+	return bFound;
+}
+
 UMaterialInterface* SarkoMap::SharedSurfaceMaterial(ESarkoSurface Surface)
 {
 	return SharedFlatMaterialInternal(Surface);
@@ -409,7 +432,15 @@ void SarkoMap::SpawnExtractionZones(UWorld& World, const FSarkoMapDefinition& De
 			UE_LOG(LogTemp, Error, TEXT("SarkoMap: failed to spawn extraction zone %d"), Index);
 			continue;
 		}
-		Zone->SetupFromSpot(Index, Spot.Name, Spot.RadiusUU);
+		// OpensAfterSeconds and the raid's length both travel with the zone now
+		// (spec §4.5): a pad that says ЗАЧИНЕНО on the HUD while drawing
+		// extraction green on the ground is two answers to one question. The
+		// duration is the map's own, with the settings fallback the game mode and
+		// the HUD both use, so all three agree about what "four minutes in" means.
+		const float RaidDuration = Definition.RaidDurationSeconds > 0.f
+			? Definition.RaidDurationSeconds
+			: GetDefault<USarkoRaidSettings>()->RaidDurationSeconds;
+		Zone->SetupFromSpot(Index, Spot.Name, Spot.RadiusUU, Spot.OpensAfterSeconds, RaidDuration);
 		Zone->FinishSpawning(SpawnTransform);
 	}
 

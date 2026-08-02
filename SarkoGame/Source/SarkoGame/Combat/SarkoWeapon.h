@@ -43,6 +43,28 @@ namespace SarkoCombat
 	 * spawn camp, thirty-odd safe seconds before anything can hurt them.
 	 */
 	int32 StartingRounds(int32 Configured, int32 MagazineSize);
+
+	/**
+	 * How many rounds a reload moves out of the bag and into the magazine: the
+	 * room left in the magazine, or everything the bag has, whichever is less.
+	 *
+	 * This one expression is the whole scarcity stage (spec §1). Reload used to
+	 * assign MagazineSize unconditionally and nothing ever read `ammo_9mm` from the
+	 * grid, so the 8-round magazine, the halved loot weights and the route's 46
+	 * authored rounds were all decoration on an infinite supply.
+	 *
+	 * PARTIAL RELOADS ARE THE POINT, not a degenerate case: three rounds in the bag
+	 * load three rounds, and the player walks into the next fight knowing exactly
+	 * that. A zero result means the bag is empty — the caller takes the dry-click
+	 * path rather than spending ReloadSeconds to move nothing.
+	 *
+	 * Pure, and every input is clamped rather than trusted: a broken MagazineSize
+	 * (zero or negative) yields zero, an over-full magazine yields zero rather than
+	 * a negative transfer that would ADD rounds to the bag, and a negative reserve
+	 * — which no honest grid produces, but which arithmetic elsewhere could — is
+	 * read as empty.
+	 */
+	int32 ReloadAmount(int32 InMagazine, int32 MagazineSize, int32 ReserveRounds);
 }
 
 /** Hitscan weapon. Only the server decides whether a shot connected. */
@@ -68,7 +90,28 @@ public:
 	 */
 	void ServerFire(FVector Origin, FVector Direction);
 
+	/**
+	 * Server only. Starts the reload timer — unless the owner carries a grid with
+	 * no `ammo_9mm` in it, in which case this is the reload half of the dry click:
+	 * one log line and nothing else, no timer, no ReloadSeconds of a weapon that
+	 * would come back just as empty (spec §1).
+	 *
+	 * An owner with NO backpack component at all is the bot case and is unchanged:
+	 * see FinishReload.
+	 */
 	void StartReload();
+
+	/**
+	 * Server only. Empties the magazine and returns what was in it, so the caller
+	 * can put those rounds somewhere — which is exactly once, at extraction, where
+	 * ASarkoRaidGameMode folds them back into the grid before the haul is read
+	 * (spec §1).
+	 *
+	 * Zeroing here rather than at the call site is what makes the credit
+	 * exactly-once by construction: a second call finds an empty magazine and
+	 * returns zero, so no ordering mistake can pay the player twice.
+	 */
+	int32 UnloadMagazine();
 
 	/**
 	 * Per-instance damage from the bot archetype table. Non-positive (the
@@ -121,4 +164,15 @@ private:
 	 * every *new* empty magazine gets exactly one line.
 	 */
 	bool bDryClickReported = false;
+
+	/**
+	 * Whether this empty *bag* has already said so in the log.
+	 *
+	 * bDryClickReported's sibling, for the other dry click. The reload button is a
+	 * discrete tap rather than a held stick, so a human cannot spam it — but
+	 * ServerRequestReload is an RPC and a modified client can, and an unguarded
+	 * line there is a log a hostile client can fill. Cleared by FinishReload and by
+	 * ResetForTest, so the next empty bag after a successful reload speaks again.
+	 */
+	bool bEmptyReserveReported = false;
 };

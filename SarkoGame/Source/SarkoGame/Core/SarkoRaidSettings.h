@@ -347,8 +347,129 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "Survival")
 	float VodkaCostsWater = 15.f;
 
+	/**
+	 * THE NOISE MODEL (spec §7). What each thing a pawn can do carries, in uu.
+	 *
+	 * These replaced EnemyHearingRadiusUU, which was a property of the LISTENER
+	 * and therefore could not be spent by the player: inside it you were heard,
+	 * outside it you were not, whatever you did. A radius that belongs to the
+	 * *event* is a radius the player chooses — walk and almost nothing reaches;
+	 * fire and the whole POI knows.
+	 *
+	 * 2600 for a shot is deliberately the widest number in the AI's vocabulary
+	 * and wider than the sector's post spacing: a gunshot SHOULD be able to reach
+	 * two encounters' posts. That is not a leak in the "one bot in the first
+	 * fight" law — encounters gate SPAWNING (SarkoEncounter::AllowedSpawnCount and
+	 * the budget), noise gates only the behaviour of bots that already exist, and
+	 * nothing in this file can create one.
+	 *
+	 * 1100 for a run matches the distance a bot will open fire from, so choosing
+	 * to sprint across open ground is choosing to be heard by anything that could
+	 * already have shot you. 450 for a walk is barely more than the interact
+	 * radius: walking past a guarded crate is genuinely quiet, which is the whole
+	 * verb this stage adds.
+	 */
 	UPROPERTY(EditAnywhere, config, Category = "AI")
-	float EnemyHearingRadiusUU = 2500.f;
+	float NoiseLoudRadiusUU = 2600.f;
+
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float NoiseAudibleRadiusUU = 1100.f;
+
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float NoiseQuietRadiusUU = 450.f;
+
+	/**
+	 * Fraction of MaxWalkSpeed at which moving becomes RUNNING, and below which
+	 * it stops being moving at all.
+	 *
+	 * The move stick's deflection already scales speed (SarkoAim::MoveIntentScale
+	 * feeds AddMovementInput), so a fraction of top speed IS a stick deflection —
+	 * and the server reads it off its own copy of the pawn's velocity rather than
+	 * off anything a client sends. 0.7 leaves a wide, findable band of "walking":
+	 * a thumb has to be deliberately short of the ring's edge, which is exactly
+	 * the input a player makes when they are being careful.
+	 *
+	 * NoiseMoveSpeedFraction is the same idea as MoveStickDeadZone, one layer
+	 * down: a pawn braking to a stop or sliding on a slope must not go on
+	 * announcing itself for the second the deceleration takes.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float NoiseRunSpeedFraction = 0.7f;
+
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float NoiseMoveSpeedFraction = 0.15f;
+
+	/**
+	 * How long an event stays hearable. Longer than NoiseMovementIntervalSeconds
+	 * on purpose, so a pawn that keeps moving is heard continuously rather than
+	 * blinking in and out of earshot between reports.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float NoiseEventLifetimeSeconds = 0.75f;
+
+	/**
+	 * How often a moving pawn reports where it is. Not every tick: the ring
+	 * buffer would churn sixty entries a second to say the same thing, and the
+	 * bot investigating a footstep from 0.25 s ago walks to a point 100 uu from
+	 * the one it would have walked to.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float NoiseMovementIntervalSeconds = 0.25f;
+
+	/**
+	 * The fallback listener sensitivity, for a bot with no archetype (the map's
+	 * plain `botSpawns`). Every encounter-spawned bot gets its own from
+	 * SarkoAI::GetBotArchetypes through ASarkoAIController::SetPerception.
+	 *
+	 * A multiplier and not a radius: how far a noise carries is a property of the
+	 * noise now, and how well a bot listens is a property of the bot.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float EnemyHearingSensitivity = 1.f;
+
+	/**
+	 * How far a bot can SEE, line of sight permitting.
+	 *
+	 * New with the noise model, and not new behaviour: EnemyHearingRadiusUU used
+	 * to bound sight as a side effect, because DecideState refused to react to
+	 * anything outside it whether or not the bot could see it. Deleting hearing
+	 * without replacing that bound would have given every bot map-wide vision.
+	 *
+	 * 1600 uu is the landscape camera's measured lateral half-view (see
+	 * EncounterMinSpawnDistanceUU's note): a bot sees you at about the distance
+	 * you can see it, and it still may not shoot until EnemyFiringRangeUU.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float EnemySightRangeUU = 1600.f;
+
+	/**
+	 * Health at or below which the screen-edge vignette appears (spec §4).
+	 *
+	 * Thirty of a hundred is two of a scav_pistol's hits from dead. Drawn rather
+	 * than a material (there is no post-process asset in this project and there
+	 * will not be one), and drawn UNDER every readout, so it can never be the
+	 * reason the survival meters became hard to read.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Feedback")
+	float LowHealthVignetteHealth = 30.f;
+
+	/**
+	 * How long a directional damage arc stays on screen (spec §4).
+	 *
+	 * Long enough to read and turn toward, short enough that three hits in a
+	 * fight are three arcs and not a ring. The camera is world-locked, so the
+	 * direction a hit came from is information the player has no other way to get.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Feedback")
+	float DamageArcSeconds = 0.6f;
+
+	/** How long the hit marker sits over the victim. A confirmation, not a decoration. */
+	UPROPERTY(EditAnywhere, config, Category = "Feedback")
+	float HitMarkerSeconds = 0.15f;
+
+	/** How long an enemy body flashes white when it takes a hit. */
+	UPROPERTY(EditAnywhere, config, Category = "Feedback")
+	float HitFlashSeconds = 0.1f;
 
 	/**
 	 * How far an enemy may open fire, in unreal units. Its own setting since the
@@ -409,14 +530,24 @@ public:
 	 * The hard floor between an encounter's spawn point and the player at the
 	 * instant an enemy is created.
 	 *
-	 * Measured, not picked: the portrait camera (a 1400 uu boom at -70 degrees)
-	 * shows about 1380 uu ahead of the pawn and 545 uu to either side, so 1800 uu
-	 * is beyond the forward reach with margin and 3.3x the lateral half-screen. A
-	 * bot that appears on screen is the one thing a game with four enemies per
-	 * raid can never be forgiven for.
+	 * 2600, and the 1800 it replaces was calibrated against a camera that no
+	 * longer exists. The old comment here read "the PORTRAIT camera (a 1400 uu
+	 * boom at -70 degrees) shows about 1380 uu ahead of the pawn and 545 uu to
+	 * either side" — 545 uu of lateral half-view. The game runs LANDSCAPE, where
+	 * the same boom and the same pitch put the half-view at roughly 1570 uu: not
+	 * three times inside the old floor but very nearly ON it. A bot appearing
+	 * 1800 uu away and 30 degrees off the walking direction was, measurably, a
+	 * bot appearing on screen — the one thing a game with a handful of enemies
+	 * per raid can never be forgiven for.
+	 *
+	 * 2600 is 1.66x the measured landscape half-view, which restores the margin
+	 * the 1800 was believed to have. It costs the authoring something real and
+	 * that is the point: an encounter whose only door is 2000 uu from the trigger
+	 * now defers instead of firing in view, which is visible in the log as "gave
+	 * up after Ns" and is the correct outcome.
 	 */
 	UPROPERTY(EditAnywhere, config, Category = "Encounters")
-	float EncounterMinSpawnDistanceUU = 1800.f;
+	float EncounterMinSpawnDistanceUU = 2600.f;
 
 	/**
 	 * How long an armed encounter keeps waiting for an authored spawn point to

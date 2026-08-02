@@ -13,6 +13,15 @@ namespace SarkoLoot
 	/** The one gear id that grants capacity. Named once, because it is compared
 	 *  against on the take path and must never be a loose literal. */
 	extern const FName BackpackItemId;
+
+	/**
+	 * The rounds the pistol fires, and now the only thing that puts them in it
+	 * (spec §1). Named here for BackpackItemId's reason and one more: the reload
+	 * path, the HUD's reserve readout and the extraction fold-back all compare
+	 * against it, and three loose literals is three places for a typo to become an
+	 * ammo supply that silently never depletes.
+	 */
+	extern const FName AmmoItemId;
 }
 
 /**
@@ -68,6 +77,23 @@ public:
 	 * leaves in the container (spec §4.3: partial loot is allowed).
 	 */
 	int32 AddItem(FName Item, int32 Quantity);
+
+	/**
+	 * How many units of one id are carried right now. Const and authority-free on
+	 * purpose: the owning client reads it every frame to draw the ammo reserve, and
+	 * Slots is COND_OwnerOnly, so the number it sees is its own and nobody else's.
+	 */
+	int32 CountItem(FName Item) const;
+
+	/**
+	 * Server only. Takes up to Quantity units out and returns how many actually
+	 * left — the reload path's half of the transfer (spec §1), and the only way
+	 * anything ever leaves the grid other than consuming or dying.
+	 *
+	 * Fewer than asked for is a normal answer, not a failure: three rounds in the
+	 * bag load three rounds into the magazine.
+	 */
+	int32 RemoveItem(FName Item, int32 Quantity);
 
 	/** Server only. Everything carried is lost. */
 	void ClearOnDeath();

@@ -1,6 +1,8 @@
 #include "Misc/AutomationTest.h"
 
 #include "Debug/SarkoOverviewShot.h"
+#include "Map/SarkoMapBuilder.h"
+#include "Map/SarkoMapDefinition.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -1565,6 +1567,148 @@ bool FSarkoMapRejectsBadEncounters::RunTest(const FString& Parameters)
 			Legacy, LegacyError));
 	TestEqual(TEXT("and carries no encounters"), Legacy.Encounters.Num(), 0);
 	TestFalse(TEXT("and knows its budget was never authored"), Legacy.EncounterBudget.bAuthored);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoOnlySceneryLeavesTheSector,
+	"Sarko.Map.OnlySceneryLeavesTheSector",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * The edge skirt's rule, and the half of it that matters is the refusal.
+ *
+ * The skirt (spec §3.6) is ground and trees ~4000 uu OUTSIDE the sector, so that
+ * the border fades into wilderness instead of cutting to black. Allowing it took
+ * a choice: widen the bound for everyone, or name the exception. Widening it
+ * would have let a container, an encounter door, a bot or an exit out there too —
+ * silently, because before this the bound was one assertion inside one test about
+ * one map file — and a piece of gameplay in the void is content that cannot be
+ * reached, played or debugged.
+ *
+ * So the exception is a field a row has to write, only `blocks` and `props` carry
+ * it, and a PLAYABLE entry outside the sector is a parse error that says which
+ * entry and by how much. The protection is stronger than the thing it replaced.
+ */
+bool FSarkoOnlySceneryLeavesTheSector::RunTest(const FString& Parameters)
+{
+	// Scenery, flagged, just outside: this is the skirt, and it must load.
+	{
+		const FString Json = TEXT(R"({
+			"id": "test", "extentUU": 20000, "raidDurationSeconds": 600,
+			"playerSpawns": [ { "pos": [0, 0, 100], "yaw": 0 } ],
+			"blocks": [
+				{ "id": "skirt_band", "pos": [0, 22000, 2], "extent": [24000, 800, 2],
+				  "surface": "skirt_mid", "blocksMovement": false, "skirt": true }
+			],
+			"props": [ { "kind": "treeline", "pos": [0, 22400, 500], "yaw": 0, "skirt": true } ]
+		})");
+		FSarkoMapDefinition Definition;
+		FString Error;
+		const bool bParsed = SarkoMap::ParseDefinition(Json, Definition, Error);
+		TestTrue(FString::Printf(TEXT("a flagged skirt block and prop load: %s"), *Error), bParsed);
+		if (bParsed)
+		{
+			TestTrue(TEXT("the block remembers it is skirt"), Definition.Blocks[0].bSkirt);
+			TestTrue(TEXT("and so does the prop"), Definition.Props[0].bSkirt);
+			TestEqual(TEXT("the skirt tones parse by name"),
+				static_cast<uint8>(Definition.Blocks[0].Surface), static_cast<uint8>(ESarkoSurface::SkirtMid));
+			// It reaches the spawner, or the skirt is a field nobody draws.
+			const FSarkoMapLayout Layout = SarkoMap::ToLayout(Definition);
+			TestTrue(TEXT("and reaches the layout still flagged"), Layout.Cover[0].bSkirt);
+		}
+	}
+
+	// The default is unchanged: a block written before the skirt existed is not
+	// skirt, and stays bounded.
+	{
+		const FString Json = TEXT(R"({
+			"id": "test", "extentUU": 20000, "raidDurationSeconds": 600,
+			"playerSpawns": [ { "pos": [0, 0, 100], "yaw": 0 } ],
+			"blocks": [ { "id": "wall", "pos": [0, 0, 175], "extent": [400, 15, 175] } ]
+		})");
+		FSarkoMapDefinition Definition;
+		FString Error;
+		TestTrue(TEXT("an old block still parses"), SarkoMap::ParseDefinition(Json, Definition, Error));
+		TestFalse(TEXT("and is not skirt"), Definition.Blocks[0].bSkirt);
+	}
+
+	// EVERY WAY OUT OF THE SECTOR THAT IS NOT SCENERY. One row per section, each
+	// 1000 uu past the border, each expected to be a named refusal — this is the
+	// list of things that could otherwise be authored into the void.
+	const TArray<TPair<FString, FString>> MustFail = {
+		{ TEXT("an unflagged block"),
+			TEXT(R"("blocks":[{"id":"b","pos":[0,21000,2],"extent":[100,100,2]}])") },
+		{ TEXT("an unflagged prop"),
+			TEXT(R"("props":[{"id":"p","kind":"crate","pos":[0,21000,70]}])") },
+		{ TEXT("a container"),
+			TEXT(R"("containers":[{"id":"c","pos":[-21000,0,35],"tier":"good"}])") },
+		{ TEXT("a bot spawn"),
+			TEXT(R"("botSpawns":[{"id":"b","pos":[0,-21000,0],"zone":"deep"}])") },
+		{ TEXT("an extraction"),
+			TEXT(R"("extractions":[{"id":"e","pos":[21000,0,0],"radiusUU":500,"name":"nowhere"}])") },
+	};
+	for (const TPair<FString, FString>& Case : MustFail)
+	{
+		const FString Json = FString::Printf(TEXT(R"({"id":"test","extentUU":20000,"raidDurationSeconds":600,)")
+			TEXT(R"("playerSpawns":[{"pos":[0,0,100],"yaw":0}],%s})"), *Case.Value);
+		FSarkoMapDefinition Definition;
+		FString Error;
+		const bool bParsed = SarkoMap::ParseDefinition(Json, Definition, Error);
+		TestFalse(FString::Printf(TEXT("%s outside the sector is refused"), *Case.Key), bParsed);
+		TestFalse(FString::Printf(TEXT("%s: the refusal says something"), *Case.Key), Error.IsEmpty());
+		// Named, not "a map failed to load": the whole point of moving this into
+		// the parser was that the message reaches the person editing the file.
+		TestTrue(FString::Printf(TEXT("%s: the refusal names the coordinate — '%s'"), *Case.Key, *Error),
+			Error.Contains(TEXT("21000")) || Error.Contains(TEXT("-21000")));
+	}
+
+	// A player spawn is gameplay too, and it is the one section with no id.
+	{
+		const FString Json = TEXT(R"({"id":"test","extentUU":20000,"raidDurationSeconds":600,)")
+			TEXT(R"("playerSpawns":[{"pos":[0,25000,100],"yaw":0}]})");
+		FSarkoMapDefinition Definition;
+		FString Error;
+		TestFalse(TEXT("a player spawn outside the sector is refused"),
+			SarkoMap::ParseDefinition(Json, Definition, Error));
+	}
+
+	// And the skirt flag is a licence to stand just outside, not a licence to
+	// author a second map: SkirtMarginUU is the ceiling and it is enforced.
+	{
+		const FString Json = FString::Printf(
+			TEXT(R"({"id":"test","extentUU":20000,"raidDurationSeconds":600,)")
+			TEXT(R"("playerSpawns":[{"pos":[0,0,100],"yaw":0}],)")
+			TEXT(R"("blocks":[{"id":"far","pos":[0,%.0f,2],"extent":[100,100,2],"skirt":true}]})"),
+			20000.f + SarkoMap::SkirtMarginUU + 1000.f);
+		FSarkoMapDefinition Definition;
+		FString Error;
+		TestFalse(TEXT("a skirt entry far past the margin is still refused"),
+			SarkoMap::ParseDefinition(Json, Definition, Error));
+		TestTrue(FString::Printf(TEXT("and the refusal says it is the skirt limit — '%s'"), *Error),
+			Error.Contains(TEXT("skirt")));
+	}
+
+	// The shipped map is the real subject: it carries a skirt, and it loads.
+	{
+		FSarkoMapDefinition Bridge;
+		FString Error;
+		const bool bLoaded = SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Bridge, Error);
+		TestTrue(FString::Printf(TEXT("bridge.json loads under the bound: %s"), *Error), bLoaded);
+		if (bLoaded)
+		{
+			int32 Outside = 0;
+			for (const FSarkoCoverBlock& Block : Bridge.Blocks)
+			{
+				if (Block.bSkirt) { ++Outside; }
+			}
+			for (const FSarkoMapProp& Prop : Bridge.Props)
+			{
+				if (Prop.bSkirt) { ++Outside; }
+			}
+			TestTrue(FString::Printf(TEXT("and it has a skirt to be bounded (%d entries)"), Outside), Outside > 50);
+		}
+	}
 	return true;
 }
 
