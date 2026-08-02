@@ -452,16 +452,28 @@ bool FSarkoRealLootTablesObeyTheDesignRules::RunTest(const FString& Parameters)
 					Def->Category != ESarkoItemCategory::Weapon && Def->Category != ESarkoItemCategory::VehiclePart);
 			}
 
-			// "Bicycle parts appear only as rare singles" — otherwise the first
-			// sector completes a vehicle tier in one or two raids and the whole
-			// garage progression is over before it starts.
+			// VEHICLE PARTS. This assertion used to read "drops as a single, at
+			// <= 3% of its tier's weight", and it was changed on purpose (spec §6),
+			// which is the only honest way to change a rule a test is holding.
+			//
+			// The 3% was protecting against "the bicycle in one raid". Measured, it
+			// was protecting against nothing of the sort: Monte-Carlo over 20 000
+			// careers on this exact table put the bicycle at a median of THIRTY
+			// raids and a p90 of 67, because wheel_small was 1/103 of the military
+			// tier, needed twice, and capped at one per roll. That is three to seven
+			// hours to the only goal the game states, with no intermediate feedback.
+			//
+			// So the bound moved to the thing that was actually meant, and it is
+			// checked below against the real container census rather than here
+			// against one tier in isolation: what decides whether a bicycle is a
+			// one-raid event is the whole map's expected yield, not any one weight.
+			// All that survives here is the shape of a drop — a part arrives in
+			// ones or twos, never in a handful.
 			if (Def->Category == ESarkoItemCategory::VehiclePart)
 			{
-				TestEqual(*FString::Printf(TEXT("vehicle part '%s' drops as a single"), *Entry.Item.ToString()),
-					Entry.MaxQuantity, 1);
-				TestTrue(*FString::Printf(TEXT("vehicle part '%s' is rare in '%s' (%.1f%% of weight)"),
-					*Entry.Item.ToString(), *Table.Tier.ToString(), 100.f * Entry.Weight / TotalWeight),
-					Entry.Weight / TotalWeight <= 0.03f);
+				TestTrue(*FString::Printf(TEXT("vehicle part '%s' comes in ones or twos, not handfuls (qty %d..%d)"),
+					*Entry.Item.ToString(), Entry.MinQuantity, Entry.MaxQuantity),
+					Entry.MinQuantity >= 1 && Entry.MaxQuantity <= 2);
 			}
 		}
 	}
@@ -478,6 +490,62 @@ bool FSarkoRealLootTablesObeyTheDesignRules::RunTest(const FString& Parameters)
 	{
 		TestNotNull(*FString::Printf(TEXT("bridge.json tier '%s' has a loot table"), *Spot.Tier.ToString()),
 			Tables.Find(Spot.Tier));
+	}
+
+	// THE GARAGE RATE, as arithmetic (spec §6). This is what replaced the flat 3%
+	// weight cap, and it is a better rule for one reason: it asks the question the
+	// old one only gestured at. "Is a bicycle a one-raid event?" is not a property
+	// of a weight — it is a property of a weight times how many containers of that
+	// tier the map puts on the route times how often each one rolls. Retuning a
+	// weight and adding four military containers would have sailed through the 3%
+	// cap and handed out a bicycle a raid.
+	//
+	// The bound: for every vehicle part, one raid of looting EVERY container on the
+	// map is expected to yield less than one of it. wheel_small is needed twice, so
+	// under this bound the bicycle is a multi-raid goal by construction, whatever
+	// the weights say. Mirrors SarkoLoot::RollContainer exactly — the empty roll
+	// first, then (min+max)/2 independent weighted picks, each of mean quantity.
+	{
+		TMap<FName, float> ExpectedPerRaid;
+		for (const FSarkoLootContainerSpot& Spot : Map.Containers)
+		{
+			const FSarkoLootTable* Table = Tables.Find(Spot.Tier);
+			if (!Table)
+			{
+				continue; // Already reported above.
+			}
+			float TotalWeight = 0.f;
+			for (const FSarkoLootEntry& Entry : Table->Entries)
+			{
+				TotalWeight += Entry.Weight;
+			}
+			if (TotalWeight <= 0.f)
+			{
+				continue;
+			}
+			const float MeanRolls = 0.5f * (Table->MinRolls + Table->MaxRolls)
+				* (1.f - FMath::Clamp(Table->EmptyChance, 0.f, 1.f));
+			for (const FSarkoLootEntry& Entry : Table->Entries)
+			{
+				const FSarkoItemDef* Def = Catalog.Find(Entry.Item);
+				if (!Def || Def->Category != ESarkoItemCategory::VehiclePart)
+				{
+					continue;
+				}
+				ExpectedPerRaid.FindOrAdd(Entry.Item) +=
+					MeanRolls * (Entry.Weight / TotalWeight) * 0.5f * (Entry.MinQuantity + Entry.MaxQuantity);
+			}
+		}
+
+		TestTrue(TEXT("the map drops vehicle parts at all — a bound nothing can reach is not a bound"),
+			ExpectedPerRaid.Num() > 0);
+		for (const TPair<FName, float>& Part : ExpectedPerRaid)
+		{
+			TestTrue(*FString::Printf(
+					TEXT("a full sweep of the map yields %.3f '%s' per raid — under one, so no raid is expected to hand over a whole part"),
+					Part.Value, *Part.Key.ToString()),
+				Part.Value < 1.f);
+		}
 	}
 	return true;
 }

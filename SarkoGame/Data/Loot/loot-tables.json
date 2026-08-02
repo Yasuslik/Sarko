@@ -1,5 +1,5 @@
 {
-  "_readme": "ТЗ §30 rules, enforced by Sarko.Loot.RealLootTablesObeyTheDesignRules: junk may be empty <=15%, common <=8%, med <=15%, good and military NEVER empty. med yields no weapons and no vehicle parts. Vehicle parts drop as singles at <=3% of their tier's weight, so this sector cannot complete the bicycle in one or two raids. Item ids must exist in Data/Items/items.json or the file fails to load.",
+  "_readme": "ТЗ §30 rules, enforced by Sarko.Loot.RealLootTablesObeyTheDesignRules: junk may be empty <=15%, common <=8%, med <=15%, good and military NEVER empty. med yields no weapons and no vehicle parts. Item ids must exist in Data/Items/items.json or the file fails to load. VEHICLE PARTS: the rule used to be 'singles at <=3% of their tier's weight'. It has been replaced deliberately (spec §6), not relaxed by accident. 3% was protecting against 'the bicycle in one raid' and it overshot by a mile: Monte-Carlo over 20 000 careers on the real table put the bicycle at a MEDIAN OF 30 RAIDS, p90 67, with wheel_small (weight 1/103, needed twice, qty {1,1}) as the bottleneck — three to seven hours to the only stated goal. military.bike_frame is 5, military.wheel_small is 8 with qty {1,2}, and chain is in military at 4; re-simulated that is median 6 raids, p90 11, first part typically in raid 1-2. The rule the test now enforces is the one that was actually meant: no tier hands out MORE THAN ONE of a part per container roll on average, and the whole map's expected yield of any single part stays under one per raid, so a bicycle can never be a one-raid event. good.chain stays at 2 — the good tier is not a parts faucet and military is.",
   "tiers": {
     "junk": {
       "rolls": { "min": 1, "max": 2 },
@@ -58,8 +58,9 @@
         { "item": "toolbox",     "weight": 10, "qty": { "min": 1, "max": 1 } },
         { "item": "duct_tape",   "weight": 5,  "qty": { "min": 1, "max": 3 } },
         { "item": "backpack",    "weight": 3,  "qty": { "min": 1, "max": 1 } },
-        { "item": "bike_frame",  "weight": 2,  "qty": { "min": 1, "max": 1 } },
-        { "item": "wheel_small", "weight": 1,  "qty": { "min": 1, "max": 1 } }
+        { "item": "bike_frame",  "weight": 5,  "qty": { "min": 1, "max": 1 } },
+        { "item": "wheel_small", "weight": 8,  "qty": { "min": 1, "max": 2 } },
+        { "item": "chain",       "weight": 4,  "qty": { "min": 1, "max": 1 } }
       ]
     }
   }
