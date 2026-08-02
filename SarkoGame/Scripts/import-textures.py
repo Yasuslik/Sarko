@@ -31,13 +31,25 @@ derives UVs from world position, which makes texel density a property of the
 WORLD (one number per surface, in uu) instead of a property of whatever mesh
 happened to be used.
 
-Two projections, blended by the vertex normal's Z:
-  * flat faces (|Nz| ~ 1) get world XY — the top-down camera's own plane;
-  * upright faces get (horizontal-along-the-wall, -Z), which is why rust streaks
-    and bark fibre run vertically: the V axis of that projection IS world down.
-The blend is sharp (0.45..0.65) so only genuinely diagonal faces — a rock's
-shoulder, never a wall — sit in the transition. Cost is one texture sample plus
-about a dozen ALU ops, and no per-frame work of any kind.
+ONE projection — world XY, the top-down camera's own plane — and that is the
+second design. The first blended world XY on flat faces with an
+(along-the-wall, -Z) projection on upright ones, chosen by the vertex normal's Z
+so that streaks would run down a wall. It works, it is only a dozen ALU, and it
+put a wood-grain whorl on all fifty-one car wrecks on the highway: a car body is
+a CURVED mesh, so abs(Nz) sweeps through the blend band across the bonnet and
+the roof, and interpolating between two UV SETS inside that band draws the
+normal's own iso-contours. In the road frame the wrecks looked varnished.
+Blending the two SAMPLES instead of the two UVs fixes it and costs a second
+texture fetch on every pixel in the sector, which is not a trade a phone should
+make for the sides of things a top-down camera barely sees.
+
+So: world XY everywhere. A vertical face gets the pattern extruded along Z —
+i.e. vertical streaks — which is what bark fibre, rust runoff and wall staining
+all look like anyway, and it is why every map the generator writes is now
+isotropic: the VERTICALITY comes from the projection, and the texture only has
+to supply the horizontal frequency. Texel density on an upright face is
+undefined along Z and exactly right across it. Cost is one texture sample and
+two divides, and no per-frame work of any kind.
 
 Usage: UnrealEditor-Cmd <project> -run=pythonscript -script=import-textures.py
        with SARKO_TEXTURE_SOURCE set to the directory holding the PNGs.
@@ -137,7 +149,25 @@ def node(kind, x, y, **properties):
 
 
 def link(source, source_output, target, target_input):
-    editing.connect_material_expressions(source, source_output, target, target_input)
+    """
+    Connects, and REFUSES TO BE IGNORED.
+
+    connect_material_expressions returns False and says nothing when it cannot
+    find the input name, and that is how this material shipped broken once: the
+    single-input nodes here (ComponentMask, Abs, Saturate, OneMinus, Clamp) have
+    an input whose name is EMPTY, not "Input", so every one of those connections
+    was a silent no-op. The graph looked right in a node dump — the nodes were
+    all there and the named A/B connections had all landed — and the material
+    failed to translate, so every surface in the sector fell back to the engine's
+    default grey. Water and the extraction pads still looked correct, because
+    they are the surfaces that never got this material.
+
+    A hard failure here costs one line and removes that entire class of bug.
+    """
+    if not editing.connect_material_expressions(source, source_output, target, target_input):
+        raise RuntimeError("could not connect %s.%s -> %s.%s"
+                           % (type(source).__name__, source_output or "<default>",
+                              type(target).__name__, target_input or "<default>"))
 
 
 def constant(value, x, y):
@@ -146,7 +176,8 @@ def constant(value, x, y):
 
 def mask(source, x, y, r=False, g=False, b=False):
     expression = node(unreal.MaterialExpressionComponentMask, x, y, r=r, g=g, b=b, a=False)
-    link(source, "", expression, "Input")
+    # "" and not "Input": these nodes name their one input with an empty FName.
+    link(source, "", expression, "")
     return expression
 
 
@@ -174,52 +205,9 @@ rough_swing = node(unreal.MaterialExpressionScalarParameter, -900, 480,
 # the right thing for a parameter nobody set to do.
 
 # --- world-aligned UVs ----------------------------------------------------
-world = node(unreal.MaterialExpressionWorldPosition, -2300, 0)
-normal = node(unreal.MaterialExpressionVertexNormalWS, -2300, 420)
-
-world_xy = mask(world, -2050, -60, r=True, g=True)
-world_x = mask(world, -2050, 40, r=True)
-world_y = mask(world, -2050, 120, g=True)
-world_z = mask(world, -2050, 300, b=True)
-normal_x = mask(normal, -2050, 480, r=True)
-normal_y = mask(normal, -2050, 560, g=True)
-normal_z = mask(normal, -2050, 640, b=True)
-
-top_uv = binary(unreal.MaterialExpressionDivide, -1650, -60, world_xy, "", tile, "")
-
-# The wall-tangent coordinate: x*Ny - y*Nx. Signed, not abs(): with absolute
-# values this expression is CONSTANT along any wall at 45 degrees — its gradient
-# projects to zero in the wall's own plane — and that wall renders as one smeared
-# stripe. The signed form has unit gradient on every vertical face regardless of
-# its yaw, which is what keeps texel density the same on a rotated wall as on an
-# axis-aligned one.
-along_x = binary(unreal.MaterialExpressionMultiply, -1800, 60, world_x, "", normal_y, "")
-along_y = binary(unreal.MaterialExpressionMultiply, -1800, 160, world_y, "", normal_x, "")
-along = binary(unreal.MaterialExpressionSubtract, -1650, 100, along_x, "", along_y, "")
-side_u = binary(unreal.MaterialExpressionDivide, -1500, 100, along, "", tile, "")
-
-# Negated so that world up is texture up: V grows downward in an image, and the
-# streaks in the rust map and the fibre in the bark map are authored to run down
-# the V axis.
-down = binary(unreal.MaterialExpressionMultiply, -1800, 300, world_z, "", constant(-1.0, -1950, 340), "")
-side_v = binary(unreal.MaterialExpressionDivide, -1500, 300, down, "", tile, "")
-side_uv = binary(unreal.MaterialExpressionAppendVector, -1350, 200, side_u, "", side_v, "")
-
-# The blend. abs(Nz) 0.45..0.65 — narrow, so only a genuinely diagonal face sits
-# in it. Interpolating between two UV SETS distorts inside the transition, and
-# the way to make that harmless is to keep the transition to surfaces nobody
-# reads texel density on.
-flatness = node(unreal.MaterialExpressionAbs, -1900, 640)
-link(normal_z, "", flatness, "Input")
-biased = binary(unreal.MaterialExpressionSubtract, -1750, 640, flatness, "", constant(0.45, -1900, 720), "")
-scaled = binary(unreal.MaterialExpressionMultiply, -1600, 640, biased, "", constant(5.0, -1750, 720), "")
-blend = node(unreal.MaterialExpressionSaturate, -1450, 640)
-link(scaled, "", blend, "Input")
-
-uv = node(unreal.MaterialExpressionLinearInterpolate, -1200, 100)
-link(side_uv, "", uv, "A")
-link(top_uv, "", uv, "B")
-link(blend, "", uv, "Alpha")
+world = node(unreal.MaterialExpressionWorldPosition, -1700, 100)
+world_xy = mask(world, -1450, 100, r=True, g=True)
+uv = binary(unreal.MaterialExpressionDivide, -1200, 100, world_xy, "", tile, "")
 
 # --- the sample -----------------------------------------------------------
 detail = node(unreal.MaterialExpressionTextureSampleParameter2D, -1000, 100,
@@ -231,7 +219,7 @@ link(uv, "", detail, "UVs")
 
 # --- base colour: palette x (1 +- strength) -------------------------------
 low = node(unreal.MaterialExpressionOneMinus, -700, -200)
-link(strength, "", low, "Input")
+link(strength, "", low, "")
 high = binary(unreal.MaterialExpressionAdd, -700, -100, constant(1.0, -850, -60), "", strength, "")
 
 multiplier = node(unreal.MaterialExpressionLinearInterpolate, -500, -150)
@@ -251,12 +239,46 @@ rough_sum = binary(unreal.MaterialExpressionAdd, -400, 340, roughness, "", swing
 # min_default/max_default, not min/max: Min and Max on this node are input PINS
 # and are read-only from script; the defaults are what an unconnected pin uses.
 rough_final = node(unreal.MaterialExpressionClamp, -250, 340, min_default=0.05, max_default=1.0)
-link(rough_sum, "", rough_final, "Input")
+link(rough_sum, "", rough_final, "")
 
-editing.connect_material_property(base_colour, "", unreal.MaterialProperty.MP_BASE_COLOR)
-editing.connect_material_property(rough_final, "", unreal.MaterialProperty.MP_ROUGHNESS)
+if not editing.connect_material_property(base_colour, "", unreal.MaterialProperty.MP_BASE_COLOR):
+    raise RuntimeError("could not connect base colour")
+if not editing.connect_material_property(rough_final, "", unreal.MaterialProperty.MP_ROUGHNESS):
+    raise RuntimeError("could not connect roughness")
 
 editing.recompile_material(material)
+
+# Proof that it TRANSLATED, not just that the nodes are wired.
+#
+# A material that fails to translate is not an error anyone sees: the asset
+# saves, its parameters are all readable, every automation test that inspects it
+# passes — and at runtime the renderer quietly substitutes the engine's default
+# grey for every primitive wearing it. The whole sector went flat grey once and
+# the only evidence anywhere was one Display-level line about a "Conservative
+# Shader Layout".
+#
+# The probe is STRUCTURAL rather than a query about the compiled shader: a
+# commandlet with no RHI does not build a shader map, so anything that reports on
+# one answers "nothing" whether the material is fine or ruined.
+#
+# Every input pin in this graph is meant to be driven. The two exceptions are
+# listed by name and are the pins whose unconnected defaults are the intent — the
+# sampler's mip-bias switch, and the clamp bounds set through min_default and
+# max_default above. Anything else left dangling is a translation error waiting
+# to happen, and translation errors here are invisible: the asset saves, its
+# parameters read back correctly, and the renderer silently swaps in the default
+# grey for every primitive wearing it.
+OPTIONAL_PINS = {"Apply View MipBias", "Min", "Max"}
+
+for expression in editing.get_material_expressions(material):
+    pins = editing.get_material_expression_input_names(expression)
+    sources = editing.get_inputs_for_material_expression(material, expression)
+    for pin, source in zip(pins, sources):
+        if str(pin) in OPTIONAL_PINS:
+            continue
+        if source is None:
+            raise RuntimeError("%s has nothing driving its '%s' input — M_SarkoSurface would not translate"
+                               % (type(expression).__name__, pin or "<default>"))
 
 unreal.EditorAssetLibrary.save_directory("/Game/Generated", False, True)
 

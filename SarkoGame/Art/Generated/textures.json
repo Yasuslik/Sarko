@@ -10,13 +10,13 @@
   "tileUU": 1000.0
  },
  "Bark": {
-  "bytes": 24238,
+  "bytes": 51721,
   "file": "T_Surface_Bark.png",
-  "mean": 0.50001,
+  "mean": 0.50002,
   "resolution": 256,
-  "seamRatio": 0.686,
+  "seamRatio": 0.812,
   "seed": 20260808,
-  "stdDev": 0.24774,
+  "stdDev": 0.2467,
   "tileUU": 220.0
  },
  "Concrete": {
@@ -49,44 +49,34 @@
   "stdDev": 0.19573,
   "tileUU": 1600.0
  },
- "Ravine": {
-  "bytes": 41939,
-  "file": "T_Surface_Ravine.png",
-  "mean": 0.50001,
-  "resolution": 256,
-  "seamRatio": 0.812,
-  "seed": 20260810,
-  "stdDev": 0.19868,
-  "tileUU": 1400.0
- },
  "Rust": {
-  "bytes": 38805,
+  "bytes": 42757,
   "file": "T_Surface_Rust.png",
-  "mean": 0.5,
+  "mean": 0.49999,
   "resolution": 256,
-  "seamRatio": 0.726,
+  "seamRatio": 0.834,
   "seed": 20260806,
-  "stdDev": 0.23227,
+  "stdDev": 0.23286,
   "tileUU": 500.0
  },
  "Structure": {
-  "bytes": 25315,
+  "bytes": 27835,
   "file": "T_Surface_Structure.png",
-  "mean": 0.5,
+  "mean": 0.49999,
   "resolution": 256,
-  "seamRatio": 0.821,
+  "seamRatio": 0.788,
   "seed": 20260805,
-  "stdDev": 0.15977,
+  "stdDev": 0.1595,
   "tileUU": 600.0
  },
  "Timber": {
-  "bytes": 20439,
+  "bytes": 41602,
   "file": "T_Surface_Timber.png",
   "mean": 0.5,
   "resolution": 256,
-  "seamRatio": 0.473,
+  "seamRatio": 0.895,
   "seed": 20260807,
-  "stdDev": 0.1692,
+  "stdDev": 0.1696,
   "tileUU": 400.0
  },
  "Vegetation": {

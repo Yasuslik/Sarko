@@ -59,11 +59,13 @@ def spectral(res, rng, low, high, beta=1.0, aniso=1.0):
     is actually expressed in — a feature at f cycles is (period / f) world units
     across, so the band maps straight onto "what size is a stain".
 
-    `aniso` > 1 stretches the pattern along the texture's V axis: the vertical
-    axis of the side projection is world -Z, so aniso is how a streak runs DOWN
-    a tank and how a bark fibre runs UP a trunk. It is deliberately expressed as
-    a frequency scale rather than as a post-hoc blur, because a blur would also
-    destroy the periodicity that the rest of this file is careful to keep.
+    `aniso` is kept and is unused by every recipe below, which is the whole
+    point of the note: the material projects world XY onto every face, so a
+    vertical surface already receives this pattern extruded along Z. The
+    verticality of a bark fibre or a rust streak comes from the PROJECTION.
+    Baking a direction in here as well would make it a direction in the WORLD —
+    a grain running east across four hundred metres of field, and a trunk whose
+    fibre density depended on which way it faced.
     """
     white = rng.standard_normal((res, res))
     spectrum = np.fft.rfft2(white)
@@ -255,14 +257,24 @@ def concrete(res, rng):
 
 def structure(res, rng):
     """
-    Generic built grey — walls, crates, wrecks. Mostly broad grime, because these
-    are SMALL objects: a 200 uu crate covers a third of a 600 uu tile, so the
-    low frequencies here are what makes two crates look different from each
-    other, and the high ones are what would make one crate look noisy.
+    Generic built grey — walls, crates, wrecks, and the fifty-one car bodies on
+    the highway. Mostly broad grime, because these are SMALL objects: a 200 uu
+    crate covers a third of a 600 uu tile, so the low frequencies here are what
+    makes two crates look different from each other, and the high ones are what
+    would make one crate look noisy.
+
+    ISOTROPIC, and that is the second version. The first had an anisotropic
+    "weather running down" layer, which is right on a wall and was very wrong on
+    a car: the wrecks are curved meshes, so the side projection sweeps that
+    streak around the bodywork, and in the road frame every car on the highway
+    came out looking like varnished plywood. A directional pattern on a surface
+    shared by walls and car roofs picks a fight it cannot win — Rust keeps its
+    streaks because everything wearing Rust is a tank, a freight car or a pylon
+    leg, and all of those are upright.
     """
     return compose([
         (spectral(res, rng, low=1, high=5, beta=1.2), 1.0),
-        (spectral(res, rng, low=6, high=22, beta=1.0, aniso=3.0), 0.55),  # weather running down
+        (spectral(res, rng, low=6, high=22, beta=1.0), 0.50),
         (cellular(res, rng, cells=18, mode="f1"), 0.25),
     ], contrast=0.16)
 
@@ -273,32 +285,46 @@ def rust(res, rng):
     a vertical face IS down, because the side projection's V is world -Z.
     """
     return compose([
-        (spectral(res, rng, low=2, high=9, beta=0.9), 0.9),               # corrosion fronts
-        (spectral(res, rng, low=3, high=30, beta=0.7, aniso=9.0), 1.0),   # runoff streaks
-        (cellular(res, rng, cells=30, mode="f1"), 0.45),                  # scale/pitting
+        (spectral(res, rng, low=2, high=9, beta=0.9), 0.9),    # corrosion fronts
+        (spectral(res, rng, low=4, high=30, beta=0.7), 1.0),   # the runoff, once the projection extrudes it
+        (cellular(res, rng, cells=30, mode="f1"), 0.45),       # scale/pitting
     ], contrast=0.24)
 
 
 def timber(res, rng):
-    """Sawn plank: fine grain along one axis, plus board-to-board tone variation."""
+    """
+    Weathered plank: fine tonal grain plus board-to-board variation.
+
+    Isotropic, which costs the one thing "grain" really means — a direction.
+    Timber clothes roofs AND fences here, i.e. horizontal faces and vertical
+    ones, and a direction baked into the map would have been a compass bearing
+    in the world: right on half of them by luck. On the fences the projection
+    supplies verticality for free; on the roofs this reads as weathering, which
+    is what a roof in this sector should read as.
+    """
     return compose([
-        (spectral(res, rng, low=6, high=36, beta=0.6, aniso=14.0), 1.0),  # grain, ~11-65 uu
-        (spectral(res, rng, low=1, high=4, beta=1.0, aniso=6.0), 0.7),    # board tone
-        (flecks(res, rng, count=120, radius_texels=2.5), -0.20),          # knots
+        (spectral(res, rng, low=8, high=36, beta=0.6), 1.0),   # grain, ~11-50 uu
+        (spectral(res, rng, low=1, high=4, beta=1.0), 0.7),    # board tone
+        (flecks(res, rng, count=120, radius_texels=2.5), -0.20),  # knots
     ], contrast=0.17)
 
 
 def bark(res, rng):
     """
-    Vertical fibre. Strongly anisotropic and DEEPER in contrast than anything
-    else here, because a trunk is a vertical surface under a 55-degree sun: it
-    receives a fraction of the light the ground does (the same argument the
-    palette makes for Bark's luminance), so the same modulation reads as less.
+    Vertical fibre — supplied by the projection, not by the map. What this has
+    to provide is the fibre's SPACING: a trunk is about 60 uu across and the tile
+    is 220 uu, so features of 5 to 14 uu put a countable handful of ridges around
+    one trunk, and world XY extrudes them up its length.
+
+    DEEPER in contrast than anything else here, because a trunk is a vertical
+    surface under a 55-degree sun: it receives a fraction of the light the ground
+    does (the same argument the palette makes for Bark's luminance), so the same
+    modulation reads as less.
     """
     return compose([
-        (spectral(res, rng, low=16, high=48, beta=0.7, aniso=18.0), 1.0),  # fibre, ~5-14 uu
-        (spectral(res, rng, low=5, high=15, beta=0.8, aniso=10.0), 0.7),   # broad tone
-        (cellular(res, rng, cells=26, mode="edge", aniso=9.0), -0.4),      # fissures
+        (spectral(res, rng, low=16, high=48, beta=0.7), 1.0),  # fibre, ~5-14 uu across
+        (spectral(res, rng, low=5, high=15, beta=0.8), 0.7),   # broad tone
+        (cellular(res, rng, cells=26, mode="edge"), -0.4),     # fissures
     ], contrast=0.26)
 
 
@@ -312,7 +338,21 @@ def vegetation(res, rng):
 
 
 def ravine(res, rng):
-    """Rubble in the gorge bed. Coarse, low contrast — this is the darkest surface in the sector."""
+    """
+    Rubble in the gorge bed. UNUSED — kept because the reasoning is worth more
+    than the twelve lines it costs.
+
+    It was generated, imported, wired up and photographed, and at the judging
+    camera the ravine bed measured 6.45 units of local detail before and 6.55
+    after. The surface is a linear 0.013, the darkest thing in the sector by
+    design, so a 35% swing is a swing of 0.005 in linear terms: below what the
+    frame can show and far below what a phone screen can. Flat is not a
+    compromise here, it is the same picture for one less texture and one less
+    sample on the largest thing a player walks across.
+
+    Re-add it to RECIPES (and the palette's detail table) only with a frame that
+    shows a difference.
+    """
     return compose([
         (cellular(res, rng, cells=16, mode="f1"), 1.0),
         (spectral(res, rng, low=2, high=10, beta=0.9), 0.8),
@@ -336,7 +376,8 @@ RECIPES = {
     "Timber":     (timber,     256, 20260807,  400.0),
     "Bark":       (bark,       256, 20260808,  220.0),
     "Vegetation": (vegetation, 256, 20260809,  700.0),
-    "Ravine":     (ravine,     256, 20260810, 1400.0),
+    # "Ravine" is deliberately absent — see the recipe's docstring for the frame
+    # that decided it.
 }
 
 

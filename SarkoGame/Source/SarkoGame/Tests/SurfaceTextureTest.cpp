@@ -17,15 +17,17 @@ namespace
 	 * adding one to a surface on this list — or dropping one from a surface that
 	 * is not — fails here rather than in a frame nobody re-takes.
 	 *
-	 * Each of the six is argued in Palette::DetailTexturePath's comment. The
-	 * short version: three of them are graphic rather than material (the two
-	 * water tones and the extraction pad) and three of them are a luminance
-	 * gradient standing in for distance (the skirt bands).
+	 * Six of the seven are argued in Palette::DetailTexturePath's comment: three
+	 * are graphic rather than material (the two water tones and the extraction
+	 * pad) and three are a luminance gradient standing in for distance (the
+	 * skirt bands). The seventh, Ravine, is here because a frame said so — it had
+	 * a detail map and the gorge bed looked identical with and without it.
 	 */
 	bool IsDeliberatelyFlat(ESarkoSurface Surface)
 	{
 		return Surface == ESarkoSurface::Water
 			|| Surface == ESarkoSurface::Shallow
+			|| Surface == ESarkoSurface::Ravine
 			|| Surface == ESarkoSurface::Extraction
 			|| Surface == ESarkoSurface::SkirtNear
 			|| Surface == ESarkoSurface::SkirtMid

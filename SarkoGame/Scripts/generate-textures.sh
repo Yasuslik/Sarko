@@ -55,3 +55,9 @@ SARKO_TEXTURE_SOURCE="$OUT_DIR" "$UE/Engine/Binaries/Mac/UnrealEditor-Cmd" "$PRO
 	| grep -E "SARKO_TEXTURE_IMPORT|LogPython: Error|Traceback|Critical error" || true
 
 echo "==> Done. Assets are in $PROJECT_DIR/Content/Generated"
+echo
+echo "NOTE: the FIRST -game run after this (a screenshot script, a play session)"
+echo "renders every textured surface as the engine's flat default grey. That is"
+echo "not a failure — an uncooked material's shaders compile on demand, and until"
+echo "they land the renderer substitutes the default. The second run, with the"
+echo "shader DDC warm, is the real frame. Judge that one."

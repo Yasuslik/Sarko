@@ -149,7 +149,7 @@ namespace
 			// And the mirror case: concrete is the palest surface in the sector,
 			// so the same fraction is a much larger absolute step. Held back.
 			/* Concrete   */ { TEXT("/Game/Generated/Textures/T_Surface_Concrete.T_Surface_Concrete"),      800.f, 0.35f, 0.20f },
-			/* Structure  */ { TEXT("/Game/Generated/Textures/T_Surface_Structure.T_Surface_Structure"),    600.f, 0.40f, 0.24f },
+			/* Structure  */ { TEXT("/Game/Generated/Textures/T_Surface_Structure.T_Surface_Structure"),    600.f, 0.30f, 0.24f },
 			/* Rust       */ { TEXT("/Game/Generated/Textures/T_Surface_Rust.T_Surface_Rust"),              500.f, 0.50f, 0.24f },
 			/* Timber     */ { TEXT("/Game/Generated/Textures/T_Surface_Timber.T_Surface_Timber"),          400.f, 0.40f, 0.16f },
 			// 220 uu, the fastest tile in the table: a trunk is about 60 uu
@@ -165,7 +165,13 @@ namespace
 			// the header.
 			/* Water      */ None,
 			/* Shallow    */ None,
-			/* Ravine     */ { TEXT("/Game/Generated/Textures/T_Surface_Ravine.T_Surface_Ravine"),         1400.f, 0.35f, 0.10f },
+			// Ravine: flat, and this one was DECIDED BY A FRAME rather than argued
+			// in advance. It had a map, it shipped through the whole pipeline, and
+			// the gorge bed measured 6.45 units of local detail before it and 6.55
+			// after — nothing. At a linear 0.013 it is the darkest surface in the
+			// sector on purpose, so a 35% swing is 0.005 of linear brightness. The
+			// texture is gone and the picture is identical.
+			/* Ravine     */ None,
 			// The three skirt bands: flat. They are a luminance gradient doing
 			// the job of distance, and texture on them is a second field.
 			/* SkirtNear  */ None,
