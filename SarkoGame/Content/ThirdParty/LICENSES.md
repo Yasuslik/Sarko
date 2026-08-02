@@ -80,8 +80,9 @@ the same three Drive folders, re-fetchable by name:
   `Pallet_Broken`, `Vehicle_Pickup`, `Vehicle_Truck` (no kind has their
   proportions — `bus` is 12 m against the truck's 5.3 m).
 - Cars Pack: `NormalCar2`, `SUV` — `NormalCar1`'s proportions are the closest to
-  `car_wreck`'s authored 230 x 95 x 75 (4% off in width, 17% in height, against
-  17%/10% for the other two).
+  `car_wreck`'s authored 230 x 95 x 75: 4% off in width and 17% in height,
+  against 17%/6% for NormalCar2 (which is a 3.3 m hatchback, too short for a
+  4.6 m extent) and 18%/10% for the SUV.
 
 ## Packs vetted and rejected
 
@@ -104,6 +105,22 @@ European wasteland in muted olive, grey and rust.
   rejected on theme. Big-headed cartoon survivors, green zombies, blue blobs,
   a spiked guitar. Its *environment* half is grounded and is where the props
   above come from; nothing else in the pack was taken.
+- **Quaternius Universal Base Characters** — rejected on theme, and not
+  downloaded. The preview is idealised heroic anatomy in a hero-shooter key:
+  gym-built torsos, clean skin, bright hair. Sarko's people are scavengers in a
+  ravine. The free tier is also two *unclothed* base bodies — the clothing that
+  would make them anything is in the $19.99 Source tier, so even ignoring the
+  look it is a body kit rather than characters. Practical note for whoever picks
+  this up later: its itch.io page is name-your-own-price, so the download is
+  behind an interactive purchase form rather than a direct link. On retargeting
+  the page claims only "Humanoid Rig compatible with retargeting in any engine",
+  which is a claim about intent and not about bone names — nothing was inspected
+  and nothing should be assumed. UE 5.8 retargets across arbitrary skeletons
+  through an IK Rig per skeleton, so feasibility is a question of authoring two
+  IK Rigs rather than of matching names; the project's existing mannequin
+  skeleton and the owner's untracked Fab `Content/QuantumCharacter` are both
+  closer starting points than this.
+
 - **Poly Haven** — not taken. Photoscanned CC0 rocks and logs are real art, but
   one photoreal rock in a stand of flat-shaded low-poly trees reads as a bug
   rather than as detail, and the polycounts are one to two orders of magnitude
