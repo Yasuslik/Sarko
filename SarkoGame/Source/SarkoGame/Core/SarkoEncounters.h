@@ -97,4 +97,39 @@ namespace SarkoEncounter
 	 * the trigger re-arms on the next approach.
 	 */
 	bool ShouldAbandonDeferral(float DeferredSeconds, float MaxDeferSeconds);
+
+	/**
+	 * Pure: which encounters this raid may activate, and in what priority order.
+	 *
+	 * THE TUTORIAL CASE is not a shuffle at all. It returns the non-optional rows
+	 * sorted by their authored `order`, and nothing else — one enemy, then one,
+	 * then two, in that sequence, every time. A first raid that taught its
+	 * lessons in a different sequence each time would not be teaching.
+	 *
+	 * THE NORMAL CASE takes every row and shuffles it against the raid Seed. It
+	 * is a priority order, not a script: an encounter still fires only when the
+	 * player walks into its trigger. What the order decides is who gets the
+	 * BUDGET when several POIs are reachable and the budget is scarcer than the
+	 * pool — which on this map it is, deliberately: eight rows costing ten
+	 * against a budget of eight. So four or five of the eight happen, and which
+	 * four or five is a function of the seed. Same enemy count, same caps, same
+	 * first-fight-1v1 law (AllowedSpawnCount enforces that on whichever row wins,
+	 * so it survives the shuffle by construction), different geography.
+	 *
+	 * Fisher-Yates over an FRandomStream, which is the same deterministic
+	 * generator the loot rolls use. Two properties matter and both are tested:
+	 * the same seed gives the same order on every machine and every run (a raid
+	 * is reproducible from `?Seed=`, and a "reproduction" that reproduces a
+	 * different set of fights is worthless), and different seeds give different
+	 * orders often enough to be the variation this exists to be.
+	 *
+	 * Seed is the RAID seed — replicated, and that is fine: knowing the order
+	 * tells a client nothing it can act on, because the order is not the
+	 * geography. Which POIs are where has always been in the map file.
+	 */
+	TArray<int32> BuildActivationOrder(
+		const TArray<int32>& AuthoredOrders,
+		const TArray<bool>& Optional,
+		bool bTutorial,
+		int32 Seed);
 }

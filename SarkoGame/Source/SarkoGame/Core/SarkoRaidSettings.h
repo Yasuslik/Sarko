@@ -409,14 +409,24 @@ public:
 	 * The hard floor between an encounter's spawn point and the player at the
 	 * instant an enemy is created.
 	 *
-	 * Measured, not picked: the portrait camera (a 1400 uu boom at -70 degrees)
-	 * shows about 1380 uu ahead of the pawn and 545 uu to either side, so 1800 uu
-	 * is beyond the forward reach with margin and 3.3x the lateral half-screen. A
-	 * bot that appears on screen is the one thing a game with four enemies per
-	 * raid can never be forgiven for.
+	 * 2600, and the 1800 it replaces was calibrated against a camera that no
+	 * longer exists. The old comment here read "the PORTRAIT camera (a 1400 uu
+	 * boom at -70 degrees) shows about 1380 uu ahead of the pawn and 545 uu to
+	 * either side" — 545 uu of lateral half-view. The game runs LANDSCAPE, where
+	 * the same boom and the same pitch put the half-view at roughly 1570 uu: not
+	 * three times inside the old floor but very nearly ON it. A bot appearing
+	 * 1800 uu away and 30 degrees off the walking direction was, measurably, a
+	 * bot appearing on screen — the one thing a game with a handful of enemies
+	 * per raid can never be forgiven for.
+	 *
+	 * 2600 is 1.66x the measured landscape half-view, which restores the margin
+	 * the 1800 was believed to have. It costs the authoring something real and
+	 * that is the point: an encounter whose only door is 2000 uu from the trigger
+	 * now defers instead of firing in view, which is visible in the log as "gave
+	 * up after Ns" and is the correct outcome.
 	 */
 	UPROPERTY(EditAnywhere, config, Category = "Encounters")
-	float EncounterMinSpawnDistanceUU = 1800.f;
+	float EncounterMinSpawnDistanceUU = 2600.f;
 
 	/**
 	 * How long an armed encounter keeps waiting for an authored spawn point to
