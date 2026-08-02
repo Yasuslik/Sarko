@@ -105,7 +105,11 @@ bool FSarkoBridgeMapIsValid::RunTest(const FString& Parameters)
 
 	const float Extent = Map.ExtentUU;
 	TestEqual(TEXT("the sector is 400 m across"), Extent, 20000.f);
-	TestEqual(TEXT("the tutorial raid is 15 minutes"), Map.RaidDurationSeconds, 900.f);
+	// TEN MINUTES, not fifteen (spec §2). The measured route is ~186 s of walking:
+	// in a 900 s raid the clock was scenery and the last five minutes were surplus,
+	// and 600 s is the one number that turns it into a budget without making the
+	// authored route tight.
+	TestEqual(TEXT("the raid is 10 minutes"), Map.RaidDurationSeconds, 600.f);
 
 	// MapExtent (settings) and extentUU (map file) are two copies of one number.
 	// Disagreement is silent and ugly in both directions: too small and the AI
@@ -907,11 +911,17 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 	if (West)
 	{
 		TestTrue(TEXT("the west cordon is reachable"), InActiveThird(West->Location));
-		TestEqual(TEXT("and it opens for the last five minutes of a fifteen-minute raid"),
-			West->OpensAfterSeconds, 600.f);
-		TestTrue(TEXT("which is a real wait, not a formality"),
-			West->OpensAfterSeconds > Map.RaidDurationSeconds * 0.5f
-				&& West->OpensAfterSeconds < Map.RaidDurationSeconds);
+		// 240, forced by spec §2 and matching what spec §3.3 asks for anyway. It
+		// was 600 — the last five minutes of a 900 s raid — and the raid is 600 s
+		// now, so 600 would have been a pad that opens exactly as the clock expires:
+		// a dead extraction dressed as a choice, and an assertion below that could
+		// never hold. 240 makes it a live option while the player is still deep in
+		// the west, which is when "run for it or loot one more crate" is a question.
+		TestEqual(TEXT("and it opens four minutes in"), West->OpensAfterSeconds, 240.f);
+		TestTrue(TEXT("which is a real wait, and a real window: shut for a while, then open for most of the raid"),
+			West->OpensAfterSeconds > 0.f
+				&& West->OpensAfterSeconds >= Map.RaidDurationSeconds * 0.25f
+				&& West->OpensAfterSeconds <= Map.RaidDurationSeconds * 0.6f);
 		// It has to be a genuine alternative or it is scenery: closer to the last
 		// loot on the route than E1 is, and on the far side of no crossing.
 		const FSarkoLootContainerSpot* Mil02 = Map.Containers.FindByPredicate(

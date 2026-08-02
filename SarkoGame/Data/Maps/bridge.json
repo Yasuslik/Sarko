@@ -1,7 +1,7 @@
 {
   "id": "bridge",
   "extentUU": 20000,
-  "raidDurationSeconds": 900,
+  "raidDurationSeconds": 600,
 
   "_readme": [
     "The Bridge sector: 400 x 400 m, centred on the origin, so x and y run -20000..+20000.",
@@ -963,8 +963,8 @@
       "id": "bridge_extract_north_highway", "pos": [-1000, 19500, 0], "radiusUU": 500, "name": "Шоссе на север" },
     { "note": "E3 (ТЗ §12), after the ford. Behind the closure until Stage D.",
       "id": "bridge_extract_east_cordon", "pos": [14500, 19500, 0], "radiusUU": 500, "name": "Восточный кордон" },
-    { "note": "THE SECOND REACHABLE EXIT, and the fix for the worst moment in the build: 37,310 uu of pure backtracking from the rail depot to E1, ninety-three seconds of held stick across ground the player has already crossed, carrying everything they own, with nothing able to happen. This sits 13,360 uu from mil_02 (30 s) against E1's 25,578 (58 s) — and, crucially, on the SOUTH side of the ravine, so taking it skips the pipe crossing and the whole northern half of the walk. opensAfterSeconds 600 is what makes it a decision instead of a shortcut: for the first ten minutes it is an inert circle on the ground, and it opens for exactly the last five — which is the window a player who has looted the depot is walking home in anyway. West edge (x <= -17000) like every other extraction, on open ground west of the station yard: the nearest prop is a crate 1005 uu away and the pad is 500. Named for E3's кордон because that is what it is — a checkpoint that opens late.",
+    { "note": "THE SECOND REACHABLE EXIT, and the fix for the worst moment in the build: 37,310 uu of pure backtracking from the rail depot to E1, ninety-three seconds of held stick across ground the player has already crossed, carrying everything they own, with nothing able to happen. This sits 13,360 uu from mil_02 (30 s) against E1's 25,578 (58 s) — and, crucially, on the SOUTH side of the ravine, so taking it skips the pipe crossing and the whole northern half of the walk. opensAfterSeconds 240 is what makes it a decision instead of a shortcut: for the first four minutes it is an inert circle on the ground. It was 600 in a 900 s raid — the last five minutes, a button on a lawn after the fighting had ended. The raid is 600 s now (spec §2), and 600 there would have meant a pad that opens exactly as the clock runs out, i.e. never: a dead extraction dressed as a choice. 240 puts it live while the player is still deep in the west, which is when 'run for it or loot one more crate' is a question at all. West edge (x <= -17000) like every other extraction, on open ground west of the station yard: the nearest prop is a crate 1005 uu away and the pad is 500. Named for E3's кордон because that is what it is — a checkpoint that opens late.",
       "id": "bridge_extract_west_cordon", "pos": [-17500, -6000, 0], "radiusUU": 500,
-      "opensAfterSeconds": 600, "name": "Западный кордон" }
+      "opensAfterSeconds": 240, "name": "Западный кордон" }
   ]
 }
