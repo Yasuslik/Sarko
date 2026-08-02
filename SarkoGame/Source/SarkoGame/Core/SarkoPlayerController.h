@@ -456,6 +456,44 @@ public:
 	UFUNCTION(Exec)
 	void SarkoDebugFire(float DirX, float DirY, float DelaySeconds);
 
+	/**
+	 * THE TOUCH SEAMS. A headless run has no fingers, and every rule this
+	 * controller owns — which half a touch claims, how far full deflection is,
+	 * whether a release fires — lives BELOW the point SarkoDebugMove and
+	 * SarkoDebugFire enter at. Those two write an intent straight onto the pawn,
+	 * so they can prove what the pawn does with an intent and nothing at all
+	 * about the stick that produced it. The sticks are also the only things that
+	 * make the HUD draw its rings, so without this there is no frame that shows
+	 * the radius this wave exists to fix.
+	 *
+	 * Both inject through UPlayerInput::InputTouch, which is the same call the
+	 * iOS layer makes: UpdateSticks then classifies, anchors, resolves the radius
+	 * and fires exactly as it would under a thumb. Nothing is faked past the
+	 * glass.
+	 *
+	 * SarkoDebugTouchStick holds one stick at a fixed deflection: Half 0 is the
+	 * left (move) stick and 1 the right (aim), Fraction is 0..1 of the resolved
+	 * radius, and the touch is released after HoldSeconds.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugTouchStick(int32 Half, float DirX, float DirY, float Fraction, float HoldSeconds, float DelaySeconds);
+
+	/**
+	 * One scripted release of the aim thumb, and the three answers that matter:
+	 *
+	 *   tap    — pressed and lifted without ever moving. Must NOT fire: it never
+	 *            had a direction, so the round would have gone out along the
+	 *            previous hold's ray.
+	 *   cancel — dragged out past the move dead zone, short of the fire
+	 *            threshold, then back onto the anchor and lifted. Must NOT fire.
+	 *   flick  — dragged out and lifted there. MUST fire exactly once.
+	 *
+	 * Logs the magazine before and after, because "no shot" is only observable as
+	 * a round that was not spent and a noise event that was not reported.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugAimGesture(FString Kind, float DelaySeconds);
+
 private:
 	void UpdateSticks();
 
@@ -558,6 +596,23 @@ private:
 	 *  means the seam is idle and the real stick has the pawn. */
 	FVector2D DebugMoveIntent = FVector2D::ZeroVector;
 	float DebugMoveUntilSeconds = -1.f;
+
+	/** One touch event, AfterSeconds from now, through the engine's own input
+	 *  path. See SarkoDebugTouchStick for why the seam is here and not higher. */
+	void ScheduleTouch(int32 FingerIndex, uint8 TouchType, FVector2D Position, float AfterSeconds);
+
+	/** Where a thumb of that hand rests, in viewport pixels — the right one is
+	 *  SarkoInput::RightThumbAnchor, the same point the button layout is measured
+	 *  against, and the left is its mirror. */
+	FVector2D DebugThumbAnchor(bool bLeftHalf) const;
+
+	/** This viewport's resolved stick radius, so a debug drag is expressed in the
+	 *  same units the rule is. */
+	float DebugStickRadiusPx() const;
+
+	/** Magazine and reserve, labelled. The whole proof of "no shot" is that this
+	 *  reads the same before and after. */
+	void LogGestureAmmo(const TCHAR* Stage, const FString& Kind);
 #endif
 
 	FSarkoTouchStick MoveStick;

@@ -8,6 +8,7 @@
 #include "AI/SarkoEnemyCharacter.h"
 #include "Debug/SarkoOverviewShot.h"
 #include "Engine/GameViewportClient.h"
+#include "GameFramework/PlayerInput.h"
 #include "HAL/IConsoleManager.h"
 #include "Loot/SarkoBackpack.h"
 #include "Loot/SarkoLootContainer.h"
@@ -361,6 +362,162 @@ void ASarkoPlayerController::CheatDrainAndReload(int32 Cycles, float IntervalSec
 	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
 		[this, Remaining, Interval]() { CheatDrainAndReload(Remaining - 1, Interval); }),
 		Interval, /*bLoop*/ false);
+#endif
+}
+
+#if !UE_BUILD_SHIPPING
+void ASarkoPlayerController::ScheduleTouch(int32 FingerIndex, uint8 TouchType, FVector2D Position, float AfterSeconds)
+{
+	// Through UPlayerInput, which is where the iOS layer delivers touches too.
+	// UPlayerInput::Touches is what APlayerController::GetInputTouchState reads,
+	// and a Began/Moved leaves the finger DOWN until an Ended arrives — so a
+	// scripted gesture is a handful of events, not one per frame.
+	const auto Fire = [this, FingerIndex, TouchType, Position]()
+	{
+		if (!PlayerInput)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("SarkoDebugTouch: no PlayerInput to inject into"));
+			return;
+		}
+		// Device 0: IPlatformInputDeviceMapper's default, spelled without it
+		// because reaching for the mapper would put an ApplicationCore dependency
+		// on this module for one integer, and a debug seam is not worth that.
+		PlayerInput->InputTouch(
+			FTouchId(FInputDeviceId::CreateFromInternalId(0),
+				static_cast<ETouchIndex::Type>(FingerIndex)),
+			static_cast<ETouchType::Type>(TouchType), Position, /*Force*/ 1.f, /*Timestamp*/ 0);
+	};
+
+	if (AfterSeconds <= 0.f)
+	{
+		Fire();
+		return;
+	}
+
+	FTimerHandle Handle;
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this, Fire),
+		AfterSeconds, /*bLoop*/ false);
+}
+
+FVector2D ASarkoPlayerController::DebugThumbAnchor(bool bLeftHalf) const
+{
+	int32 ViewportX = 0;
+	int32 ViewportY = 0;
+	GetViewportSize(ViewportX, ViewportY);
+	const FVector2D Viewport(static_cast<float>(ViewportX), static_cast<float>(ViewportY));
+	const FBox2D Frame = SarkoInput::SafeFrame(Viewport);
+	const float Scale = SarkoUI::PointScaleForViewport(Viewport);
+
+	const FVector2D Right = SarkoInput::RightThumbAnchor(Frame, Scale);
+	// Mirrored, so a debug drag starts where a real thumb would and the stick's
+	// whole ring stays inside the frame at either end.
+	return bLeftHalf ? FVector2D(Frame.Min.X + (Frame.Max.X - Right.X), Right.Y) : Right;
+}
+
+float ASarkoPlayerController::DebugStickRadiusPx() const
+{
+	int32 ViewportX = 0;
+	int32 ViewportY = 0;
+	GetViewportSize(ViewportX, ViewportY);
+	return SarkoInput::StickRadiusPxForViewport(
+		FVector2D(static_cast<float>(ViewportX), static_cast<float>(ViewportY)));
+}
+
+void ASarkoPlayerController::LogGestureAmmo(const TCHAR* Stage, const FString& Kind)
+{
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	const USarkoWeaponComponent* Weapon = Pawn ? Pawn->WeaponComponent : nullptr;
+	UE_LOG(LogTemp, Display, TEXT("SarkoDebugAimGesture[%s] %s: magazine=%d"),
+		*Kind, Stage, Weapon ? Weapon->GetAmmoInMagazine() : -1);
+}
+#endif
+
+void ASarkoPlayerController::SarkoDebugTouchStick(int32 Half, float DirX, float DirY, float Fraction, float HoldSeconds, float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	if (DelaySeconds > 0.f)
+	{
+		FTimerHandle Handle;
+		GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+			[this, Half, DirX, DirY, Fraction, HoldSeconds]()
+			{ SarkoDebugTouchStick(Half, DirX, DirY, Fraction, HoldSeconds, 0.f); }),
+			DelaySeconds, /*bLoop*/ false);
+		return;
+	}
+
+	const bool bLeft = Half == 0;
+	const FVector2D Anchor = DebugThumbAnchor(bLeft);
+	const float Radius = DebugStickRadiusPx();
+
+	// Screen Y grows DOWNWARD and FSarkoTouchStick::Value flips it, so a caller
+	// asking for "up" (+Y) must be dragged toward a smaller screen Y.
+	FVector2D Direction(DirX, DirY);
+	Direction = Direction.IsNearlyZero() ? FVector2D(0.f, 1.f) : Direction.GetSafeNormal();
+	const FVector2D Held = Anchor + FVector2D(Direction.X, -Direction.Y) * Radius * FMath::Clamp(Fraction, 0.f, 2.f);
+
+	// Two fingers, and always the same one per half, so holding both sticks at
+	// once — which is what a frame showing both rings needs — is one call each.
+	const int32 Finger = bLeft ? 0 : 1;
+	UE_LOG(LogTemp, Display,
+		TEXT("SarkoDebugTouchStick: %s stick, anchor (%.0f, %.0f), radius %.1f px, held at %.2f of it for %.1fs"),
+		bLeft ? TEXT("MOVE") : TEXT("AIM"), Anchor.X, Anchor.Y, Radius, Fraction, HoldSeconds);
+
+	ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Began), Anchor, 0.f);
+	ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Moved), Held, 0.1f);
+	ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Ended), Held, FMath::Max(0.2f, HoldSeconds));
+#endif
+}
+
+void ASarkoPlayerController::SarkoDebugAimGesture(FString Kind, float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	if (DelaySeconds > 0.f)
+	{
+		FTimerHandle Handle;
+		GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+			[this, Kind]() { SarkoDebugAimGesture(Kind, 0.f); }), DelaySeconds, /*bLoop*/ false);
+		return;
+	}
+
+	const FVector2D Anchor = DebugThumbAnchor(/*bLeftHalf*/ false);
+	const float Radius = DebugStickRadiusPx();
+
+	// 0.25 of the radius: past MoveStickDeadZone 0.15 so it counts as a
+	// direction, short of AimFireDeadZone 0.35 so the HOLD never fires. That
+	// isolates the release rule, which is the whole question.
+	const FVector2D Out = Anchor + FVector2D(0.f, -Radius * 0.25f);
+	const int32 Finger = 1;
+
+	LogGestureAmmo(TEXT("before"), Kind);
+	UE_LOG(LogTemp, Display, TEXT("SarkoDebugAimGesture[%s]: pressing at (%.0f, %.0f), radius %.1f px"),
+		*Kind, Anchor.X, Anchor.Y, Radius);
+
+	ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Began), Anchor, 0.f);
+
+	float EndAt = 0.4f;
+	if (Kind == TEXT("flick"))
+	{
+		// Out, and lifted there. The one gesture that must still fire.
+		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Moved), Out, 0.15f);
+		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Ended), Out, 0.4f);
+	}
+	else if (Kind == TEXT("cancel"))
+	{
+		// Out, then back onto the anchor, then lifted: the abort gesture.
+		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Moved), Out, 0.15f);
+		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Moved), Anchor, 0.4f);
+		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Ended), Anchor, 0.6f);
+		EndAt = 0.6f;
+	}
+	else
+	{
+		// "tap": pressed and lifted, never moved. The stray touch.
+		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Ended), Anchor, 0.4f);
+	}
+
+	FTimerHandle Handle;
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+		[this, Kind]() { LogGestureAmmo(TEXT("after"), Kind); }), EndAt + 0.3f, /*bLoop*/ false);
 #endif
 }
 

@@ -123,12 +123,17 @@ namespace
 	constexpr float BracketStrokePt = 1.5f;
 
 	/**
-	 * The first-raid hint band: one line, top-centre, BELOW every other top row
-	 * (clock 10 pt, connecting 46, loot prompt 72, extraction 118) so that a hint
-	 * about the interact button — which by definition shows while the loot prompt
-	 * is up — never lands on top of the prompt it is talking about.
+	 * The first-raid hint band: one line, top-centre, below the loot prompt's row
+	 * (clock 10 pt, connecting 46, prompt 72) — because the hint about the
+	 * interact button shows, by definition, while that prompt is up and must not
+	 * land on the thing it is pointing at.
+	 *
+	 * The SAME row as the extraction banner, deliberately: the two are mutually
+	 * exclusive (DrawFirstRaidHints yields to it), and any row further down
+	 * covers the player's own character, which sits near the middle of a
+	 * world-locked top-down frame.
 	 */
-	constexpr float HintTopPt = 150.f;
+	constexpr float HintTopPt = 118.f;
 	constexpr float HintPt = 15.f;
 
 	/** How long a hint stays up whether or not the player obeys it, and the tail
@@ -729,6 +734,15 @@ void ASarkoHUD::DrawFirstRaidHints(const ASarkoPlayerController& PC)
 
 	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
 	if (!Pawn)
+	{
+		return;
+	}
+
+	// The extraction banner owns this row and it is the more urgent message: a
+	// countdown the player is standing in beats a hint about a control. Yielding
+	// rather than choosing another row, because every row further down covers the
+	// player's own character in a top-down frame.
+	if (Pawn->ExtractZoneIndex != INDEX_NONE)
 	{
 		return;
 	}
