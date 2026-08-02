@@ -334,10 +334,18 @@ void ASarkoAIController::Tick(float DeltaSeconds)
 	// then moves is walked to where they fired from, and a player who walks past
 	// at 900 uu emits a 450 uu event that nobody hears at all.
 	//
-	// Only while the bot cannot see the target: the moment it can, Chase and
-	// Shoot take over and the investigation is moot. Note that the listener is
-	// this bot's PAWN, so its own gunshots are filtered out of its own hearing.
-	if (!bLineOfSight)
+	// Only while the bot cannot SEE the target — and "see" means the same thing
+	// here as it does in DecideState: an unbroken line AND inside the sight
+	// range. Testing the raw line alone was wrong in a way that would have been
+	// very hard to find: a bot with a clear view of a player 2400 uu away is not
+	// perceiving them (2400 > EnemySightRangeUU), but it would have counted as
+	// seeing and therefore never heard the shot either — deaf and blind at once,
+	// in exactly the band where the noise model is supposed to do its work.
+	//
+	// The listener is this bot's PAWN, so its own gunshots are filtered out of
+	// its own hearing.
+	const bool bSeesTarget = Target && bLineOfSight && Distance <= Settings.EnemySightRangeUU;
+	if (!bSeesTarget)
 	{
 		if (USarkoNoiseSubsystem* Noise = World ? World->GetSubsystem<USarkoNoiseSubsystem>() : nullptr)
 		{

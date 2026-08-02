@@ -5,6 +5,7 @@
 #include "Core/SarkoRaidGameMode.h"
 #include "Core/SarkoRaidGameState.h"
 #include "Core/SarkoRaidSettings.h"
+#include "AI/SarkoEnemyCharacter.h"
 #include "Debug/SarkoOverviewShot.h"
 #include "Engine/GameViewportClient.h"
 #include "HAL/IConsoleManager.h"
@@ -188,11 +189,19 @@ void ASarkoPlayerController::PlayerTick(float DeltaTime)
 	// the world-space direction back up by the stick's own deflection so the
 	// magnitude survives the rotation instead of being thrown away.
 	bool bKeyboardMoved = false;
+	bool bDebugMoved = false;
 #if !UE_BUILD_SHIPPING
 	bKeyboardMoved = ApplyDesktopTestInput(*Pawn, CameraYaw);
+	// The headless stick (SarkoDebugMove) has to be applied HERE, every frame, for
+	// the same reason the keyboard is: this function reassigns the move intent
+	// unconditionally from MoveStick, so an intent written once from a console
+	// command survives exactly zero frames. That is why the first attempt at
+	// verifying "walking is quiet" produced no movement noise at all — not because
+	// the model was silent, but because the pawn never moved.
+	bDebugMoved = ApplyDebugMoveInput(*Pawn);
 #endif
 
-	if (!bKeyboardMoved)
+	if (!bKeyboardMoved && !bDebugMoved)
 	{
 		const FVector2D MoveValue = MoveStick.Value();
 		const FVector2D MoveDirection = SarkoAim::StickToWorldDirection(MoveValue, CameraYaw);
@@ -1096,5 +1105,136 @@ void ASarkoPlayerController::SarkoOverview()
 	{
 		ConsoleCommand(TEXT("HighResShot 1600x1600"), /*bWriteToLog*/ true);
 	}), 0.25f, false);
+#endif
+}
+
+void ASarkoPlayerController::SarkoDebugSpawnBot(FString ArchetypeId, float X, float Y, float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	// -ExecCmds runs its whole list at engine init, so a step that has to happen
+	// LATER carries its own delay. Same shape as SarkoDebugSurvival above, and
+	// rescheduled through this same function so the two paths cannot drift.
+	if (DelaySeconds > 0.f)
+	{
+		FTimerHandle Handle;
+		GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+			[this, ArchetypeId, X, Y]() { SarkoDebugSpawnBot(ArchetypeId, X, Y, 0.f); }),
+			DelaySeconds, /*bLoop*/ false);
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World || !HasAuthority())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoDebugSpawnBot: no world, or not the authority"));
+		return;
+	}
+
+	const FVector Location(X, Y, 150.f);
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+	ASarkoEnemyCharacter* Enemy = World->SpawnActor<ASarkoEnemyCharacter>(
+		ASarkoEnemyCharacter::StaticClass(), Location, FRotator::ZeroRotator, Params);
+	if (!Enemy)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoDebugSpawnBot: SpawnActor refused %s"), *Location.ToCompactString());
+		return;
+	}
+
+	// The SAME call the encounter director makes, so the bot that appears here is
+	// the bot a raid would have produced — archetype numbers, post and leash all
+	// pushed through ApplyArchetypeAndPost rather than set by hand.
+	Enemy->ApplyArchetypeAndPost(FName(*ArchetypeId), Location, /*LeashUU*/ 400.f);
+	UE_LOG(LogTemp, Display, TEXT("SarkoDebugSpawnBot: '%s' placed at %s, holding a 400 uu post"),
+		*ArchetypeId, *Location.ToCompactString());
+#endif
+}
+
+void ASarkoPlayerController::SarkoDebugMove(float DirX, float DirY, float Scale, float HoldSeconds, float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	if (DelaySeconds > 0.f)
+	{
+		FTimerHandle Handle;
+		GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+			[this, DirX, DirY, Scale, HoldSeconds]() { SarkoDebugMove(DirX, DirY, Scale, HoldSeconds, 0.f); }),
+			DelaySeconds, /*bLoop*/ false);
+		return;
+	}
+
+	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	if (!Pawn)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoDebugMove: no possessed pawn"));
+		return;
+	}
+
+	// A HELD stick, not a single write. PlayerTick reassigns the move intent from
+	// MoveStick every frame, so a one-shot SetMoveIntent here would be overwritten
+	// before the pawn accelerated — ApplyDebugMoveInput below is applied on the
+	// same tick and in the same place ApplyDesktopTestInput is, which is what
+	// makes this a finger rather than a teleport.
+	//
+	// Scale IS the stick's deflection, so the velocity that results — and
+	// therefore the noise the server classifies from it — is the one a thumb at
+	// that deflection would produce. Nothing here touches the noise model.
+	DebugMoveIntent = FVector2D(DirX, DirY).GetSafeNormal() * FMath::Clamp(Scale, 0.f, 1.f);
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+	DebugMoveUntilSeconds = Now + FMath::Max(0.f, HoldSeconds);
+	UE_LOG(LogTemp, Display, TEXT("SarkoDebugMove: stick held at %s (deflection %.2f) for %.1fs"),
+		*DebugMoveIntent.ToString(), DebugMoveIntent.Size(), HoldSeconds);
+#endif
+}
+
+#if !UE_BUILD_SHIPPING
+bool ASarkoPlayerController::ApplyDebugMoveInput(ASarkoCharacter& Pawn)
+{
+	if (DebugMoveIntent.IsNearlyZero())
+	{
+		return false;
+	}
+
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+	if (Now >= DebugMoveUntilSeconds)
+	{
+		DebugMoveIntent = FVector2D::ZeroVector;
+		Pawn.SetMoveIntent(FVector2D::ZeroVector);
+		UE_LOG(LogTemp, Display,
+			TEXT("SarkoDebugMove: stick released — the pawn is standing still, and standing still is silent"));
+		return true;
+	}
+
+	Pawn.SetMoveIntent(DebugMoveIntent);
+	return true;
+}
+#endif
+
+void ASarkoPlayerController::SarkoDebugFire(float DirX, float DirY, float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	if (DelaySeconds > 0.f)
+	{
+		FTimerHandle Handle;
+		GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+			[this, DirX, DirY]() { SarkoDebugFire(DirX, DirY, 0.f); }),
+			DelaySeconds, /*bLoop*/ false);
+		return;
+	}
+
+	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	if (!Pawn)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoDebugFire: no possessed pawn"));
+		return;
+	}
+
+	// One shot, through the aim path a thumb would use: SetAimIntent then
+	// RequestFire, so the direction is published, the server validates it and
+	// USarkoWeaponComponent::ServerFire is what actually reports the noise.
+	// CheatEmptyMagazine exists for the other question (does the magazine run
+	// out); a noise verification wants exactly one bang.
+	Pawn->SetAimIntent(FVector2D(DirX, DirY).GetSafeNormal(), /*bInIsAiming*/ true);
+	Pawn->RequestFire();
+	UE_LOG(LogTemp, Display, TEXT("SarkoDebugFire: one shot toward (%.2f, %.2f)"), DirX, DirY);
 #endif
 }

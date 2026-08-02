@@ -1013,7 +1013,23 @@ void ASarkoCharacter::ReportMovementNoise(float DeltaSeconds)
 	// KindForSpeed maps a zero-ish speed to Silent and ReportNoise drops it, so
 	// standing still costs a division and nothing else. Standing still is the one
 	// state with no event at all.
-	Noise->ReportMovementNoise(GetActorLocation(), GetVelocity().Size2D(), Movement->MaxWalkSpeed, this);
+	const float Speed = GetVelocity().Size2D();
+	Noise->ReportMovementNoise(GetActorLocation(), Speed, Movement->MaxWalkSpeed, this);
+
+	if (Settings.bLogAIDiagnostics)
+	{
+		// SILENCE IS INDISTINGUISHABLE FROM BROKEN in a log that only speaks when
+		// a noise is made — a run that produces no movement events cannot tell
+		// "the player was walking quietly" from "the player never moved". This
+		// line is the difference, and it is four times a second on a debug flag
+		// that is off by default.
+		UE_LOG(LogTemp, Log, TEXT("SarkoNoise: player at %.0f uu/s of %.0f (%.0f%% deflection) -> %s"),
+			Speed, Movement->MaxWalkSpeed,
+			Movement->MaxWalkSpeed > 0.f ? Speed / Movement->MaxWalkSpeed * 100.f : 0.f,
+			Speed / FMath::Max(1.f, Movement->MaxWalkSpeed) >= Settings.NoiseRunSpeedFraction ? TEXT("RUNNING, audible")
+				: (Speed / FMath::Max(1.f, Movement->MaxWalkSpeed) >= Settings.NoiseMoveSpeedFraction ? TEXT("walking, quiet")
+					: TEXT("standing, SILENT")));
+	}
 }
 
 void ASarkoCharacter::Tick(float DeltaSeconds)

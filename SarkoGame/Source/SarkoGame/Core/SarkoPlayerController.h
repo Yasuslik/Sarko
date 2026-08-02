@@ -347,6 +347,36 @@ public:
 	UFUNCTION(Exec)
 	void SarkoDebugStandInZone(int32 ZoneIndex, float DelaySeconds);
 
+	/**
+	 * THE NOISE MODEL'S VERIFICATION SEAMS (spec §7). Three, and none of them
+	 * fakes an outcome — they arrange a situation and let the production code
+	 * log what it does.
+	 *
+	 * A headless raid cannot reach a firefight on its own: encounters spawn only
+	 * when the player walks into a trigger AND every authored door is far enough
+	 * away and out of sight, which is a walk no -ExecCmds line can take. So a bot
+	 * is placed directly, through the same ApplyArchetypeAndPost the encounter
+	 * director calls, and then everything that matters — what a shot emits, what
+	 * a walk emits, what the bot hears, where it walks — runs through
+	 * USarkoNoiseSubsystem and ASarkoAIController unchanged and says so in the log.
+	 *
+	 * SarkoDebugMove drives ASarkoCharacter::SetMoveIntent, which is the exact
+	 * function the move stick drives, at a chosen deflection: that is what makes
+	 * "walking is quiet, running is audible" observable at all in a run with no
+	 * fingers. Scale is the stick's deflection, 0..1.
+	 *
+	 * Bodies are `#if !UE_BUILD_SHIPPING` in the .cpp; the declarations cannot be,
+	 * because UHT rejects a UFUNCTION inside a preprocessor block.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugSpawnBot(FString ArchetypeId, float X, float Y, float DelaySeconds);
+
+	UFUNCTION(Exec)
+	void SarkoDebugMove(float DirX, float DirY, float Scale, float HoldSeconds, float DelaySeconds);
+
+	UFUNCTION(Exec)
+	void SarkoDebugFire(float DirX, float DirY, float DelaySeconds);
+
 private:
 	void UpdateSticks();
 
@@ -431,6 +461,24 @@ private:
 	 * @return true if the keyboard supplied a movement intent this frame
 	 */
 	bool ApplyDesktopTestInput(class ASarkoCharacter& Pawn, float CameraYaw);
+
+	/**
+	 * The headless stick, held for as long as SarkoDebugMove asked for.
+	 *
+	 * Applied from PlayerTick beside ApplyDesktopTestInput and for the same
+	 * reason: this class reassigns the move intent from MoveStick every frame, so
+	 * an intent written once from a console command is gone before the pawn has
+	 * accelerated. A run that verifies "walking is quiet" against a pawn that
+	 * never moved would be verifying nothing.
+	 *
+	 * @return true if it supplied a movement intent this frame
+	 */
+	bool ApplyDebugMoveInput(class ASarkoCharacter& Pawn);
+
+	/** The held deflection, and the world time it is released at. Zero intent
+	 *  means the seam is idle and the real stick has the pawn. */
+	FVector2D DebugMoveIntent = FVector2D::ZeroVector;
+	float DebugMoveUntilSeconds = -1.f;
 #endif
 
 	FSarkoTouchStick MoveStick;
