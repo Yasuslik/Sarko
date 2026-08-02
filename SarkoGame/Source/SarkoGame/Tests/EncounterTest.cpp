@@ -172,8 +172,13 @@ bool FSarkoBotArchetypeTable::RunTest(const FString& Parameters)
 	{
 		TestTrue(FString::Printf(TEXT("'%s' fires from inside the screen (%.0f uu <= 1380)"),
 			*Row.Id.ToString(), Row.FiringRangeUU), Row.FiringRangeUU <= 1380.f);
-		TestTrue(FString::Printf(TEXT("'%s' hears at least as far as it shoots"), *Row.Id.ToString()),
-			Row.HearingRadiusUU >= Row.FiringRangeUU);
+		// "Hears at least as far as it shoots" is now a statement about the
+		// loudest event there is rather than about a radius the bot owns (spec
+		// §7); Sarko.Noise.ArchetypeSensitivity asserts it against
+		// NoiseLoudRadiusUU. What survives here is the property that keeps the
+		// column meaningful at all.
+		TestTrue(FString::Printf(TEXT("'%s' can hear (%.2fx)"), *Row.Id.ToString(), Row.HearingSensitivity),
+			Row.HearingSensitivity > 0.f);
 		TestTrue(FString::Printf(TEXT("'%s' has a positive health pool, damage and cadence"), *Row.Id.ToString()),
 			Row.MaxHealth > 0.f && Row.Damage > 0.f && Row.FireIntervalSeconds > 0.f && Row.WalkSpeed > 0.f);
 	}

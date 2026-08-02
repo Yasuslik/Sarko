@@ -192,6 +192,16 @@ protected:
 	/** Server only: stops movement and disables collision so the corpse does not block shots. */
 	void HandleDeath(AActor* Killer);
 
+	/**
+	 * Server only, throttled: tells the world how loudly this pawn is moving
+	 * (spec §7). Called from Tick.
+	 *
+	 * Silent when standing, quiet when walking, audible when running — measured
+	 * from the server's own velocity, which is the only version of the pawn's
+	 * speed no client can lie about.
+	 */
+	void ReportMovementNoise(float DeltaSeconds);
+
 	UPROPERTY(VisibleAnywhere, Category = "Camera")
 	TObjectPtr<USpringArmComponent> CameraBoom;
 
@@ -363,6 +373,10 @@ private:
 	FVector2D MoveIntent = FVector2D::ZeroVector;
 	float MoveScale = 0.f;
 	bool bIsAiming = false;
+
+	/** World time of the last movement noise report. Server-side; see
+	 *  ReportMovementNoise for why it is throttled at all. */
+	float LastNoiseReportSeconds = -1000.f;
 
 	/** Server-side channel state. Not replicated: the HUD's bar is local and cosmetic. */
 	int32 LootChannelIndex = INDEX_NONE;

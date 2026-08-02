@@ -1,5 +1,6 @@
 #include "AI/SarkoAIController.h"
 
+#include "AI/SarkoNoise.h"
 #include "Combat/SarkoWeapon.h"
 #include "CollisionQueryParams.h"
 #include "CollisionShape.h"
@@ -17,27 +18,25 @@ ESarkoAIState SarkoAI::DecideState(
 	bool bHasTarget,
 	float DistanceToTarget,
 	bool bHasLineOfSight,
-	float HearingRadius,
+	float SightRangeUU,
 	float FiringRange,
 	float ShootHysteresisRangeUU,
 	bool bInvestigationActive)
 {
-	// Nothing to react to. A bot that is still walking to a noise it has not
-	// reached keeps walking; everything else wanders its post.
-	if (!bHasTarget || DistanceToTarget > HearingRadius)
+	// THE LINE-OF-SIGHT GATE, now the only perception this function has. A bot
+	// that cannot see its target reacts to exactly one thing: a noise the caller
+	// heard for it (spec §7). It does not chase — a bot closing on a target it
+	// cannot see is a bot aggroing through a wall (ТЗ §11) — and it certainly
+	// does not shoot.
+	//
+	// What is deliberately NOT here any more: a hearing radius. This used to read
+	// `DistanceToTarget > HearingRadius` and return Patrol, which made being near
+	// a bot the same thing as being heard by it, whether the player was sprinting
+	// or standing perfectly still. Proximity is not a sound.
+	const bool bSeen = bHasTarget && bHasLineOfSight && DistanceToTarget <= SightRangeUU;
+	if (!bSeen)
 	{
 		return bInvestigationActive ? ESarkoAIState::Investigate : ESarkoAIState::Patrol;
-	}
-
-	// THE LINE-OF-SIGHT GATE. Inside hearing but with nothing in sight the bot
-	// investigates — it walks to where the sound came from. It does not chase,
-	// and it certainly does not shoot: a bot that closed on a target it could
-	// not see was a bot aggroing through a wall, and one that fired at
-	// WeaponRangeUU*0.5 = 2000 uu was firing from off the player's screen
-	// entirely (ТЗ §11).
-	if (!bHasLineOfSight)
-	{
-		return ESarkoAIState::Investigate;
 	}
 
 	// Seen and close enough to hit: shoot. Already shooting tolerates
@@ -139,9 +138,9 @@ float ASarkoAIController::GetLeashUU() const
 	return AuthoredLeashUU >= 0.f ? AuthoredLeashUU : GetDefault<USarkoRaidSettings>()->AIPatrolLeashUU;
 }
 
-void ASarkoAIController::SetPerception(float InHearingRadiusUU, float InFiringRangeUU, float InFireIntervalSeconds)
+void ASarkoAIController::SetPerception(float InHearingSensitivity, float InFiringRangeUU, float InFireIntervalSeconds)
 {
-	HearingRadiusOverrideUU = InHearingRadiusUU;
+	HearingSensitivityOverride = InHearingSensitivity;
 	FiringRangeOverrideUU = InFiringRangeUU;
 	FireIntervalOverrideSeconds = InFireIntervalSeconds;
 }
@@ -311,7 +310,7 @@ void ASarkoAIController::Tick(float DeltaSeconds)
 	// frozen on the extraction pad under a summary screen reads as a bug even when
 	// nothing takes damage, and a bot that keeps aiming is one refactor away from
 	// one that keeps hurting.
-	const UWorld* World = GetWorld();
+	UWorld* World = GetWorld();
 	const ASarkoRaidGameState* RaidState = World ? World->GetGameState<ASarkoRaidGameState>() : nullptr;
 	if (RaidState && RaidState->IsRaidFinished())
 	{
@@ -325,26 +324,47 @@ void ASarkoAIController::Tick(float DeltaSeconds)
 	const float Distance = Target ? FVector::Dist(Self->GetActorLocation(), Target->GetActorLocation()) : 0.f;
 	const bool bLineOfSight = Target ? LineOfSightTo(Target) : false;
 
-	const float HearingRadiusUU = HearingRadiusOverrideUU > 0.f ? HearingRadiusOverrideUU : Settings.EnemyHearingRadiusUU;
+	const float HearingSensitivity = HearingSensitivityOverride > 0.f ? HearingSensitivityOverride : Settings.EnemyHearingSensitivity;
 	const float FiringRangeUU = FiringRangeOverrideUU > 0.f ? FiringRangeOverrideUU : Settings.EnemyFiringRangeUU;
 	const float FireIntervalSeconds = FireIntervalOverrideSeconds > 0.f ? FireIntervalOverrideSeconds : Settings.EnemyFireIntervalSeconds;
 
-	// A target inside hearing and out of sight is a NOISE, and a noise is a
-	// position remembered once — not a subscription. The memory is refreshed
-	// only while the bot cannot see the target; the moment it can, Chase and
-	// Shoot take over and the investigation is moot.
-	if (Target && Distance <= HearingRadiusUU && !bLineOfSight)
+	// HEARING (spec §7). A noise event, not a proximity test — and the position
+	// investigated is the EVENT's, never the target's live one. That is the
+	// difference between hunting a sound and wallhacking: a player who fires and
+	// then moves is walked to where they fired from, and a player who walks past
+	// at 900 uu emits a 450 uu event that nobody hears at all.
+	//
+	// Only while the bot cannot see the target: the moment it can, Chase and
+	// Shoot take over and the investigation is moot. Note that the listener is
+	// this bot's PAWN, so its own gunshots are filtered out of its own hearing.
+	if (!bLineOfSight)
 	{
-		InvestigateTarget = Target->GetActorLocation();
-		if (!bInvestigating)
+		if (USarkoNoiseSubsystem* Noise = World ? World->GetSubsystem<USarkoNoiseSubsystem>() : nullptr)
 		{
-			bInvestigating = true;
-			InvestigateSeconds = 0.f;
+			SarkoNoise::FNoiseEvent Heard;
+			if (Noise->Hear(Self->GetActorLocation(), HearingSensitivity, Self, Heard))
+			{
+				// A fresh event restarts the clock as well as moving the target: a
+				// player who keeps making audible noise keeps being followed, and one
+				// who goes quiet has AIInvestigateTimeoutSeconds to be somewhere else.
+				// The bound is the noise radius, not the bot's patience alone.
+				InvestigateTarget = Heard.Location;
+				InvestigateSeconds = 0.f;
+				if (!bInvestigating)
+				{
+					bInvestigating = true;
+					if (Settings.bLogAIDiagnostics)
+					{
+						UE_LOG(LogTemp, Log, TEXT("SarkoAI: heard something at %s (radius %.0f uu, sensitivity %.2f) — investigating the EVENT position, not the player"),
+							*Heard.Location.ToString(), Heard.RadiusUU, HearingSensitivity);
+					}
+				}
+			}
 		}
 	}
 
 	State = SarkoAI::DecideState(State, Target != nullptr, Distance, bLineOfSight,
-		HearingRadiusUU, FiringRangeUU, Settings.AIShootHysteresisRangeUU, bInvestigating);
+		Settings.EnemySightRangeUU, FiringRangeUU, Settings.AIShootHysteresisRangeUU, bInvestigating);
 
 	DebugLogAccum += DeltaSeconds;
 	const bool bLogThisTick = Settings.bLogAIDiagnostics && DebugLogAccum > 1.f;

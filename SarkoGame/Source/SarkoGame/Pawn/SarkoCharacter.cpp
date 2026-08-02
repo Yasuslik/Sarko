@@ -4,6 +4,7 @@
 #include "Pawn/SarkoCharacterAnim.h"
 #include "Pawn/SarkoSurvival.h"
 
+#include "AI/SarkoNoise.h"
 #include "Camera/CameraComponent.h"
 #include "Combat/SarkoWeapon.h"
 #include "Components/CapsuleComponent.h"
@@ -393,6 +394,14 @@ void ASarkoCharacter::TickLootChannel()
 
 void ASarkoCharacter::OpenContainerFor(int32 ContainerIndex)
 {
+	// OPENING A CRATE MAKES NO NOISE, and that is a decision rather than an
+	// omission (spec §7; the design study's container-noise idea was deferred).
+	// Looting already costs LootChannelSeconds of standing perfectly still in
+	// the open, which is the one moment the player is defenceless; charging that
+	// moment a second time by summoning the guard would make searching strictly
+	// worse than shooting the guard first. If this is ever revisited, one
+	// `Noise->ReportNoise(GetActorLocation(), SarkoNoise::EKind::Quiet, this)`
+	// here is the whole change — see AI/SarkoNoise.h.
 	ASarkoRaidGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ASarkoRaidGameMode>() : nullptr;
 	if (!GameMode)
 	{
@@ -929,6 +938,48 @@ void ASarkoCharacter::ServerRequestFire_Implementation(FVector Direction)
 	WeaponComponent->ServerFire(GetMuzzleLocation(), Direction);
 }
 
+void ASarkoCharacter::ReportMovementNoise(float DeltaSeconds)
+{
+	// SERVER ONLY, and from the server's own copy of the velocity (spec §7). The
+	// stick deflection that produced it lives on the client and is not replicated;
+	// the resulting speed is, because movement is. So "how loudly is this player
+	// moving" is a question the server can answer without trusting anybody — which
+	// is the whole reason the threshold is a fraction of MaxWalkSpeed rather than
+	// a stick value.
+	//
+	// The PLAYER's pawn and not every pawn: bots do not sneak, and bots hearing
+	// each other's footsteps would turn four patrolling scavs into a standing
+	// wave of mutual investigation. A bot's SHOT is still heard (SarkoWeapon).
+	UWorld* World = GetWorld();
+	if (!World || (HealthComponent && HealthComponent->IsDead()))
+	{
+		return;
+	}
+
+	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+	const float Now = World->GetTimeSeconds();
+	// Throttled: a report per frame would churn the ring sixty times a second to
+	// say what one entry already says, and the bot walking to a footstep 0.25 s
+	// old goes to a point 100 uu from the one it would otherwise have picked.
+	if (Now - LastNoiseReportSeconds < FMath::Max(0.01f, Settings.NoiseMovementIntervalSeconds))
+	{
+		return;
+	}
+	LastNoiseReportSeconds = Now;
+
+	USarkoNoiseSubsystem* Noise = World->GetSubsystem<USarkoNoiseSubsystem>();
+	const UCharacterMovementComponent* Movement = GetCharacterMovement();
+	if (!Noise || !Movement)
+	{
+		return;
+	}
+
+	// KindForSpeed maps a zero-ish speed to Silent and ReportNoise drops it, so
+	// standing still costs a division and nothing else. Standing still is the one
+	// state with no event at all.
+	Noise->ReportMovementNoise(GetActorLocation(), GetVelocity().Size2D(), Movement->MaxWalkSpeed, this);
+}
+
 void ASarkoCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
@@ -943,6 +994,7 @@ void ASarkoCharacter::Tick(float DeltaSeconds)
 	if (HasAuthority())
 	{
 		TickLootChannel();
+		ReportMovementNoise(DeltaSeconds);
 	}
 
 	// A corpse must not keep rotating to face its last aim direction.

@@ -34,7 +34,28 @@ bool FSarkoSettingsHaveSaneDefaults::RunTest(const FString& Parameters)
 	// a stand at all.
 	TestTrue(TEXT("canopies fade around the player, and not across the whole map"),
 		Settings->CanopyFadeRadiusUU > 0.f && Settings->CanopyFadeRadiusUU < Settings->WeaponRangeUU);
-	TestTrue(TEXT("enemy hearing radius is positive"), Settings->EnemyHearingRadiusUU > 0.f);
+	// THE NOISE MODEL'S ORDER (spec §7). Firing louder than running louder than
+	// walking is not a taste question — it is the entire mechanic. A config that
+	// made a walk carry as far as a shot would delete stealth without failing
+	// anything else in this file.
+	TestTrue(TEXT("firing is louder than running, which is louder than walking, which is louder than nothing"),
+		Settings->NoiseLoudRadiusUU > Settings->NoiseAudibleRadiusUU
+			&& Settings->NoiseAudibleRadiusUU > Settings->NoiseQuietRadiusUU
+			&& Settings->NoiseQuietRadiusUU > 0.f);
+	TestTrue(TEXT("running is a real threshold on the stick, not the whole range or none of it"),
+		Settings->NoiseRunSpeedFraction > Settings->NoiseMoveSpeedFraction
+			&& Settings->NoiseRunSpeedFraction < 1.f
+			&& Settings->NoiseMoveSpeedFraction > 0.f);
+	// A movement event must outlive the gap between reports, or a walking pawn
+	// blinks in and out of earshot instead of being continuously audible.
+	TestTrue(TEXT("a noise event outlives the interval between reports"),
+		Settings->NoiseEventLifetimeSeconds > Settings->NoiseMovementIntervalSeconds
+			&& Settings->NoiseMovementIntervalSeconds > 0.f);
+	TestTrue(TEXT("the fallback listener can hear"), Settings->EnemyHearingSensitivity > 0.f);
+	// Sight bounds what hearing used to bound by accident, and a bot must never
+	// be able to shoot something it cannot see (ТЗ §11).
+	TestTrue(TEXT("a bot sees at least as far as it shoots"),
+		Settings->EnemySightRangeUU >= Settings->EnemyFiringRangeUU);
 	TestTrue(TEXT("enemy fire interval is positive"), Settings->EnemyFireIntervalSeconds > 0.f);
 	return true;
 }

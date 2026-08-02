@@ -98,7 +98,7 @@ void ASarkoEnemyCharacter::ApplyArchetypeAndPost(FName ArchetypeId, const FVecto
 	}
 	if (ASarkoAIController* AIController = Cast<ASarkoAIController>(GetController()))
 	{
-		AIController->SetPerception(Archetype.HearingRadiusUU, Archetype.FiringRangeUU, Archetype.FireIntervalSeconds);
+		AIController->SetPerception(Archetype.HearingSensitivity, Archetype.FiringRangeUU, Archetype.FireIntervalSeconds);
 	}
 }
 

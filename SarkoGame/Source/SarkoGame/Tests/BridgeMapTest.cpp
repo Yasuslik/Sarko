@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 
 #include "AI/SarkoBotArchetypes.h"
+#include "AI/SarkoNoise.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Loot/SarkoExtractionZone.h"
 #include "Map/SarkoBuildings.h"
@@ -865,9 +866,21 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 	// fight (the warehouse is exactly that, on purpose). Two bots from two
 	// unrelated encounters converging on it is the bug.
 	//
-	// Hearing is per archetype, not the project default: the whole reason
-	// archetypes carry their own hearing radius is that "how far a bot listens"
-	// is a property of the bot.
+	// RESTATED FOR THE NOISE MODEL (spec §7). "Inside a bot's hearing" is no
+	// longer a fact about geometry alone, because how far a sound reaches now
+	// depends on what the player did. The player's LOUDEST INVOLUNTARY noise is a
+	// run — walking is quieter and standing is silent, and both are choices —
+	// so the invariant is measured at NoiseAudibleRadiusUU, scaled by each
+	// archetype's own sensitivity. A player who arrives at a crate on foot, at
+	// any speed, is inside at most one encounter's earshot.
+	//
+	// FIRING is deliberately NOT held to this: a gunshot carries 2600 uu and
+	// there are eight points on this map where two encounters' posts can both
+	// hear one (asserted below, so the fact stays true and visible). That is the
+	// price of shooting rather than a placement bug — and it does not touch the
+	// tutorial's "first fight is one bot" law, because noise cannot spawn
+	// anything: SarkoEncounter::AllowedSpawnCount and the raid budget are the
+	// only things that can, and a bot that has not spawned cannot hear.
 	{
 		const TArray<FEncounterPoint> Posts = EncounterSpawnPoints(Map);
 		TArray<TPair<FString, FVector2D>> MustStandOn;
@@ -880,11 +893,12 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 			MustStandOn.Emplace(Spot.Id, FVector2D(Spot.Location.X, Spot.Location.Y));
 		}
 
-		int32 HeardByAnyone = 0;
-		for (const TPair<FString, FVector2D>& Point : MustStandOn)
+		const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+
+		// How many encounters' posts hear a noise of this radius made at Point.
+		const auto ListeningEncountersAt = [&](const FVector2D& At, float BaseRadiusUU, FString& OutListeners)
 		{
-			TSet<int32> ListeningEncounters;
-			FString Listeners;
+			TSet<int32> Listening;
 			for (const FEncounterPoint& Post : Posts)
 			{
 				FSarkoBotArchetype Archetype;
@@ -897,20 +911,30 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 						*Post.Id, *Post.Archetype.ToString()));
 					continue;
 				}
-				const float Distance = FVector2D::Distance(Point.Value, Post.PostPos);
-				if (Distance <= Archetype.HearingRadiusUU)
+				const float Reach = BaseRadiusUU * Archetype.HearingSensitivity;
+				const float Distance = FVector2D::Distance(At, Post.PostPos);
+				if (SarkoNoise::IsAudible(Distance, BaseRadiusUU, Archetype.HearingSensitivity))
 				{
-					ListeningEncounters.Add(Post.EncounterIndex);
-					Listeners += FString::Printf(TEXT("%s (%s, %.0f uu of %.0f) "),
-						*Post.Id, *Post.EncounterId, Distance, Archetype.HearingRadiusUU);
+					Listening.Add(Post.EncounterIndex);
+					OutListeners += FString::Printf(TEXT("%s (%s, %.0f uu of %.0f) "),
+						*Post.Id, *Post.EncounterId, Distance, Reach);
 				}
 			}
+			return Listening;
+		};
+
+		int32 HeardByAnyone = 0;
+		for (const TPair<FString, FVector2D>& Point : MustStandOn)
+		{
+			FString Listeners;
+			const TSet<int32> ListeningEncounters =
+				ListeningEncountersAt(Point.Value, Settings.NoiseAudibleRadiusUU, Listeners);
 			if (ListeningEncounters.Num() > 0)
 			{
 				++HeardByAnyone;
 			}
 			TestTrue(FString::Printf(
-				TEXT("'%s' is inside the hearing of at most one encounter's posts — heard by: %s"),
+				TEXT("a player RUNNING to '%s' is inside the hearing of at most one encounter's posts — heard by: %s"),
 				*Point.Key, Listeners.IsEmpty() ? TEXT("nobody") : *Listeners),
 				ListeningEncounters.Num() <= 1);
 		}
@@ -918,8 +942,25 @@ bool FSarkoBridgeWestLedgerIsAuthored::RunTest(const FString& Parameters)
 		// A guard against the guard. If every post drifted out of earshot of
 		// every container this test would pass by testing nothing — and a map
 		// where no crate is ever guarded is a map with no tension in it.
-		TestTrue(FString::Printf(TEXT("some containers ARE guarded (%d of %d points are heard by someone)"),
+		TestTrue(FString::Printf(TEXT("some containers ARE guarded (%d of %d points are heard by a runner)"),
 			HeardByAnyone, MustStandOn.Num()), HeardByAnyone >= 4);
+
+		// AND THE OTHER HALF, which is the point of §7 rather than a lapse in it:
+		// a GUNSHOT reaches further than any footstep and can pull two unrelated
+		// encounters onto one crate. If this ever stops being true the sector has
+		// drifted so far apart that firing costs the player nothing, and the
+		// stealth verb has no counterpart worth avoiding.
+		int32 HeardByTwoWhenFiring = 0;
+		for (const TPair<FString, FVector2D>& Point : MustStandOn)
+		{
+			FString Listeners;
+			if (ListeningEncountersAt(Point.Value, Settings.NoiseLoudRadiusUU, Listeners).Num() > 1)
+			{
+				++HeardByTwoWhenFiring;
+			}
+		}
+		TestTrue(FString::Printf(TEXT("firing IS loud enough to be a decision (%d point(s) reach two encounters' posts)"),
+			HeardByTwoWhenFiring), HeardByTwoWhenFiring > 0);
 	}
 
 	// ТЗ §8: "бот не виден при появлении". The nearest post is a whole zone

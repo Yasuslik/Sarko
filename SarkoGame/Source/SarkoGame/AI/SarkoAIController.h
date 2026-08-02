@@ -39,20 +39,31 @@ namespace SarkoAI
 	 * fractions of a uu around the boundary.
 	 */
 	/**
-	 * bHasLineOfSight is now a GATE and not merely a shooting condition. Before
-	 * the realism stage a target inside the hearing radius was chased whether or
-	 * not the bot could see it, so a shot fired anywhere in a 1800 uu circle
-	 * pulled every bot in it through the geometry and into the player's face. A
-	 * heard-but-unseen target now produces Investigate instead: the bot walks to
-	 * where the sound was, and the caller decides how long it keeps believing in
-	 * it (bInvestigationActive below).
+	 * bHasLineOfSight is a GATE and not merely a shooting condition. Before the
+	 * realism stage a perceived target was chased whether or not the bot could
+	 * see it, so a shot fired anywhere in a 1800 uu circle pulled every bot in it
+	 * through the geometry and into the player's face. A target that cannot be
+	 * seen produces Investigate — but only if the caller has a noise to
+	 * investigate (bInvestigationActive), because since spec §7 that is what
+	 * hearing means.
+	 *
+	 * THERE IS NO HEARING RADIUS PARAMETER, and that is the §7 change. This
+	 * function used to take one and return Patrol for anything outside it, which
+	 * made proximity itself a perception: standing still in a bush 1000 uu from a
+	 * bot was "heard". Hearing is now a noise event
+	 * (USarkoNoiseSubsystem), resolved by the caller, and all this function is
+	 * told is whether an investigation is live.
+	 *
+	 * SightRangeUU replaces the bound the hearing radius used to provide as a
+	 * side effect. Without it, deleting hearing would have given every bot
+	 * unlimited vision down any open sight line on the map.
 	 */
 	ESarkoAIState DecideState(
 		ESarkoAIState Current,
 		bool bHasTarget,
 		float DistanceToTarget,
 		bool bHasLineOfSight,
-		float HearingRadius,
+		float SightRangeUU,
 		float FiringRange,
 		float ShootHysteresisRangeUU,
 		bool bInvestigationActive);
@@ -127,8 +138,11 @@ public:
 	/**
 	 * Per-instance overrides from the bot archetype table. A non-positive value
 	 * means "use the project setting", which is what an unarchetyped bot gets.
+	 *
+	 * InHearingSensitivity is a MULTIPLIER on a noise event's radius since spec
+	 * §7, not a radius of its own. See FSarkoBotArchetype::HearingSensitivity.
 	 */
-	void SetPerception(float InHearingRadiusUU, float InFiringRangeUU, float InFireIntervalSeconds);
+	void SetPerception(float InHearingSensitivity, float InFiringRangeUU, float InFireIntervalSeconds);
 
 private:
 	APawn* FindNearestLivingPlayer() const;
@@ -168,15 +182,23 @@ private:
 	FVector PatrolTarget = FVector::ZeroVector;
 
 	/** Archetype overrides; non-positive means "use the project setting". */
-	float HearingRadiusOverrideUU = -1.f;
+	float HearingSensitivityOverride = -1.f;
 	float FiringRangeOverrideUU = -1.f;
 	float FireIntervalOverrideSeconds = -1.f;
 
 	/**
-	 * The last position a target was perceived from without being seen — what
-	 * Investigate walks to. Cleared on arrival or on timeout, at which point the
-	 * bot drops back to Patrol and its patrol target is reset to the post, so
-	 * "looked, found nothing, went home" is a single code path.
+	 * WHERE THE NOISE WAS — not where the target is (spec §7).
+	 *
+	 * This is the whole difference between hunting a sound and wallhacking. It
+	 * used to be assigned `Target->GetActorLocation()` on every tick the target
+	 * was inside the hearing radius and out of sight, which meant the bot walked
+	 * to the player's LIVE position while claiming to be investigating a memory.
+	 * It is now the position carried by the noise event the bot heard, so a
+	 * player who fires and moves is chased to where they fired from.
+	 *
+	 * Cleared on arrival or on timeout, at which point the bot drops back to
+	 * Patrol and its patrol target is reset to the post, so "looked, found
+	 * nothing, went home" is a single code path.
 	 */
 	FVector InvestigateTarget = FVector::ZeroVector;
 	bool bInvestigating = false;

@@ -1,5 +1,6 @@
 #include "Combat/SarkoWeapon.h"
 
+#include "AI/SarkoNoise.h"
 #include "Core/SarkoRaidSettings.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -193,6 +194,20 @@ void USarkoWeaponComponent::ServerFire(FVector Origin, FVector Direction)
 	// The second removed auto-reload (spec §3). The shot that empties the
 	// magazine used to start a reload of its own; now it just empties the
 	// magazine, and the next trigger pull is the dry click above.
+
+	// A SHOT IS THE LOUDEST THING IN THE GAME (spec §7), and it is reported here
+	// — after the rate limit and after the round is spent — so that exactly the
+	// shots that happened are the shots that are heard. Reporting from
+	// RequestFire instead would have made a spammed, dropped request as loud as
+	// a real one.
+	//
+	// Every shooter, not only the player: a bot firing at the player is a noise
+	// its neighbours may investigate, which is the same rule applied honestly.
+	// The instigator is carried so the shooter does not hear itself.
+	if (USarkoNoiseSubsystem* Noise = World->GetSubsystem<USarkoNoiseSubsystem>())
+	{
+		Noise->ReportNoise(Owner->GetActorLocation(), SarkoNoise::EKind::Loud, Owner);
+	}
 
 	// Collect plausible targets, then let the pure helper decide the nudge.
 	// Restricted to foes: without this, candidates are every living pawn but
