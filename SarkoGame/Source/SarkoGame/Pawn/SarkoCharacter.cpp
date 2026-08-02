@@ -15,8 +15,25 @@
 #include "Loot/SarkoLootContainer.h"
 #include "Loot/SarkoLootTable.h"
 #include "Map/SarkoMapDefinition.h"
+#include "Engine/World.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Net/UnrealNetwork.h"
+
+void ASarkoCharacter::FellOutOfWorld(const UDamageType& DmgType)
+{
+	// One net, called from two pawn classes that share no base of their own.
+	if (ASarkoRaidGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<ASarkoRaidGameMode>() : nullptr)
+	{
+		if (Mode->RecoverFallenPawn(*this))
+		{
+			return;
+		}
+	}
+	// Could not recover — no authority, no raid game mode, or no layout to
+	// return to. The engine's own behaviour (destroy) is the lesser evil: a pawn
+	// that is neither destroyed nor moved keeps falling for the rest of the raid.
+	Super::FellOutOfWorld(DmgType);
+}
 
 FVector2D SarkoAim::StickToWorldDirection(FVector2D Stick, float CameraYaw)
 {

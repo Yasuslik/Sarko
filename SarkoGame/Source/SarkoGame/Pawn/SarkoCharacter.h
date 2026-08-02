@@ -59,6 +59,20 @@ public:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 
+	/**
+	 * KillZ. The pawn has left the world; ASarkoRaidGameMode::RecoverFallenPawn
+	 * puts it back on the nearest player spawn instead of deleting it.
+	 *
+	 * Overridden rather than left to the engine because AActor::FellOutOfWorld
+	 * DESTROYS the actor: for the player that is a raid lost with the whole haul
+	 * in the bag, for a reason nobody can see, and for a bot it is an encounter
+	 * that silently never finishes. Falling out is always a bug in the world —
+	 * the border exists so it cannot happen — so the response is to log loudly
+	 * and cost a second, not to punish the player for it. Super is still called
+	 * when recovery is impossible, because falling forever is worse than dying.
+	 */
+	virtual void FellOutOfWorld(const class UDamageType& DmgType) override;
+
 	/** Called every frame by the controller from the left stick. */
 	void SetMoveIntent(FVector2D Intent);
 

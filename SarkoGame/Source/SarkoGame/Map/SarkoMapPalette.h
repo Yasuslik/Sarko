@@ -61,6 +61,31 @@ enum class ESarkoSurface : uint8
 	Shallow,
 	/** The ravine bed. The visual stand-in for depth the map does not physically dig. */
 	Ravine,
+
+	/**
+	 * THE EDGE SKIRT'S THREE BANDS, near to far. They exist because the sector's
+	 * floor is 40000 x 40000 uu and then simply stops: from a pawn standing at
+	 * the north border the frame was ground, a treeline, and BLACK — not the end
+	 * of a world, the end of a data file.
+	 *
+	 * Three tones rather than one because a single darker slab beyond the border
+	 * reads as a second field, and a gradient reads as distance. Each is about
+	 * 0.70x, 0.47x and 0.27x the ground's luminance, so the fall-off is roughly
+	 * even in perceived brightness rather than in linear value.
+	 *
+	 * They stay ABOVE Ravine, which keeps "the ravine bed is the darkest thing in
+	 * the sector" true — the gorge must not be out-darkened by scenery a player
+	 * can never walk on.
+	 *
+	 * All three are Vegetation's hue family (olive going grey), not Vegetation
+	 * itself: the treeline masses standing ON the skirt are Vegetation, and
+	 * ground and trees sharing one tone is exactly the flattening the bands are
+	 * there to avoid.
+	 */
+	SkirtNear,
+	SkirtMid,
+	SkirtFar,
+
 	/** Extraction pads. The one saturated world colour, and it is a gameplay marker. */
 	Extraction,
 

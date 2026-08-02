@@ -205,6 +205,25 @@ private:
 	/** Marks the seed authoritative, starts the clock and lets containers open. */
 	void ActivateRaid(int32 AuthoritativeSeed, float ClockSeconds);
 
+public:
+	/**
+	 * A pawn has crossed KillZ. Put it back on the nearest player spawn, shout
+	 * about it, and let the raid continue.
+	 *
+	 * Public because both pawn classes call it from their own FellOutOfWorld —
+	 * ASarkoCharacter and ASarkoEnemyCharacter derive from ACharacter separately,
+	 * so there is no shared base to hang this on and duplicating the body would
+	 * be two nets that drift apart.
+	 *
+	 * Returns false when it could not recover (no authority, or no layout), in
+	 * which case the caller must fall through to the engine's own behaviour: a
+	 * pawn that is neither destroyed nor moved falls forever, which is the bug
+	 * this exists to fix arriving by a different door.
+	 */
+	bool RecoverFallenPawn(APawn& Pawn);
+
+private:
+
 	/**
 	 * Hands the outcome and haul to the game instance and schedules the trip back
 	 * to the shelter. Called once, from the tail of FinishRaid, on every path that

@@ -13,7 +13,9 @@
 #include "Loot/SarkoExtractionZone.h"
 #include "Loot/SarkoLootTable.h"
 #include "Engine/World.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/WorldSettings.h"
 #include "Map/SarkoMapBuilder.h"
 #include "Pawn/SarkoCharacter.h"
 #include "Pawn/SarkoHealthComponent.h"
@@ -109,6 +111,24 @@ void ASarkoRaidGameMode::InitGame(const FString& MapName, const FString& Options
 void ASarkoRaidGameMode::StartPlay()
 {
 	Super::StartPlay();
+
+	// THE SAFETY NET UNDER THE BORDER. The world's floor is a 40000 uu plane
+	// whose top is z = 0, and the engine's default KillZ is -1000000: a pawn that
+	// got past the border walls, or was pushed through the floor by a physics
+	// resolve, fell for something like four minutes before anything noticed. To
+	// the player that is not a death, it is a frozen raid with the haul still in
+	// the bag. SarkoMap::WorldKillZ puts the trigger ten pawn heights under the
+	// floor, and ASarkoRaidGameMode::RecoverFallenPawn turns crossing it into a
+	// lost second rather than a lost raid.
+	//
+	// Set here rather than in the map asset because the raid map IS
+	// /Engine/Maps/Entry with everything spawned into it — there is no level
+	// designer's WorldSettings to author, and a number in a shared engine map
+	// would apply to the shelter too.
+	if (AWorldSettings* Settings = GetWorldSettings())
+	{
+		Settings->KillZ = SarkoMap::WorldKillZ;
+	}
 
 	// The map itself never crosses the network. Every machine — server
 	// included — ends up with identical geometry because every machine reduces
@@ -550,24 +570,37 @@ void ASarkoRaidGameMode::InitialiseEncounters()
 	}
 
 	EncounterRuntimes.SetNum(CachedDefinition.Encounters.Num());
-	EncounterOrder.Reserve(CachedDefinition.Encounters.Num());
-	for (int32 Index = 0; Index < CachedDefinition.Encounters.Num(); ++Index)
-	{
-		EncounterOrder.Add(Index);
-	}
-	// Sorted once, by the authored order, so two triggers arming in the same
-	// evaluation always resolve the same way. Ties fall back to file order,
-	// which is stable across machines because the file is.
-	const TArray<FSarkoEncounter>& Encounters = CachedDefinition.Encounters;
-	EncounterOrder.Sort([&Encounters](int32 A, int32 B)
-	{
-		return Encounters[A].Order != Encounters[B].Order ? Encounters[A].Order < Encounters[B].Order : A < B;
-	});
 
+	// THE ROTATION (spec §5). Built once, here, because it depends on the raid
+	// seed and on bTutorialLoot and neither is known before ActivateRaid.
+	//
+	// A tutorial raid gets the authored teaching rows in authored order and
+	// nothing else. A normal raid gets every row, shuffled against the seed, so
+	// which POIs spend the budget is a different answer each raid. The decision
+	// itself is a pure function in SarkoEncounter so "the same seed is the same
+	// raid" is a testable statement rather than a belief about this loop.
+	const TArray<FSarkoEncounter>& Encounters = CachedDefinition.Encounters;
+	TArray<int32> AuthoredOrders;
+	TArray<bool> Optional;
+	AuthoredOrders.Reserve(Encounters.Num());
+	Optional.Reserve(Encounters.Num());
+	for (const FSarkoEncounter& Encounter : Encounters)
+	{
+		AuthoredOrders.Add(Encounter.Order);
+		Optional.Add(Encounter.bOptional);
+	}
+	EncounterOrder = SarkoEncounter::BuildActivationOrder(AuthoredOrders, Optional, bTutorialLoot, Seed);
+
+	FString OrderText;
+	for (const int32 Index : EncounterOrder)
+	{
+		OrderText += FString::Printf(TEXT("%s%s"), OrderText.IsEmpty() ? TEXT("") : TEXT(" -> "), *Encounters[Index].Id);
+	}
 	UE_LOG(LogTemp, Display,
-		TEXT("SarkoEncounter: %d encounter(s) armed for a %s raid — budget %d, first fight at most %d alive"),
-		CachedDefinition.Encounters.Num(), bTutorialLoot ? TEXT("TUTORIAL") : TEXT("normal"),
-		EncounterBudgetRemaining, Budget.FirstFightMaxAlive);
+		TEXT("SarkoEncounter: %d of %d encounter(s) armed for a %s raid (seed %d) — budget %d, first fight at most %d alive"),
+		EncounterOrder.Num(), Encounters.Num(), bTutorialLoot ? TEXT("TUTORIAL") : TEXT("normal"),
+		Seed, EncounterBudgetRemaining, Budget.FirstFightMaxAlive);
+	UE_LOG(LogTemp, Display, TEXT("SarkoEncounter: activation order — %s"), *OrderText);
 
 	const float Interval = FMath::Max(0.05f, GetDefault<USarkoRaidSettings>()->EncounterEvaluationIntervalSeconds);
 	GetWorldTimerManager().SetTimer(EncounterTimerHandle, this, &ASarkoRaidGameMode::EvaluateEncounters, Interval, true);
@@ -790,6 +823,56 @@ void ASarkoRaidGameMode::EvaluateEncounters()
 			TEXT("SarkoEncounter: '%s' spent %d of the raid budget for %d enemy(ies) — %d left"),
 			*Encounter.Id, Encounter.BudgetCost, SpawnedNow, EncounterBudgetRemaining);
 	}
+}
+
+bool ASarkoRaidGameMode::RecoverFallenPawn(APawn& Pawn)
+{
+	// Server only, and the check is real rather than ceremonial: FellOutOfWorld
+	// runs on every machine that simulates the actor, and a client that moved its
+	// own copy would be corrected by the next replicated position anyway — after
+	// having shown the player a teleport nobody authorised.
+	if (!HasAuthority())
+	{
+		return false;
+	}
+
+	const FVector From = Pawn.GetActorLocation();
+	FVector Recovery;
+	if (!SarkoMap::NearestPoint(From, CachedLayout.PlayerStarts, Recovery))
+	{
+		// No layout means no honest answer, and inventing one (the origin) would
+		// drop the pawn on the closed bridge in the middle of the map. Let the
+		// engine's own FellOutOfWorld run instead: dying is worse than recovering
+		// and better than falling for four minutes.
+		UE_LOG(LogTemp, Error,
+			TEXT("SarkoRecovery: '%s' left the world at %s and there is no player spawn to return it to — the map layout is empty"),
+			*Pawn.GetName(), *From.ToString());
+		return false;
+	}
+
+	// Above the point, not on it: the spawn transform is a floor position and a
+	// capsule teleported to floor level can resolve downward into the very floor
+	// it was rescued from.
+	const FVector Target(Recovery.X, Recovery.Y, FMath::Max(Recovery.Z, 0.f) + 150.f);
+
+	// Velocity first. A character that has been falling for a while carries a
+	// large downward velocity, and teleporting without clearing it puts the pawn
+	// back through the floor within a frame or two — the same fall, from higher up.
+	if (UCharacterMovementComponent* Movement = Pawn.FindComponentByClass<UCharacterMovementComponent>())
+	{
+		Movement->StopMovementImmediately();
+		Movement->Velocity = FVector::ZeroVector;
+	}
+	Pawn.SetActorLocation(Target, /*bSweep*/ false, nullptr, ETeleportType::TeleportPhysics);
+
+	// LOUD, and on purpose. This is a net, not a feature: every line here is a
+	// hole in the world that has not been found yet, and a net that catches
+	// silently is a net that lets the hole live forever.
+	UE_LOG(LogTemp, Warning,
+		TEXT("SarkoRecovery: '%s' FELL OUT OF THE WORLD at (%.0f, %.0f, %.0f) — returned to the nearest player spawn (%.0f, %.0f, %.0f). ")
+		TEXT("This is the safety net firing: the border is meant to make it impossible, so a line here means there is a hole in the map."),
+		*Pawn.GetName(), From.X, From.Y, From.Z, Target.X, Target.Y, Target.Z);
+	return true;
 }
 
 float ASarkoRaidGameMode::MapClockSeconds() const

@@ -66,6 +66,14 @@ namespace
 			// across 400 m is worse than no gloss.
 			/* Shallow    */ { FLinearColor(0.045f, 0.062f, 0.085f),    0.90f },
 			/* Ravine     */ { FLinearColor(0.013f, 0.013f, 0.010f),    0.93f },
+			// THE EDGE SKIRT, near to far. 0.70x, 0.47x and 0.27x the ground's
+			// luminance — an even-looking fall-off, not an even numeric one.
+			// Matte throughout and getting matter: the outermost band must never
+			// catch a specular highlight, because a bright edge is the opposite of
+			// the thing being built. All three stay lighter than Ravine.
+			/* SkirtNear  */ { FLinearColor(0.032f, 0.036f, 0.020f),    0.93f },
+			/* SkirtMid   */ { FLinearColor(0.021f, 0.024f, 0.013f),    0.95f },
+			/* SkirtFar   */ { FLinearColor(0.008f, 0.016f, 0.006f),    0.97f },
 			// Mirrors ASarkoExtractionZone's pad tint so the two cannot drift.
 			/* Extraction */ { FLinearColor(0.160f, 0.620f, 0.240f),    0.70f },
 		};
@@ -85,7 +93,9 @@ namespace
 	const TCHAR* const SurfaceNames[static_cast<int32>(ESarkoSurface::Count)] = {
 		TEXT("ground"), TEXT("dirt"), TEXT("asphalt"), TEXT("concrete"), TEXT("structure"),
 		TEXT("rust"), TEXT("timber"), TEXT("bark"), TEXT("vegetation"), TEXT("water"),
-		TEXT("shallow"), TEXT("ravine"), TEXT("extraction")
+		TEXT("shallow"), TEXT("ravine"),
+		TEXT("skirt_near"), TEXT("skirt_mid"), TEXT("skirt_far"),
+		TEXT("extraction")
 	};
 }
 

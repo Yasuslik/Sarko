@@ -249,6 +249,28 @@ namespace
 	}
 }
 
+bool SarkoMap::NearestPoint(const FVector& From, const TArray<FVector>& Candidates, FVector& OutPoint)
+{
+	// Squared distance, and XY rather than 3D: a pawn that has left the world is
+	// a long way DOWN, and z would then be a large term every candidate shares —
+	// it cannot change which is nearest, and it can hide the difference between
+	// two spawns 2000 uu apart under a 100000 uu fall. "Nearest" here means
+	// nearest on the ground the pawn fell off.
+	double Best = TNumericLimits<double>::Max();
+	bool bFound = false;
+	for (const FVector& Candidate : Candidates)
+	{
+		const double Squared = FVector::DistSquaredXY(From, Candidate);
+		if (Squared < Best)
+		{
+			Best = Squared;
+			OutPoint = Candidate;
+			bFound = true;
+		}
+	}
+	return bFound;
+}
+
 UMaterialInterface* SarkoMap::SharedSurfaceMaterial(ESarkoSurface Surface)
 {
 	return SharedFlatMaterialInternal(Surface);

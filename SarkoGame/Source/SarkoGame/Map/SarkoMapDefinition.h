@@ -28,6 +28,11 @@ struct FSarkoMapProp
 
 	UPROPERTY()
 	float Yaw = 0.f;
+
+	/** See FSarkoCoverBlock::bSkirt — scenery beyond the border, and the only
+	 *  kind of entry allowed outside the playable bound. */
+	UPROPERTY()
+	bool bSkirt = false;
 };
 
 /** Where a lootable container sits, and how good its contents are. */
@@ -233,6 +238,24 @@ struct FSarkoEncounter
 	UPROPERTY()
 	bool bOneShot = true;
 
+	/**
+	 * NOT part of the tutorial's curriculum.
+	 *
+	 * A tutorial raid activates only the rows where this is false, in `order`:
+	 * the first raid a person plays teaches one enemy, then one, then two, and a
+	 * shuffled curriculum is not a curriculum. A normal raid activates
+	 * everything and shuffles the activation order against the raid seed, which
+	 * is what stops raid 2 from being raid 1 (spec §5).
+	 *
+	 * The name is `optional` and not `tutorialOnly` because that is the honest
+	 * direction of the exception. Every row on the map is available in a normal
+	 * raid; what varies is whether the TUTORIAL is allowed to reach it. Flagging
+	 * the teaching rows instead would have said the opposite — that the three are
+	 * withheld from normal play — and they are not.
+	 */
+	UPROPERTY()
+	bool bOptional = false;
+
 	UPROPERTY()
 	FSarkoEncounterTrigger Trigger;
 
@@ -382,4 +405,27 @@ namespace SarkoMap
 	 * promise that an older map file still loads.
 	 */
 	bool RequireIdentifiedEntries(const FSarkoMapDefinition& Definition, FString& OutError);
+
+	/**
+	 * Every PLAYABLE entry is inside |x|, |y| <= ExtentUU; every entry flagged
+	 * `skirt` is inside ExtentUU + SkirtMarginUU.
+	 *
+	 * Enforced by ParseDefinition — by the parser, on every map, including
+	 * fixtures — because the edge skirt made the alternative untenable. Before
+	 * the skirt this rule lived as `CheckInside` inside
+	 * Sarko.Map.BridgeMapIsValid: one assertion, over one file, for one map. The
+	 * skirt needs geometry OUTSIDE the sector, and the two ways to allow that
+	 * were to widen the bound or to name the exception. Widening it would have
+	 * let a container, an encounter door or a player spawn out there too —
+	 * silently, because the only thing that ever checked was a test about the
+	 * bridge — and a piece of gameplay in the void is content that cannot be
+	 * reached, played or debugged.
+	 *
+	 * So: the exception is a field a row has to write, it applies to scenery
+	 * only (blocks and props are the only structs that carry it), and the
+	 * protection is now stronger than the thing it replaced rather than weaker.
+	 * A playable entry outside the bound is a named parse error that says which
+	 * entry and by how much.
+	 */
+	bool CheckPlayableBounds(const FSarkoMapDefinition& Definition, FString& OutError);
 }

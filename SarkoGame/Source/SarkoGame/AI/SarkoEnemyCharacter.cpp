@@ -7,9 +7,27 @@
 #include "AI/SarkoBotArchetypes.h"
 #include "Combat/SarkoWeapon.h"
 #include "Components/CapsuleComponent.h"
+#include "Engine/World.h"
+#include "Core/SarkoRaidGameMode.h"
 #include "Core/SarkoRaidSettings.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Pawn/SarkoHealthComponent.h"
+
+void ASarkoEnemyCharacter::FellOutOfWorld(const UDamageType& DmgType)
+{
+	// One net, called from two pawn classes that share no base of their own.
+	if (ASarkoRaidGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<ASarkoRaidGameMode>() : nullptr)
+	{
+		if (Mode->RecoverFallenPawn(*this))
+		{
+			return;
+		}
+	}
+	// Could not recover — no authority, no raid game mode, or no layout to
+	// return to. The engine's own behaviour (destroy) is the lesser evil: a pawn
+	// that is neither destroyed nor moved keeps falling for the rest of the raid.
+	Super::FellOutOfWorld(DmgType);
+}
 
 ASarkoEnemyCharacter::ASarkoEnemyCharacter()
 {
