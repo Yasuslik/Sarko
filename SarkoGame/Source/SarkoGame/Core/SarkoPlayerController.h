@@ -220,6 +220,33 @@ public:
 	void CheatEmptyMagazine();
 
 	/**
+	 * Presses the reload button, Cycles times, IntervalSeconds apart, emptying the
+	 * magazine before each press.
+	 *
+	 * A headless run has no fingers, and reload is manual-only since spec §3 — so
+	 * without this there is no way at all to exercise the path that spec §1 just
+	 * made the centre of the game, in a running raid, against a real grid. Each
+	 * cycle logs nothing itself: USarkoWeaponComponent::FinishReload and
+	 * ::StartReload already say what happened, and a harness that narrated over
+	 * them would be quoting itself rather than the code.
+	 *
+	 * IntervalSeconds must exceed USarkoRaidSettings::ReloadSeconds or the next
+	 * press lands while the previous reload is still in flight and StartReload
+	 * drops it — which is correct behaviour and a useless observation.
+	 */
+	UFUNCTION(Exec)
+	void CheatDrainAndReload(int32 Cycles, float IntervalSeconds);
+
+	/**
+	 * One reload press, after DelaySeconds. Separate from the cycle above because
+	 * the interesting press is often the one on a magazine that is NOT empty — an
+	 * empty bag with rounds still in the gun is the dry-click-on-reload path, and
+	 * emptying the magazine first would hide it behind the other dry click.
+	 */
+	UFUNCTION(Exec)
+	void CheatReload(float DelaySeconds);
+
+	/**
 	 * Frames the whole sector from above and takes a screenshot. This is the
 	 * design loop for a hand-authored map: edit the data file, run offscreen,
 	 * look at the frame, adjust. Without it the layout is written blind.

@@ -261,6 +261,67 @@ void ASarkoPlayerController::CheatEmptyMagazine()
 		Pawn->WeaponComponent->GetAmmoInMagazine(), Pawn->WeaponComponent->IsReloading());
 }
 
+void ASarkoPlayerController::CheatReload(float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	// -ExecCmds runs its whole list at engine init, so a press that has to happen
+	// LATER carries its own delay — the same shape SarkoDebugSurvival and
+	// SarkoDebugStandInZone use, and for the same reason.
+	if (DelaySeconds > 0.f)
+	{
+		FTimerHandle Handle;
+		GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+			[this]() { CheatReload(0.f); }), DelaySeconds, /*bLoop*/ false);
+		return;
+	}
+
+	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	if (!Pawn || !Pawn->WeaponComponent || !Pawn->BackpackComponent)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("CheatReload: no possessed pawn with a weapon and a bag"));
+		return;
+	}
+
+	// Logged BEFORE the press only. What the press did is FinishReload's and
+	// StartReload's to say — this line exists so the log carries the state the
+	// press was made against, which is the half a reader cannot reconstruct.
+	UE_LOG(LogTemp, Display, TEXT("CheatReload: pressing with magazine=%d reserve=%d"),
+		Pawn->WeaponComponent->GetAmmoInMagazine(),
+		Pawn->BackpackComponent->CountItem(SarkoLoot::AmmoItemId));
+	Pawn->RequestReload();
+#endif
+}
+
+void ASarkoPlayerController::CheatDrainAndReload(int32 Cycles, float IntervalSeconds)
+{
+#if !UE_BUILD_SHIPPING
+	const int32 Remaining = Cycles;
+	if (Remaining <= 0)
+	{
+		return;
+	}
+
+	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	if (!Pawn || !Pawn->WeaponComponent)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("CheatDrainAndReload: no possessed pawn with a weapon"));
+		return;
+	}
+
+	// The magazine is zeroed rather than fired away: RequestFire needs a target
+	// worth tracing at and a rate limit's worth of frames per round, and neither
+	// has anything to do with the transfer under observation.
+	Pawn->WeaponComponent->ResetForTest(0);
+	CheatReload(0.f);
+
+	const float Interval = FMath::Max(0.1f, IntervalSeconds);
+	FTimerHandle Handle;
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+		[this, Remaining, Interval]() { CheatDrainAndReload(Remaining - 1, Interval); }),
+		Interval, /*bLoop*/ false);
+#endif
+}
+
 void ASarkoPlayerController::UpdateSticks()
 {
 	bAimReleasedThisFrame = false;
