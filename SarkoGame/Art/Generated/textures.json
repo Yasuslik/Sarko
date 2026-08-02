@@ -1,0 +1,92 @@
+{
+ "Asphalt": {
+  "bytes": 157771,
+  "file": "T_Surface_Asphalt.png",
+  "mean": 0.5,
+  "resolution": 512,
+  "seamRatio": 0.993,
+  "seed": 20260803,
+  "stdDev": 0.16949,
+  "tileUU": 1000.0
+ },
+ "Bark": {
+  "bytes": 51721,
+  "file": "T_Surface_Bark.png",
+  "mean": 0.50002,
+  "resolution": 256,
+  "seamRatio": 0.812,
+  "seed": 20260808,
+  "stdDev": 0.2467,
+  "tileUU": 220.0
+ },
+ "Concrete": {
+  "bytes": 150185,
+  "file": "T_Surface_Concrete.png",
+  "mean": 0.5,
+  "resolution": 512,
+  "seamRatio": 0.779,
+  "seed": 20260804,
+  "stdDev": 0.18836,
+  "tileUU": 800.0
+ },
+ "Dirt": {
+  "bytes": 148528,
+  "file": "T_Surface_Dirt.png",
+  "mean": 0.49999,
+  "resolution": 512,
+  "seamRatio": 0.936,
+  "seed": 20260802,
+  "stdDev": 0.21482,
+  "tileUU": 1200.0
+ },
+ "Ground": {
+  "bytes": 128688,
+  "file": "T_Surface_Ground.png",
+  "mean": 0.5,
+  "resolution": 512,
+  "seamRatio": 0.743,
+  "seed": 20260801,
+  "stdDev": 0.19573,
+  "tileUU": 1600.0
+ },
+ "Rust": {
+  "bytes": 42757,
+  "file": "T_Surface_Rust.png",
+  "mean": 0.49999,
+  "resolution": 256,
+  "seamRatio": 0.834,
+  "seed": 20260806,
+  "stdDev": 0.23286,
+  "tileUU": 500.0
+ },
+ "Structure": {
+  "bytes": 27835,
+  "file": "T_Surface_Structure.png",
+  "mean": 0.49999,
+  "resolution": 256,
+  "seamRatio": 0.788,
+  "seed": 20260805,
+  "stdDev": 0.1595,
+  "tileUU": 600.0
+ },
+ "Timber": {
+  "bytes": 41602,
+  "file": "T_Surface_Timber.png",
+  "mean": 0.5,
+  "resolution": 256,
+  "seamRatio": 0.895,
+  "seed": 20260807,
+  "stdDev": 0.1696,
+  "tileUU": 400.0
+ },
+ "Vegetation": {
+  "bytes": 32549,
+  "file": "T_Surface_Vegetation.png",
+  "mean": 0.49999,
+  "resolution": 256,
+  "seamRatio": 0.731,
+  "seed": 20260809,
+  "stdDev": 0.21395,
+  "tileUU": 700.0
+ }
+}

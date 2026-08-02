@@ -89,6 +89,106 @@ namespace
 		return Styles[Index];
 	}
 
+	/**
+	 * THE DETAIL MAPS, in enum order, and a separate table from the one above on
+	 * purpose.
+	 *
+	 * The colours and roughnesses are the palette's original claim — the thing
+	 * Sarko.Config.SurfacePaletteIsReadable measures and the thing every
+	 * readability argument in this file rests on. Detail is a MODULATION of that
+	 * claim and nothing more: the maps are normalised to a mean of 0.5, which
+	 * makes the mean multiplier 1.0, which makes the average of a textured
+	 * surface exactly the colour on the line above. Folding four more fields
+	 * into that table would have buried thirty lines of reasoning about
+	 * luminance ratios under tiling numbers that have nothing to do with them.
+	 *
+	 * Six of the sixteen surfaces have no map, and each of those is a decision
+	 * argued in the header. They keep /Engine/BasicShapes/BasicShapeMaterial
+	 * exactly as before, so they pay no texture sample and cannot have changed.
+	 *
+	 * The tiling numbers are world units per tile, chosen against the top-down
+	 * camera's ~2.5 uu per pixel: the surfaces that cover ground area tile
+	 * slowly (a 1600 uu ground tile is most of a screen, so no repetition is
+	 * visible in a frame) and the surfaces that clothe objects a few metres
+	 * across tile fast enough that two crates sample different parts of the map.
+	 */
+	struct FSurfaceDetail
+	{
+		/** nullptr means "flat, and meant to be". */
+		const TCHAR* TexturePath;
+		/** World units per tile. */
+		float TileUU;
+		/** Base-colour swing, as a fraction of the palette colour. */
+		float Strength;
+		/**
+		 * Roughness swing across the map's full range; the actual deviation is
+		 * half this. Every value here is chosen so that Roughness +- half the
+		 * swing stays inside [0.5, 1.0] — matte at the glossiest end, legal at
+		 * the rough end. Sarko.Config.SurfaceDetailIsBounded checks the
+		 * arithmetic; it caught dirt at 1.01, which the material would have
+		 * silently clamped and nobody would ever have seen.
+		 */
+		float RoughnessSwing;
+	};
+
+	const FSurfaceDetail& DetailFor(ESarkoSurface Surface)
+	{
+		static const FSurfaceDetail None{ nullptr, 0.f, 0.f, 0.f };
+		static const FSurfaceDetail Details[static_cast<int32>(ESarkoSurface::Count)] = {
+			// Dirt clumps and sparse grass tufts over 400 m of field. 1600 uu is
+			// the largest tile here because this is the surface a player sees
+			// most and for longest, and a tile smaller than a screen is a
+			// wallpaper pattern.
+			/* Ground     */ { TEXT("/Game/Generated/Textures/T_Surface_Ground.T_Surface_Ground"),         1600.f, 0.45f, 0.10f },
+			/* Dirt       */ { TEXT("/Game/Generated/Textures/T_Surface_Dirt.T_Surface_Dirt"),             1200.f, 0.40f, 0.08f },
+			// The strongest base-colour swing in the table, because asphalt has
+			// the least colour to lose: at a linear 0.022 it is nearly black, so
+			// the only thing that can distinguish worn from unworn tarmac is a
+			// ratio.
+			/* Asphalt    */ { TEXT("/Game/Generated/Textures/T_Surface_Asphalt.T_Surface_Asphalt"),       1000.f, 0.55f, 0.18f },
+			// And the mirror case: concrete is the palest surface in the sector,
+			// so the same fraction is a much larger absolute step. Held back.
+			/* Concrete   */ { TEXT("/Game/Generated/Textures/T_Surface_Concrete.T_Surface_Concrete"),      800.f, 0.35f, 0.20f },
+			/* Structure  */ { TEXT("/Game/Generated/Textures/T_Surface_Structure.T_Surface_Structure"),    600.f, 0.30f, 0.24f },
+			/* Rust       */ { TEXT("/Game/Generated/Textures/T_Surface_Rust.T_Surface_Rust"),              500.f, 0.50f, 0.24f },
+			/* Timber     */ { TEXT("/Game/Generated/Textures/T_Surface_Timber.T_Surface_Timber"),          400.f, 0.40f, 0.16f },
+			// 220 uu, the fastest tile in the table: a trunk is about 60 uu
+			// across, so this wraps roughly three times around one — which is
+			// what puts a countable number of fibres on it rather than one
+			// smeared band. The strength is the highest here for the reason the
+			// Bark colour comment gives at length: a vertical surface under a
+			// 55-degree sun receives a fraction of the light a flat one does, so
+			// the same modulation reads as less.
+			/* Bark       */ { TEXT("/Game/Generated/Textures/T_Surface_Bark.T_Surface_Bark"),              220.f, 0.55f, 0.12f },
+			/* Vegetation */ { TEXT("/Game/Generated/Textures/T_Surface_Vegetation.T_Surface_Vegetation"),  700.f, 0.45f, 0.08f },
+			// Water and Shallow: flat, and that is the ford's whole read. See
+			// the header.
+			/* Water      */ None,
+			/* Shallow    */ None,
+			// Ravine: flat, and this one was DECIDED BY A FRAME rather than argued
+			// in advance. It had a map, it shipped through the whole pipeline, and
+			// the gorge bed measured 6.45 units of local detail before it and 6.55
+			// after — nothing. At a linear 0.013 it is the darkest surface in the
+			// sector on purpose, so a 35% swing is 0.005 of linear brightness. The
+			// texture is gone and the picture is identical.
+			/* Ravine     */ None,
+			// The three skirt bands: flat. They are a luminance gradient doing
+			// the job of distance, and texture on them is a second field.
+			/* SkirtNear  */ None,
+			/* SkirtMid   */ None,
+			/* SkirtFar   */ None,
+			// The one saturated colour in the sector, and it is UI. Flat.
+			/* Extraction */ None,
+		};
+
+		const int32 Index = static_cast<int32>(Surface);
+		if (Index < 0 || Index >= static_cast<int32>(ESarkoSurface::Count))
+		{
+			return None;
+		}
+		return Details[Index];
+	}
+
 	/** JSON names, in enum order. Lower snake case, like every other key. */
 	const TCHAR* const SurfaceNames[static_cast<int32>(ESarkoSurface::Count)] = {
 		TEXT("ground"), TEXT("dirt"), TEXT("asphalt"), TEXT("concrete"), TEXT("structure"),
@@ -108,6 +208,29 @@ float SarkoMap::Palette::RoughnessFor(ESarkoSurface Surface)
 {
 	return StyleFor(Surface).Roughness;
 }
+
+const TCHAR* SarkoMap::Palette::DetailTexturePath(ESarkoSurface Surface)
+{
+	return DetailFor(Surface).TexturePath;
+}
+
+float SarkoMap::Palette::DetailTileUU(ESarkoSurface Surface)
+{
+	return DetailFor(Surface).TileUU;
+}
+
+float SarkoMap::Palette::DetailStrength(ESarkoSurface Surface)
+{
+	return DetailFor(Surface).Strength;
+}
+
+float SarkoMap::Palette::DetailRoughnessSwing(ESarkoSurface Surface)
+{
+	return DetailFor(Surface).RoughnessSwing;
+}
+
+const TCHAR* const SarkoMap::SurfaceMaterialPath =
+	TEXT("/Game/Generated/Materials/M_SarkoSurface.M_SarkoSurface");
 
 bool SarkoMap::ParseSurfaceName(const FString& Name, ESarkoSurface& Out)
 {
