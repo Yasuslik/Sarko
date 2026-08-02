@@ -114,15 +114,25 @@ bool FSarkoTheTutorialsAmmoBudgetIsWinnable::RunTest(const FString& Parameters)
 		SarkoCombat::StartingRounds(Settings->StartingMagazineRounds, Settings->MagazineSize);
 	const int32 Supply = StartingRounds + RouteRounds;
 
-	// Demand: every bot the encounter budget can put on the map, at the hits its
-	// archetype's health costs against the player's damage. maxAlive summed over
-	// one-shot encounters is exactly how many bots a full clear meets, and the
-	// budget is the ceiling over all of them.
+	// Demand: every bot a TUTORIAL raid can meet, at the hits its archetype's
+	// health costs against the player's damage. maxAlive summed over the tutorial's
+	// one-shot encounters is exactly how many bots a full clear meets.
+	//
+	// Non-optional rows only, since the rotation (spec §5): the five optional rows
+	// are unreachable in a tutorial raid by construction, and counting them here
+	// would price the authored 46 rounds against fights the first raid cannot have.
+	// A normal raid meets more — that is the point of the rotation — and it is not
+	// this test's subject, because a normal raid starts with whatever the player
+	// carried out of the stash and the map authors none of it.
 	const float Damage = FMath::Max(1.f, Settings->WeaponDamage);
 	int32 HitsNeeded = 0;
 	int32 Bots = 0;
 	for (const FSarkoEncounter& Encounter : Map.Encounters)
 	{
+		if (Encounter.bOptional)
+		{
+			continue;
+		}
 		// The worst archetype among this encounter's doors, taken maxAlive times:
 		// which door fires is a runtime choice, so the budget must survive the
 		// toughest one every time.
