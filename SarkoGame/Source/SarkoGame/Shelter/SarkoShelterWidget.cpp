@@ -276,162 +276,169 @@ void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 					[
 						SNew(SVerticalBox)
 
-						// Two LABELLED blocks, the same shape the right column has
-						// always had (СХОВОК, a rule, then the thing). The left
-						// column used to open with a bare outcome string that is
-						// empty until the first raid ends, so the top 40% of the
-						// screen was blank and the garage block and the buttons sank
-						// to the bottom edge — the screen read half-drawn. A heading
-						// plus a note occupies that region and says what it is for.
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
-						[
-							SNew(STextBlock)
-							.Font(ShelterFont(11.f))
-							.ColorAndOpacity(LabelColour)
-							.Text(FText::FromString(TEXT("ОСТАННІЙ РЕЙД")))
-						]
-
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 8.f)
-						[
-							HorizontalRule()
-						]
-
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 4.f)
-						[
-							SAssignNew(OutcomeText, STextBlock)
-							.Font(ShelterFont(17.f))
-							.ColorAndOpacity(BrightColour)
-						]
-
-						// Scrolled, and it takes a SHARE of the column's slack: a
-						// long haul used to push the status line and the buttons
-						// off the bottom of a 390 pt canvas, and the garage block
-						// below is three more rows plus a 48 pt button. FillHeight
-						// here does the pushing the bare SSpacer used to do, and
-						// does it without ever clipping.
+						// Everything above the buttons SCROLLS, and the buttons are the
+						// slot after it. Not for the normal case, which fits with air to
+						// spare — for the crowded one: an outcome banner, a haul, a
+						// craft line and a wrapped backend error can all be on this
+						// column at once, and measured off a frame that is ~40 pt more
+						// than a 390 pt canvas has. Something has to give, and the one
+						// thing that must NOT is the pair of buttons at the bottom:
+						// they are the safe-frame-pinned, tap-target-verified way out of
+						// this screen. Inside a scroll box the content can exceed its
+						// room and stay reachable; outside one, a vertical box simply
+						// draws past the bottom edge and the frame showed exactly that
+						// — "В РЕЙД" sliced off by the screen edge.
 						//
-						// A share and not all of it, which is the composition half
-						// of this screen's rebalance: the OTHER fill slot is below
-						// the craft button (0.75 of this one's weight), so an empty
-						// column divides its air between "under the last raid" and
-						// "above the buttons" instead of opening one hole under the
-						// heading and dropping the garage block on the bottom edge.
-						// Both shrink to nothing under pressure, which is what keeps
-						// the worst case — an outcome, a haul, a craft line and a
-						// wrapped backend error at once — inside the canvas.
+						// It also decides where the SLACK goes when the column is nearly
+						// empty: a scroll box hands its child the child's desired size,
+						// so the blocks stack from the TOP and the air collects in one
+						// place above the buttons. That is the composition this screen
+						// was missing — two labelled blocks under the title and the
+						// buttons on the floor, rather than everything sunk to the
+						// bottom with a void over it.
 						+ SVerticalBox::Slot().FillHeight(1.f)
 						[
-							SNew(SOverlay)
-
-							+ SOverlay::Slot()
+							SNew(SScrollBox)
+							+ SScrollBox::Slot()
 							[
-								SNew(SScrollBox)
-								+ SScrollBox::Slot()
+								SNew(SVerticalBox)
+
+								// Two LABELLED blocks, the same shape the right column
+								// has always had (СХОВОК, a rule, then the thing). The
+								// left column used to open with a bare outcome string
+								// that is empty until the first raid ends, so the top
+								// 40% of the screen was blank. A heading plus a note
+								// occupies that region and says what it is for.
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
 								[
-									SAssignNew(HaulBox, SVerticalBox)
+									SNew(STextBlock)
+									.Font(ShelterFont(11.f))
+									.ColorAndOpacity(LabelColour)
+									.Text(FText::FromString(TEXT("ОСТАННІЙ РЕЙД")))
 								]
-							]
 
-							// Over the list rather than instead of it, exactly as
-							// StashNoteText is over the grid.
-							+ SOverlay::Slot()
-							.HAlign(HAlign_Left).VAlign(VAlign_Top)
-							[
-								SAssignNew(HaulNoteText, STextBlock)
-								.Font(ShelterFont(13.f))
-								.ColorAndOpacity(LabelColour)
-							]
-						]
-
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 8.f, 0.f, 5.f)
-						[
-							HorizontalRule()
-						]
-
-						// The garage's own heading. The word is on the header line
-						// too — that line is the STATE ("ГАРАЖ: ВЕЛОСИПЕД 2/3", read
-						// at a glance from across the screen) and this is the block
-						// that itemises it, and a dim 11 pt label under a rule is how
-						// this screen already says "here begins a section".
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
-						[
-							SNew(STextBlock)
-							.Font(ShelterFont(11.f))
-							.ColorAndOpacity(LabelColour)
-							.Text(FText::FromString(TEXT("ГАРАЖ")))
-						]
-
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 2.f)
-						[
-							SAssignNew(GarageParts, SVerticalBox)
-						]
-
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
-						[
-							// The payoff sentence. Empty until a craft succeeds, and
-							// it stays for the rest of the visit rather than
-							// flashing: this is what every raid before it was for.
-							SAssignNew(CraftLineText, STextBlock)
-							.Font(ShelterFont(13.f))
-							.ColorAndOpacity(MetColour)
-							.AutoWrapText(true)
-						]
-
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
-						[
-							SNew(SBox)
-							// 48 pt tall, past the 44 pt tap-target minimum.
-							.HeightOverride(48.f)
-							[
-								SAssignNew(CraftButton, SButton)
-								.ContentPadding(FMargin(CraftButtonPadX, 0.f))
-								.HAlign(HAlign_Center)
-								.VAlign(VAlign_Center)
-								.IsEnabled_Lambda([this]() { return bCraftEnabled; })
-								.OnClicked(this, &SSarkoShelterWidget::HandleCraft)
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 8.f)
 								[
-									// WRAPPED, not ellipsed. The longest label this
-									// button carries is "НЕ ВИСТАЧАЄ: Рама велосипеда"
-									// at ~271 pt against 262 pt of inner width, and the
-									// frame showed what an ellipsis does to a CENTRED
-									// line: it cut BOTH ends, so the button read
-									// "Е ВИСТАЧАЄ: Рама велосипед" — a label that names
-									// the missing part with its name mangled is worse
-									// than no ellipsis at all. Two 13 pt lines are 30 pt,
-									// so the 48 pt box holds it.
-									//
-									// WrapTextAt and not AutoWrapText, which is the second
-									// thing a frame settled: auto-wrap takes its width from
-									// the allotted geometry, and inside a CENTRE-aligned
-									// button the allotted width IS the text's own desired
-									// width — the two feed each other down to the widest
-									// single word, so the label wrapped to "НЕ /
-									// ВИСТАЧАЄ:" and the part name fell off the bottom of
-									// the box entirely. An explicit width derived from the
-									// column cannot do that.
-									SAssignNew(CraftLabel, STextBlock)
+									HorizontalRule()
+								]
+
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 4.f)
+								[
+									SAssignNew(OutcomeText, STextBlock)
+									.Font(ShelterFont(17.f))
+									.ColorAndOpacity(BrightColour)
+								]
+
+								// The haul list itself. No scroll box of its own — the
+								// column's own one above holds it, and a nested vertical
+								// scroll box inside another just grows to its content and
+								// never scrolls anyway. A long haul lengthens the column
+								// and the column scrolls.
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 2.f)
+								[
+									SNew(SOverlay)
+
+									+ SOverlay::Slot()
+									[
+										SAssignNew(HaulBox, SVerticalBox)
+									]
+
+									// Over the list rather than instead of it, exactly as
+									// StashNoteText is over the grid.
+									+ SOverlay::Slot()
+									.HAlign(HAlign_Left).VAlign(VAlign_Top)
+									[
+										SAssignNew(HaulNoteText, STextBlock)
+										.Font(ShelterFont(13.f))
+										.ColorAndOpacity(LabelColour)
+									]
+								]
+
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 8.f, 0.f, 5.f)
+								[
+									HorizontalRule()
+								]
+
+								// The garage's own heading. The word is on the header line
+								// too — that line is the STATE ("ГАРАЖ: ВЕЛОСИПЕД 2/3", read
+								// at a glance from across the screen) and this is the block
+								// that itemises it, and a dim 11 pt label under a rule is how
+								// this screen already says "here begins a section".
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
+								[
+									SNew(STextBlock)
+									.Font(ShelterFont(11.f))
+									.ColorAndOpacity(LabelColour)
+									.Text(FText::FromString(TEXT("ГАРАЖ")))
+								]
+
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 2.f)
+								[
+									SAssignNew(GarageParts, SVerticalBox)
+								]
+
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
+								[
+									// The payoff sentence. Empty until a craft succeeds, and
+									// it stays for the rest of the visit rather than
+									// flashing: this is what every raid before it was for.
+									SAssignNew(CraftLineText, STextBlock)
 									.Font(ShelterFont(13.f))
-									.Justification(ETextJustify::Center)
-									.WrapTextAt(CraftLabelWrap)
+									.ColorAndOpacity(MetColour)
+									.AutoWrapText(true)
+								]
+
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
+								[
+									SNew(SBox)
+									// 48 pt tall, past the 44 pt tap-target minimum.
+									.HeightOverride(48.f)
+									[
+										SAssignNew(CraftButton, SButton)
+										.ContentPadding(FMargin(CraftButtonPadX, 0.f))
+										.HAlign(HAlign_Center)
+										.VAlign(VAlign_Center)
+										.IsEnabled_Lambda([this]() { return bCraftEnabled; })
+										.OnClicked(this, &SSarkoShelterWidget::HandleCraft)
+										[
+											// WRAPPED, not ellipsed. The longest label this
+											// button carries is "НЕ ВИСТАЧАЄ: Рама велосипеда"
+											// at ~271 pt against 262 pt of inner width, and the
+											// frame showed what an ellipsis does to a CENTRED
+											// line: it cut BOTH ends, so the button read
+											// "Е ВИСТАЧАЄ: Рама велосипед" — a label that names
+											// the missing part with its name mangled is worse
+											// than no ellipsis at all. Two 13 pt lines are 30 pt,
+											// so the 48 pt box holds it.
+											//
+											// WrapTextAt and not AutoWrapText, which is the second
+											// thing a frame settled: auto-wrap takes its width from
+											// the allotted geometry, and inside a CENTRE-aligned
+											// button the allotted width IS the text's own desired
+											// width — the two feed each other down to the widest
+											// single word, so the label wrapped to "НЕ /
+											// ВИСТАЧАЄ:" and the part name fell off the bottom of
+											// the box entirely. An explicit width derived from the
+											// column cannot do that.
+											SAssignNew(CraftLabel, STextBlock)
+											.Font(ShelterFont(13.f))
+											.Justification(ETextJustify::Center)
+											.WrapTextAt(CraftLabelWrap)
+										]
+									]
+								]
+
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 6.f, 0.f, 6.f)
+								[
+									// Wrapped, not one line: the status line carries a
+									// verbatim backend error, and this column is
+									// narrower than the whole screen was.
+									SAssignNew(StatusText, STextBlock)
+									.Font(ShelterFont(12.f))
+									.ColorAndOpacity(WarnColour)
+									.AutoWrapText(true)
 								]
 							]
-						]
-
-						// The second half of the slack. See the haul slot above.
-						+ SVerticalBox::Slot().FillHeight(0.75f)
-						[
-							SNew(SBox)
-						]
-
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 6.f, 0.f, 6.f)
-						[
-							// Wrapped, not one line: the status line carries a
-							// verbatim backend error, and this column is narrower
-							// than the whole screen was.
-							SAssignNew(StatusText, STextBlock)
-							.Font(ShelterFont(12.f))
-							.ColorAndOpacity(WarnColour)
-							.AutoWrapText(true)
 						]
 
 						+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Left)
