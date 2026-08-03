@@ -14,9 +14,13 @@ struct FSarkoMapDefinition;
 /**
  * One box of a prop.
  *
- * Every mesh is an engine primitive referenced by path: this project authors no
- * assets, so a "car wreck" is a scaled box until real art arrives at the same
- * coordinates.
+ * A mesh is referenced by path and comes from one of three places: an engine
+ * primitive (/Engine/BasicShapes), a downloaded pack (/Game/ThirdParty) or this
+ * project's own generated props (/Game/Generated/Props, built by
+ * Scripts/generate-props.sh). All three are normalised to the same -50..50 uu
+ * box, which is what lets a kind swap one for another without touching a number
+ * — and is how eleven of these kinds stopped being scaled cubes without a
+ * single prop in bridge.json moving.
  */
 USTRUCT()
 struct FSarkoPropPart
@@ -52,8 +56,8 @@ struct FSarkoPropPart
 	ESarkoSurface Surface = ESarkoSurface::Structure;
 
 	/**
-	 * True for the leafy part of a tree: the one thing on the map that hides
-	 * ITSELF when the local player walks under it.
+	 * True for a part that hides ITSELF when the local player walks under it:
+	 * the leafy half of a tree, and the АЗС canopy roof.
 	 *
 	 * The camera looks almost straight down (a 1400 uu boom at -70 degrees), so
 	 * anything held 4-8 m over the pawn's head sits between the camera and the
@@ -63,9 +67,10 @@ struct FSarkoPropPart
 	 * open up overhead: ASarkoRaidGameState::UpdateCanopyFade hides every flagged
 	 * part inside USarkoRaidSettings::CanopyFadeRadiusUU of the local pawn.
 	 *
-	 * Cosmetic and local, always. A flagged part must also be non-colliding
-	 * (SarkoMap::Canopy is the only thing that sets this, and it enforces that),
-	 * because the fade changes visibility and NOTHING else: a hidden canopy that
+	 * Cosmetic and local, always. A flagged part must also be non-colliding —
+	 * SarkoMap::Canopy and SarkoMap::Fading are the only two things that set
+	 * this and both enforce it, the first for foliage and the second for the
+	 * one roof — because the fade changes visibility and NOTHING else: a hidden canopy that
 	 * stopped a bullet, or a visible one that did not, would each be a worse bug
 	 * than an empty world. Cover and navigation are the trunks, which never fade.
 	 */
@@ -101,7 +106,7 @@ namespace SarkoMap
 	 *
 	 * Exists so a test can assert something about ALL of them without keeping its
 	 * own copy of the list — which is how a check ends up silently not covering
-	 * the kind added last week. Sarko.Config.ThirdPartyMeshBoundsAreNormalised is
+	 * the kind added last week. Sarko.Config.PropMeshBoundsAreNormalised is
 	 * the caller that needs it: a mesh reached only through this table is a mesh
 	 * nothing else in the project can enumerate.
 	 */

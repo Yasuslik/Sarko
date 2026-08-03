@@ -123,7 +123,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  * "the lighting looks wrong" — which is the last place anyone would look.
  *
  * Asserted on the ASSET rather than on the code, for the same reason
- * Sarko.Config.ThirdPartyMeshBoundsAreNormalised is: the setting is applied by a
+ * Sarko.Config.PropMeshBoundsAreNormalised is: the setting is applied by a
  * Python script outside the build, and nothing in C++ can tell whether that
  * script ran.
  */

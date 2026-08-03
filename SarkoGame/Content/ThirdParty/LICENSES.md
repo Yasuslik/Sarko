@@ -45,11 +45,20 @@ FBX per model; the files below were fetched individually from those folders on
 | File | Bytes | Used as |
 |---|---|---|
 | `WaterTower.fbx` | 44956 | `water_tower` |
-| `Barrel.fbx` | 39756 | staged, not yet placed |
-| `Pallet.fbx` | 21436 | staged, not yet placed |
-| `Pipes.fbx` | 54780 | staged, not yet placed |
-| `CinderBlock.fbx` | 24748 | staged, not yet placed |
-| `Wheels_Stack.fbx` | 65404 | staged, not yet placed |
+| `Barrel.fbx` | 39756 | `barrel` |
+| `Pallet.fbx` | 21436 | `pallet`, `pallet_stack` |
+| `Pipes.fbx` | 54780 | `pipe_run` |
+| `CinderBlock.fbx` | 24748 | staged, and judged NOT worth placing |
+| `Wheels_Stack.fbx` | 65404 | staged, and judged NOT worth placing |
+
+The last two were looked at properly during the procedural prop pass and turned
+down rather than left in limbo. `CinderBlock` is 47 cm long: from the game's
+1400 uu camera that is about two pixels, so it can only ever be noise. Every
+component in `ASarkoPropField` is a draw call, and `Wheels_Stack` costs one for
+1824 triangles of prop that resolves to a dark blob at 92 uu tall — the same
+draw call spent on `barrel` dresses four locations. They stay imported because
+the pack is committed and re-running `Scripts/import-assets.sh` would bring them
+back anyway; they are simply not in the kind table.
 | `License.txt` | 364 | pack licence |
 
 `Art/ThirdParty/Cars/` — Quaternius Cars Pack, CC0 1.0

@@ -336,13 +336,24 @@ bool FSarkoEngineMeshPathsResolve::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FSarkoThirdPartyMeshBoundsAreNormalised,
-	"Sarko.Config.ThirdPartyMeshBoundsAreNormalised",
+	FSarkoPropMeshBoundsAreNormalised,
+	"Sarko.Config.PropMeshBoundsAreNormalised",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 /**
- * Every imported mesh is the same shape as the engine cube: bounds -50..50 uu
- * on all three axes, centred on its own origin.
+ * Every non-primitive mesh is the same shape as the engine cube: bounds
+ * -50..50 uu on all three axes, centred on its own origin.
+ *
+ * BOTH ROOTS, which is the reason this test lost the word "ThirdParty" from its
+ * name. /Game/ThirdParty is the downloaded packs; /Game/Generated/Props is the
+ * eleven meshes this project builds itself with Scripts/generate-props.sh. They
+ * come out of the SAME Blender normaliser and they are trusted by the same line
+ * of arithmetic, so covering one and not the other would leave the newer half
+ * of the prop table — the whole АЗС, the rolling stock and the yard — resting on
+ * an assumption nothing checks. The prefix test is a whitelist rather than a
+ * "not /Engine/" check on purpose: an engine primitive is 100 uu by
+ * construction and does not need asserting, and a path in neither root is
+ * something nobody has thought about yet.
  *
  * This is the load-bearing assumption of the whole prop system and it lives
  * outside the code — Scripts/prepare-assets.py stretches each mesh into that box
@@ -358,7 +369,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
  * would no longer match the number the spawn-clearance test checked, and every
  * test in the suite would still pass. Hence: assert the shape of the ASSET.
  */
-bool FSarkoThirdPartyMeshBoundsAreNormalised::RunTest(const FString& Parameters)
+bool FSarkoPropMeshBoundsAreNormalised::RunTest(const FString& Parameters)
 {
 	// Gathered from the kind table rather than listed, so a mesh added to a kind
 	// tomorrow is covered without anyone remembering this test exists.
@@ -373,13 +384,23 @@ bool FSarkoThirdPartyMeshBoundsAreNormalised::RunTest(const FString& Parameters)
 		for (const FSarkoPropPart& Part : Resolved.Parts)
 		{
 			const FString Path = Part.Mesh.ToString();
-			if (Path.StartsWith(TEXT("/Game/ThirdParty/")))
+			if (Path.StartsWith(TEXT("/Game/ThirdParty/")) || Path.StartsWith(TEXT("/Game/Generated/Props/")))
 			{
 				MeshPaths.Add(Path);
 			}
 		}
 	}
 	TestTrue(TEXT("the kind table actually uses imported meshes"), MeshPaths.Num() >= 8);
+	// Both halves are actually present. Without this the test would still pass
+	// with a green tick on the day somebody deleted every generated mesh from the
+	// table, because a set that lost eleven entries still has fifteen.
+	int32 Generated = 0;
+	for (const FString& Path : MeshPaths)
+	{
+		Generated += Path.StartsWith(TEXT("/Game/Generated/Props/")) ? 1 : 0;
+	}
+	TestTrue(FString::Printf(TEXT("the kind table uses this project's own meshes (%d)"), Generated),
+		Generated >= 11);
 
 	for (const FString& Path : MeshPaths)
 	{
