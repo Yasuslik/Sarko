@@ -34,7 +34,12 @@ import os
 import unreal
 
 PREPARED = os.environ["SARKO_PREPARED"]
-CONTENT_ROOT = "/Game/ThirdParty"
+# /Game/ThirdParty for the downloaded packs; Scripts/generate-props.sh points it
+# at /Game/Generated for the meshes this project builds itself. The import is
+# identical either way, which is the reason there is one script rather than two:
+# a mesh we generated has to satisfy the same collision, Nanite and LOD contract
+# as a mesh we downloaded, and the way to guarantee that is to run the same code.
+CONTENT_ROOT = os.environ.get("SARKO_CONTENT_ROOT", "/Game/ThirdParty")
 
 manager = unreal.InterchangeManager.get_interchange_manager_scripted()
 params = unreal.ImportAssetParameters()
