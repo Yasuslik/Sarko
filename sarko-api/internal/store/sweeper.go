@@ -18,10 +18,13 @@ type expiredSession struct {
 	playerID string
 	state    domain.RaidState
 	loadout  []domain.ItemStack
+	// mode decides one thing here: whether closing an active session as death also
+	// strips the player's equipment. A sortie debited nothing, so it must not.
+	mode domain.RaidMode
 }
 
-// closeExpiredTx runs query (which must select id, player_id, state::text and
-// loadout for every raid session past its deadline) against tx, and closes
+// closeExpiredTx runs query (which must select id, player_id, state::text,
+// loadout and mode for every raid session past its deadline) against tx, and closes
 // each row it finds: a pending session never entered the map, so its loadout
 // goes back to the stash and it becomes voided; an active session ran out of
 // time, which counts as death (§11 — leaving the app counts as death), so it
@@ -46,11 +49,13 @@ func closeExpiredTx(ctx context.Context, tx pgx.Tx, query string, args ...any) (
 		var e expiredSession
 		var raw []byte
 		var state string
-		if err := rows.Scan(&e.id, &e.playerID, &state, &raw); err != nil {
+		var mode string
+		if err := rows.Scan(&e.id, &e.playerID, &state, &raw, &mode); err != nil {
 			rows.Close()
 			return 0, 0, fmt.Errorf("scan expired: %w", err)
 		}
 		e.state = domain.RaidState(state)
+		e.mode = domain.RaidMode(mode)
 		if err := json.Unmarshal(raw, &e.loadout); err != nil {
 			rows.Close()
 			return 0, 0, fmt.Errorf("unmarshal loadout: %w", err)
@@ -110,8 +115,17 @@ func closeExpiredSessionTx(ctx context.Context, tx pgx.Tx, e expiredSession) err
 	// "ЗНИК БЕЗВІСТИ", and the whole reason it lives in this shared function is
 	// that a raid must not lose its equipment only when the client remembered to
 	// submit a result.
-	if err := clearEquipmentTx(ctx, tx, e.playerID); err != nil {
-		return err
+	//
+	// EXCEPT a sortie, whose gear was never debited (spec §4.5: free). The reason
+	// for the DELETE is to stop the shelter showing gear the stash no longer holds,
+	// and after a sortie the stash holds everything it did before — so clearing the
+	// slots would be the free run confiscating the player's own pistol. Kept in step
+	// with SubmitResult's death branch, which makes the same exception for the same
+	// reason; the two paths must not disagree about what a sortie death costs.
+	if e.mode != domain.ModeSortie {
+		if err := clearEquipmentTx(ctx, tx, e.playerID); err != nil {
+			return err
+		}
 	}
 
 	if _, err := tx.Exec(ctx,
@@ -192,7 +206,7 @@ func (s *Store) SweepExpiredBatch(ctx context.Context, limit int) (voided int, d
 	// replica holds the rows, which correctly ends this instance's loop.
 	// state is read as text for the same reason as everywhere else in this package.
 	voided, died, err = closeExpiredTx(ctx, tx,
-		`SELECT id, player_id, state::text, loadout FROM raid_sessions
+		`SELECT id, player_id, state::text, loadout, mode FROM raid_sessions
 		 WHERE state IN ('pending', 'active') AND expires_at <= now()
 		 ORDER BY expires_at
 		 LIMIT $1

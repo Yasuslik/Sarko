@@ -26,12 +26,23 @@ type startRaidRequest struct {
 	// their only weapon on (domain.ValidateStacks says so out loud).
 	Loadout []domain.ItemStack `json:"loadout"`
 
-	// THE SEAM FOR ВИЛАЗКА (spec §4.5), not built here. The sortie is a MODE on
-	// this request — a free run with a server-granted kit and a server-timed
-	// cooldown — so it will arrive as one more field on this struct. What must not
-	// happen when it does: the client naming the kit, or the client deciding
-	// whether the cooldown has elapsed. Both are the server's, and a client that
-	// asks for a sortie during the cooldown is refused by name.
+	// Mode is `raid` or `sortie` (spec §4.5), and it is the ONLY thing about a
+	// ВИЛАЗКА the client gets to say. It arrived as the seam the previous stage left
+	// here, and the seam's warning is now the rule this field is written against:
+	//
+	//   - The client does not name the kit. There is no field for one, and
+	//     store.StartRaid discards Loadout unread when this says `sortie` — so a
+	//     forged body cannot become a granted pistol.
+	//   - The client does not decide the cooldown. It is computed by Postgres from
+	//     the player's own last closed sortie, inside the transaction that holds
+	//     their row lock, and a request made too early is refused by NAME
+	//     (`sortie_cooldown`) with the remaining seconds in the message.
+	//
+	// An ABSENT mode is a raid: every client built before this field existed omits
+	// it, and defaulting to the mode that costs the player something is the only
+	// safe direction. An unknown value is a 400 rather than a silent downgrade —
+	// a client that asked for something this service does not have should be told.
+	Mode string `json:"mode"`
 }
 
 type sessionRequest struct {
@@ -66,6 +77,10 @@ func handleRaidStart(deps Deps) http.HandlerFunc {
 			WriteError(w, http.StatusBadRequest, "bad_request", "map_id is required")
 			return
 		}
+		if !domain.IsValidRaidMode(req.Mode) {
+			WriteError(w, http.StatusBadRequest, "bad_request", "mode must be raid or sortie")
+			return
+		}
 		if err := domain.ValidateStacks(req.Loadout); err != nil {
 			WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
@@ -79,14 +94,23 @@ func handleRaidStart(deps Deps) http.HandlerFunc {
 		}
 
 		started, err := deps.Store.StartRaid(r.Context(), store.StartRaidParams{
-			PlayerID:   playerID,
-			MapID:      req.MapID,
-			Loadout:    req.Loadout,
-			PendingTTL: deps.PendingTTL,
+			PlayerID:       playerID,
+			MapID:          req.MapID,
+			Loadout:        req.Loadout,
+			PendingTTL:     deps.PendingTTL,
+			Mode:           domain.NormaliseRaidMode(req.Mode),
+			SortieCooldown: deps.SortieCooldown,
 		})
 		switch {
 		case errors.Is(err, store.ErrMapLocked):
 			WriteError(w, http.StatusForbidden, "map_locked", "your garage does not unlock this map")
+		case errors.Is(err, store.ErrSortieCooldown):
+			// REFUSED BY NAME, and with the store's message: it carries the remaining
+			// seconds, and the client shows a refusal verbatim (the same discipline the
+			// equip refusals follow). 409 and not 429 — this is not rate limiting on an
+			// abusive caller, it is a game rule refusing a well-formed request, which is
+			// the shape raid_in_progress and insufficient_items already have.
+			WriteError(w, http.StatusConflict, "sortie_cooldown", err.Error())
 		case errors.Is(err, store.ErrRaidInProgress):
 			WriteError(w, http.StatusConflict, "raid_in_progress", "finish the current raid first")
 		case errors.Is(err, store.ErrInsufficientItems):
@@ -121,8 +145,18 @@ func handleRaidConfirm(deps Deps) http.HandlerFunc {
 
 		// The store records one already-computed deadline: the raid duration
 		// plus the grace buffer that covers a slow result submission.
+		//
+		// TWO of them, and the store picks by the session's own stored mode — the
+		// caller does not say which run this is, because the caller already said so at
+		// start and that answer is on the row. The sortie's is shorter (spec §4.5); the
+		// grace buffer is the same for both, because it covers the network and not the
+		// game.
+		sortieDeadline := time.Duration(0)
+		if deps.SortieTTL > 0 {
+			sortieDeadline = deps.SortieTTL + deps.GraceBuffer
+		}
 		expiresAt, err := deps.Store.ConfirmRaid(r.Context(),
-			playerID, req.SessionID, req.SessionToken, deps.RaidTTL+deps.GraceBuffer)
+			playerID, req.SessionID, req.SessionToken, deps.RaidTTL+deps.GraceBuffer, sortieDeadline)
 		switch {
 		case errors.Is(err, store.ErrSessionNotOpen):
 			WriteError(w, http.StatusConflict, "session_not_open", "session is not pending")

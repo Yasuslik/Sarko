@@ -28,6 +28,21 @@ func handleProfile(deps Deps) http.HandlerFunc {
 			WriteError(w, http.StatusInternalServerError, "internal", "could not read profile")
 			return
 		}
+
+		// The sortie countdown, for the second button's label (spec §4.5). Asked for
+		// separately because its length is configuration and store.Profile takes no
+		// policy — see the comment on Profile.
+		//
+		// A FAILURE HERE DOES NOT FAIL THE FETCH. This number decides nothing: the
+		// worst a zero does is offer a button that /v1/raid/start then refuses by name,
+		// which is the same thing that happens when the countdown is merely stale. The
+		// whole shelter — stash, character, garage — hanging on a countdown would be a
+		// far worse trade.
+		if remaining, cErr := deps.Store.SortieRemaining(r.Context(), playerID, deps.SortieCooldown); cErr != nil {
+			slog.Error("read sortie cooldown", "err", cErr)
+		} else {
+			profile.SortieCooldownSeconds = int(remaining.Seconds() + 0.999)
+		}
 		WriteJSON(w, http.StatusOK, profile)
 	}
 }

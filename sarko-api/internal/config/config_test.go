@@ -69,6 +69,8 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	t.Setenv("RAID_TTL", "")
 	t.Setenv("PENDING_TTL", "")
 	t.Setenv("GRACE_BUFFER", "")
+	t.Setenv("SORTIE_TTL", "")
+	t.Setenv("SORTIE_COOLDOWN", "")
 
 	c, err := Load()
 	if err != nil {
@@ -85,6 +87,25 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	}
 	if c.GraceBuffer != 2*time.Minute {
 		t.Errorf("GraceBuffer = %v, want 2m", c.GraceBuffer)
+	}
+	// The sortie's clock is SHORTER than a raid's, and that is the design rule rather
+	// than a coincidence of two defaults: spec §4.5's trade-off is quality and clock,
+	// never safety. A SORTIE_TTL raised past RAID_TTL would make the free run the
+	// better one, so the relation is asserted and not just the value.
+	if c.SortieTTL != 6*time.Minute {
+		t.Errorf("SortieTTL = %v, want 6m", c.SortieTTL)
+	}
+	if c.SortieTTL >= c.RaidTTL {
+		t.Errorf("SortieTTL %v must be shorter than RaidTTL %v", c.SortieTTL, c.RaidTTL)
+	}
+	// And the cooldown outlasts the sortie itself, so the free run cannot be the main
+	// loop however fast it is played.
+	if c.SortieCooldown != 15*time.Minute {
+		t.Errorf("SortieCooldown = %v, want 15m", c.SortieCooldown)
+	}
+	if c.SortieCooldown <= c.SortieTTL {
+		t.Errorf("SortieCooldown %v must outlast SortieTTL %v, or sorties chain back to back",
+			c.SortieCooldown, c.SortieTTL)
 	}
 }
 

@@ -46,6 +46,10 @@ func newTestServer(t *testing.T) *client {
 		RaidTTL:     time.Minute,
 		PendingTTL:  time.Minute,
 		GraceBuffer: 30 * time.Second,
+		// ВИЛАЗКА's two knobs, at test scale: a clock visibly shorter than RaidTTL,
+		// and a cooldown long enough that a second sortie inside one test is refused.
+		SortieTTL:      20 * time.Second,
+		SortieCooldown: time.Hour,
 	}
 	srv := httptest.NewServer(api.NewRouter(deps))
 	t.Cleanup(srv.Close)

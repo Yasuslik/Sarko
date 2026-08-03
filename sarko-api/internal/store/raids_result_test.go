@@ -36,7 +36,7 @@ func TestSubmitResultCreditsExtractedLoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRaid: %v", err)
 	}
-	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute, 0); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 
@@ -72,7 +72,7 @@ func TestSubmitResultIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRaid: %v", err)
 	}
-	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute, 0); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 
@@ -143,7 +143,7 @@ func TestSubmitResultRejectsAnotherPlayersSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRaid: %v", err)
 	}
-	if _, err := s.ConfirmRaid(ctx, owner, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, owner, started.SessionID, started.SessionToken, time.Minute, 0); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 
@@ -202,7 +202,7 @@ func TestDeathCreditsOnlyWhatWasSubmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRaid: %v", err)
 	}
-	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute, 0); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 
@@ -291,7 +291,7 @@ func TestStartThenResultWithoutConfirmBanksNothing(t *testing.T) {
 	}
 
 	// And the honest path still works from exactly here: confirm, then submit.
-	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute, 0); err != nil {
 		t.Fatalf("ConfirmRaid after a refused result: %v", err)
 	}
 	if _, err := s.SubmitResult(ctx, store.SubmitResultParams{
@@ -360,7 +360,7 @@ func TestConfirmRaidRejectsAnExpiredPendingSession(t *testing.T) {
 		t.Fatalf("StartRaid: %v", err)
 	}
 
-	_, err = s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Hour)
+	_, err = s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Hour, 0)
 	if !errors.Is(err, store.ErrSessionNotOpen) {
 		t.Fatalf("err = %v, want ErrSessionNotOpen (the uniform refusal)", err)
 	}
@@ -415,7 +415,7 @@ func TestConfirmRaidRejectsWrongToken(t *testing.T) {
 		t.Fatalf("StartRaid: %v", err)
 	}
 
-	_, err = s.ConfirmRaid(ctx, playerID, started.SessionID, "forged-token", time.Minute)
+	_, err = s.ConfirmRaid(ctx, playerID, started.SessionID, "forged-token", time.Minute, 0)
 	if !errors.Is(err, store.ErrSessionNotOpen) {
 		t.Fatalf("err = %v, want ErrSessionNotOpen", err)
 	}
@@ -442,7 +442,7 @@ func TestConfirmRaidRejectsUnknownSessionID(t *testing.T) {
 		t.Fatalf("StartRaid: %v", err)
 	}
 
-	_, err = s.ConfirmRaid(ctx, playerID, "00000000-0000-0000-0000-000000000000", started.SessionToken, time.Minute)
+	_, err = s.ConfirmRaid(ctx, playerID, "00000000-0000-0000-0000-000000000000", started.SessionToken, time.Minute, 0)
 	if !errors.Is(err, store.ErrSessionNotOpen) {
 		t.Fatalf("err = %v, want ErrSessionNotOpen", err)
 	}
@@ -476,7 +476,7 @@ func TestConfirmRaidRejectsAnotherPlayersSession(t *testing.T) {
 	}
 
 	// The correct session id and the correct token — only the caller is wrong.
-	_, err = s.ConfirmRaid(ctx, intruder, started.SessionID, started.SessionToken, time.Minute)
+	_, err = s.ConfirmRaid(ctx, intruder, started.SessionID, started.SessionToken, time.Minute, 0)
 	if !errors.Is(err, store.ErrSessionNotOpen) {
 		t.Fatalf("err = %v, want ErrSessionNotOpen (the same error every other refusal gives)", err)
 	}
@@ -490,7 +490,7 @@ func TestConfirmRaidRejectsAnotherPlayersSession(t *testing.T) {
 	}
 
 	// The owner is unaffected and can still confirm.
-	if _, err := s.ConfirmRaid(ctx, owner, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, owner, started.SessionID, started.SessionToken, time.Minute, 0); err != nil {
 		t.Fatalf("the owner must still be able to confirm: %v", err)
 	}
 }
@@ -505,7 +505,7 @@ func TestConfirmRaidRejectsAlreadyActiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRaid: %v", err)
 	}
-	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute, 0); err != nil {
 		t.Fatalf("first ConfirmRaid: %v", err)
 	}
 	_, firstConfirmedAt := sessionState(t, pool, started.SessionID)
@@ -513,7 +513,7 @@ func TestConfirmRaidRejectsAlreadyActiveSession(t *testing.T) {
 		t.Fatal("confirmed_at must be set after the first confirm")
 	}
 
-	_, err = s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute)
+	_, err = s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute, 0)
 	if !errors.Is(err, store.ErrSessionNotOpen) {
 		t.Fatalf("err = %v, want ErrSessionNotOpen", err)
 	}
@@ -545,7 +545,7 @@ func TestConfirmRaidReturnsStoredDeadline(t *testing.T) {
 
 	const deadline = 14 * time.Minute
 	before := time.Now()
-	expiresAt, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, deadline)
+	expiresAt, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, deadline, 0)
 	if err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
@@ -592,7 +592,7 @@ func TestSubmitResultCreditsAResultInsideTheDeadline(t *testing.T) {
 	}
 	// A deadline a comfortable distance in the future stands in for "the raid
 	// duration plus the grace buffer, and the result got here in time".
-	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute, 0); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 
@@ -640,7 +640,7 @@ func TestSubmitResultOnExpiredActiveSessionRecordsDeath(t *testing.T) {
 		t.Fatalf("StartRaid: %v", err)
 	}
 	// Confirm with a deadline already in the past: past the grace buffer too.
-	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, -time.Second); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, -time.Second, 0); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 
@@ -738,7 +738,7 @@ func TestSubmitResultExpiryMatchesTheSweeper(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StartRaid: %v", err)
 		}
-		if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, -time.Second); err != nil {
+		if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, -time.Second, 0); err != nil {
 			t.Fatalf("ConfirmRaid: %v", err)
 		}
 		if sweepFirst {
@@ -825,7 +825,7 @@ func TestExtractedResultSetsTheTutorialFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRaid: %v", err)
 	}
-	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Hour); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Hour, 0); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 
@@ -860,7 +860,7 @@ func TestDiedResultLeavesTheTutorialFlagAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRaid: %v", err)
 	}
-	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Hour); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Hour, 0); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 	if _, err := s.SubmitResult(ctx, store.SubmitResultParams{
@@ -897,7 +897,7 @@ func TestTutorialFlagNeverUnsetsAndSurvivesALaterDeath(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StartRaid(%s): %v", outcome, err)
 		}
-		if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Hour); err != nil {
+		if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Hour, 0); err != nil {
 			t.Fatalf("ConfirmRaid(%s): %v", outcome, err)
 		}
 		if _, err := s.SubmitResult(ctx, store.SubmitResultParams{

@@ -50,6 +50,11 @@ func run() error {
 		RaidTTL:     cfg.RaidTTL,
 		PendingTTL:  cfg.PendingTTL,
 		GraceBuffer: cfg.GraceBuffer,
+		// ВИЛАЗКА's two knobs (spec §4.5). Both are server policy: the shorter clock
+		// and the cooldown are what a free run costs, and neither is negotiable from
+		// the wire.
+		SortieTTL:      cfg.SortieTTL,
+		SortieCooldown: cfg.SortieCooldown,
 	}
 
 	go store.RunSweeper(ctx, deps.Store, 15*time.Second)
