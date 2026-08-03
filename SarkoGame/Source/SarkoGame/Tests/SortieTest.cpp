@@ -194,7 +194,10 @@ bool FSarkoSortieButtonShowsTheWordOrTheCountdown::RunTest(const FString& Parame
 	const FSarkoRaidButtonView Waiting =
 		SarkoShelter::BuildRaidButton(Armed, true, FString(), 272);
 	TestEqual(TEXT("the label becomes the countdown"), Waiting.SortieLabel, FString(TEXT("4:32")));
-	TestTrue(TEXT("and the second line is dropped"), Waiting.SortieSubLabel.IsEmpty());
+	// And the second line NAMES the button, because a frame showed a greyed "4:32"
+	// above В РЕЙД with nothing saying what it was counting towards.
+	TestEqual(TEXT("and the second line names what is counting down"),
+		Waiting.SortieSubLabel, FString(TEXT("ВИЛАЗКА")));
 	TestFalse(TEXT("and the button is refused"), Waiting.bSortieEnabled);
 	TestTrue(TEXT("and it knows why"), Waiting.bSortieOnCooldown);
 

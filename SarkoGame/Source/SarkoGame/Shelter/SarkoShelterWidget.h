@@ -233,11 +233,28 @@ private:
 	TSharedPtr<class SBox> StashBox;
 	TSharedPtr<STextBlock> StashNoteText;
 
+	/** The stash column's fill-height region, measured rather than predicted. The
+	 *  scroll box inside it is quantised to a whole number of grid rows so the fold
+	 *  falls in a gutter — see StashViewportHeight. */
+	TSharedPtr<class SBox> StashRegion;
+
+	/** The scroll box, whose height SetView trims to a whole number of rows. */
+	TSharedPtr<class SBox> StashViewport;
+
+	/** Trims StashViewport to the tallest whole number of grid rows that fits the
+	 *  measured region, so the fold falls in a gutter. Called at the end of SetView; a
+	 *  no-op on the first one, before anything has been arranged. */
+	void QuantiseStashViewport();
+
 	// ---- ГАРАЖ ---------------------------------------------------------------
 
 	TSharedPtr<STextBlock> GarageText;
 	TSharedPtr<SVerticalBox> GarageParts;
 	TSharedPtr<SVerticalBox> GarageLadder;
+
+	/** Why the rungs above the bicycle are grey. At the foot of the recipe column, and
+	 *  collapsed on the day there is nothing left to explain. */
+	TSharedPtr<STextBlock> LadderNoteText;
 	TSharedPtr<class SButton> CraftButton;
 	TSharedPtr<STextBlock> CraftLabel;
 	TSharedPtr<STextBlock> CraftLineText;

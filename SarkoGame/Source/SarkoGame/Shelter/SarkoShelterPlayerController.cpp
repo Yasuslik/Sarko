@@ -343,8 +343,10 @@ void ASarkoShelterPlayerController::SarkoDebugStash(float DelaySeconds, bool bSh
 		//
 		// It carries one of each EQUIPPABLE item too — a pistol, a bag and a jacket —
 		// because "something in every slot" is a state the character panel has to be
-		// photographed in, and the jacket is in no loot table yet (spec §5 calls the
-		// clothing slot a hook, not a system).
+		// photographed in. All three are findable in a raid now — the jacket went into
+		// the `good` loot tier on 2026-08-03, because a clothing slot that only a debug
+		// exec could fill was a slot that did not exist — so this fakes the speed of
+		// getting them and nothing else.
 		static const FName Mixed[] = {
 			TEXT("scrap_metal"), TEXT("pistol"),      TEXT("bandage"),    TEXT("ammo_9mm"),
 			TEXT("medkit"),      TEXT("toolbox"),     TEXT("bike_frame"), TEXT("wheel_small"),

@@ -185,10 +185,40 @@ TArray<FSarkoVehicleRung> SarkoShelter::VehicleLadder(const FString& CurrentTier
 	{
 		// The ladder is CUMULATIVE (domain.UnlockedMaps walks tierOrder), so
 		// everything at or below the current tier is owned.
-		Ladder.Add(FSarkoVehicleRung{
-			FString::Printf(TEXT("%s — %s"), Rungs[Index].Name, Rungs[Index].Map),
-			/*bBuilt*/ Index <= Current,
-			/*bNext*/ Index == Current + 1 });
+		const bool bBuilt = Index <= Current;
+		const bool bNext = Index == Current + 1;
+		// ONLY THE BICYCLE, and this is a fact about the backend rather than a
+		// pessimistic guess: the later tiers' parts are deliberately absent from
+		// domain.ItemDefs, so nothing the game can produce will ever satisfy their
+		// recipes. A rung that looks reachable and is not is worse than a rung that
+		// says so.
+		const bool bCraftable = Index == 0;
+
+		FSarkoVehicleRung Rung;
+		Rung.Text = FString::Printf(TEXT("%s — %s"), Rungs[Index].Name, Rungs[Index].Map);
+		Rung.bBuilt = bBuilt;
+		Rung.bNext = bNext;
+		Rung.bCraftable = bCraftable;
+		// The state in a word. Four states and not three: "not yet" and "not in this
+		// build" are different disappointments, and a player who cannot tell them apart
+		// will go looking for an engine that does not exist.
+		if (bBuilt)
+		{
+			Rung.StateText = TEXT("ЗІБРАНО");
+		}
+		else if (!bCraftable)
+		{
+			Rung.StateText = TEXT("ДЕТАЛІ НЕ В ЗОНІ");
+		}
+		else if (bNext)
+		{
+			Rung.StateText = TEXT("НАСТУПНИЙ");
+		}
+		else
+		{
+			Rung.StateText = TEXT("ЗАБЛОКОВАНО");
+		}
+		Ladder.Add(MoveTemp(Rung));
 	}
 	return Ladder;
 }
@@ -331,11 +361,16 @@ FSarkoRaidButtonView SarkoShelter::BuildRaidButton(const FSarkoEquipment& Equipm
 	View.SortieLabel = View.bSortieOnCooldown
 		? FormatSortieCooldown(SortieCooldownSeconds)
 		: FString(TEXT("ВИЛАЗКА"));
-	// The one word that makes the button legible as the ladder rather than as a second
-	// door. During the cooldown the label is already the whole message, so this is
-	// empty and the button draws one line — and an empty sub-label is COLLAPSED by the
-	// widget, so nothing reserves a row for it.
-	View.SortieSubLabel = View.bSortieOnCooldown ? FString() : FString(TEXT("БЕЗКОШТОВНО"));
+	// The second line NAMES the button in both states, and a frame is why. With the
+	// countdown as the label and no second line, the column showed a greyed "4:32"
+	// sitting above В РЕЙД with nothing saying what it was counting towards — legible
+	// to a player who had just pressed it, cryptic to one arriving at the screen. So
+	// the sub-label carries the verb during the cooldown and the price when it is
+	// available: the button always says what it is, and the label is still the
+	// countdown the spec asks for.
+	View.SortieSubLabel = View.bSortieOnCooldown
+		? FString(TEXT("ВИЛАЗКА"))
+		: FString(TEXT("БЕЗКОШТОВНО"));
 
 	// Unlike the raid button, this one IS refused before the first profile lands —
 	// and unlike the raid button, that is honest: В РЕЙД must never block because a
@@ -424,6 +459,19 @@ FSarkoShelterView SarkoShelter::BuildView(const FSarkoLastRaid& LastRaid, const 
 	// even before the profile lands: at worst every rung is "not yet", which is what
 	// a new player's ladder honestly looks like.
 	View.Garage.Ladder = VehicleLadder(Profile.VehicleTier);
+	// And the sentence that explains the grey rungs. Composed here rather than in
+	// VehicleLadder so that function stays a pure mapping from a tier to rungs, and
+	// because the note is about the LADDER as a whole rather than about any rung: it is
+	// the answer to "why can I only build one of these", which is a question the rungs
+	// individually cannot answer.
+	//
+	// Dropped entirely once nothing is left to explain, which today means never — but
+	// it will mean something on the day the motorcycle's parts enter a loot table, and
+	// a note that outlives its reason is a note that teaches the wrong thing.
+	View.Garage.LadderNote = View.Garage.Ladder.ContainsByPredicate(
+		[](const FSarkoVehicleRung& Rung) { return !Rung.bBuilt && !Rung.bCraftable; })
+		? FString(TEXT("ДЕТАЛІ ДЛЯ ТЕХНІКИ ВИЩЕ ВЕЛОСИПЕДА ЩЕ НЕ ТРАПЛЯЮТЬСЯ В ЗОНІ"))
+		: FString();
 	View.CraftLine = CraftLine;
 
 	if (bProfileLoaded)

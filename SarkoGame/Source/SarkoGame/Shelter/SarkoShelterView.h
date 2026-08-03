@@ -197,6 +197,31 @@ struct FSarkoVehicleRung
 	/** The one the recipe above is for. Exactly one rung has this, unless the
 	 *  ladder is finished. */
 	bool bNext = false;
+
+	/**
+	 * "ЗІБРАНО" / "НАСТУПНИЙ" / "ДЕТАЛІ НЕ В ЗОНІ" / "ЗАБЛОКОВАНО" — the rung's state
+	 * in a word, beside its name.
+	 *
+	 * It exists because the ladder used to carry its state ONLY as a colour and a
+	 * one-character marker, which is enough to distinguish three rungs and not enough
+	 * to explain them: a player looking at three grey lines cannot tell "not yet" from
+	 * "not in this build", and those are different disappointments. The marker and the
+	 * colour stay — this is the third reading, and the only one that survives being
+	 * described out loud.
+	 */
+	FString StateText;
+
+	/**
+	 * Whether this rung could be crafted at all in this build, as opposed to merely not
+	 * yet.
+	 *
+	 * Only the bicycle can: the later tiers' parts (engine_small, wheel_medium,
+	 * turbine…) are deliberately absent from sarko-api's domain.ItemDefs, so no loot
+	 * table can yield them and no craft can ever succeed. Saying so is the honest
+	 * alternative to a rung that looks reachable and is not — and it is why StateText
+	 * distinguishes "ДЕТАЛІ НЕ В ЗОНІ" from "ЗАБЛОКОВАНО".
+	 */
+	bool bCraftable = false;
 };
 
 /**
@@ -266,6 +291,17 @@ struct FSarkoGarageView
 	 * invisible is not felt as a progression.
 	 */
 	TArray<FSarkoVehicleRung> Ladder;
+
+	/**
+	 * Why the rungs above the bicycle are grey, in one sentence — or empty when there
+	 * is nothing to explain.
+	 *
+	 * The ladder shows four vehicles and only one of them can ever be built in this
+	 * build, so without this the screen offers a progression and then silently declines
+	 * to deliver three quarters of it. A greyed rung with no reason is the same failure
+	 * the craft button's "НЕ ВИСТАЧАЄ: ..." label exists to avoid, one screen up.
+	 */
+	FString LadderNote;
 };
 
 struct FSarkoShelterView
