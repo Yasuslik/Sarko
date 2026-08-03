@@ -82,6 +82,14 @@ namespace
 	/** The gutter between the two columns. */
 	constexpr float ColumnGap = 28.f;
 
+	/** Inside the left column, after the safe inset, its share of the width and its
+	 *  half of the gutter: (844 - 120) * 0.42 - 14. */
+	constexpr float LeftColumnInner = (DesignWidth - 2.f * SideInset) * LeftColumnFill - ColumnGap * 0.5f;
+
+	/** The craft button's content padding, and the width its label therefore has. */
+	constexpr float CraftButtonPadX = 14.f;
+	constexpr float CraftLabelWrap = LeftColumnInner - 2.f * CraftButtonPadX;
+
 	/** FCoreStyle is compiled into SlateCore, so no font asset is involved. */
 	FSlateFontInfo ShelterFont(float Size)
 	{
@@ -120,6 +128,9 @@ namespace
 	const FSlateColor LabelColour(FLinearColor(0.22f, 0.23f, 0.25f));    // ~#8b8f94, section labels
 	const FSlateColor WarnColour(FLinearColor(1.f, 0.55f, 0.06f));       // ~#ffc16a, the status line
 	const FSlateColor RuleColour(FLinearColor(0.055f, 0.06f, 0.07f));    // ~#454a50, the hairlines
+	/** ~#9be79f, a satisfied recipe part. The same green the craft line uses, so
+	 *  "this is done" is one colour on this screen and not two. */
+	const FSlateColor MetColour(FLinearColor(0.35f, 0.85f, 0.40f));
 
 	/** A hairline, so the sections do not read as one blob. Hand-rolled rather
 	 *  than SSeparator: FCoreStyle registers its "Separator" brush inside the
@@ -138,12 +149,27 @@ namespace
 
 float SSarkoShelterWidget::UiScaleForViewport(FVector2D ViewportSize)
 {
-	// The rule itself now lives in UI/SarkoUiScale.h, because the in-raid HUD
-	// needs the identical one: a player who can read "В РЕЙД" and then cannot read
-	// the ammo count on the same phone is looking at a bug. Its behaviour is
-	// unchanged — min of the two ratios, clamped — and Sarko.UI.PointScale pins
-	// the two callers to the same numbers.
-	return SarkoUI::PointScaleForViewport(ViewportSize);
+	// SarkoUI::OverlayPointScale since 2026-08-03, and this is the ~9% deviation
+	// SarkoCellWidgets.h and SarkoUiScale.h both carried as a documented debt.
+	//
+	// This widget is added to the VIEWPORT OVERLAY, and SGameLayerManager already
+	// wraps that overlay in an SDPIScaler of its own (SGameLayerManager.cpp:113).
+	// Scaling by PointScaleForViewport therefore COMPOUNDED with it, and not by a
+	// constant: on a 2556x1179 phone the engine's curve gives 1.092, so everything
+	// rendered 9% larger than the points it claimed — and on a 1560x720 window the
+	// same curve gives ~0.674, so everything rendered a THIRD SMALLER and the
+	// layout was being composed on a 1254x579 pt canvas instead of the 844x390 one
+	// every size in this file is written against. That is why the left column had
+	// a void in it: there were 189 more points of height than the design has, and
+	// the FillHeight slot ate all of them.
+	//
+	// Dividing the layer manager's factor out makes a point on this screen measure
+	// a point on the glass — the same guarantee the container panel already has —
+	// and it makes the two screenshot sizes land on the same layout instead of two
+	// different ones. The tap-target rule is unaffected in the unit it is written
+	// in: 56 pt of button is now exactly 56 pt rather than 61 on a phone and 38 on
+	// a small window.
+	return SarkoUI::OverlayPointScale(ViewportSize);
 }
 
 float SSarkoShelterWidget::UiScale() const
@@ -156,10 +182,12 @@ float SSarkoShelterWidget::UiScale() const
 	// project's touch rule requires. So the scale is computed here instead, and it
 	// is what turns the sizes in this file into the points they claim to be.
 	//
-	// Not UUserInterfaceSettings::GetDPIScaleBasedOnSize: its default rule is
-	// ShortestSide against a curve tuned for desktop logical resolutions, which
-	// returns ~0.67 for a 720-wide window and shrinks the menu on exactly the
-	// form factor it has to be usable on.
+	// Not UUserInterfaceSettings::GetDPIScaleBasedOnSize on its own either: its
+	// default rule is ShortestSide against a curve tuned for desktop logical
+	// resolutions, which returns ~0.67 for a 720-tall window and shrinks the menu on
+	// exactly the form factor it has to be usable on. What UiScaleForViewport does
+	// is DIVIDE that factor out of the point scale, because SGameLayerManager is
+	// already multiplying the whole overlay by it.
 	FVector2D ViewportSize(DesignWidth, DesignHeight);
 	if (GEngine && GEngine->GameViewport)
 	{
@@ -248,77 +276,169 @@ void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 					[
 						SNew(SVerticalBox)
 
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 4.f)
-						[
-							SAssignNew(OutcomeText, STextBlock)
-							.Font(ShelterFont(17.f))
-							.ColorAndOpacity(BrightColour)
-						]
-
-						// Scrolled, and it takes the column's slack: a long haul
-						// used to push the status line and the buttons off the
-						// bottom of a 390 pt canvas, and the garage block below is
-						// three more rows plus a 48 pt button. FillHeight here does
-						// the pushing the bare SSpacer used to do, and does it
-						// without ever clipping.
+						// Everything above the buttons SCROLLS, and the buttons are the
+						// slot after it. Not for the normal case, which fits with air to
+						// spare — for the crowded one: an outcome banner, a haul, a
+						// craft line and a wrapped backend error can all be on this
+						// column at once, and measured off a frame that is ~40 pt more
+						// than a 390 pt canvas has. Something has to give, and the one
+						// thing that must NOT is the pair of buttons at the bottom:
+						// they are the safe-frame-pinned, tap-target-verified way out of
+						// this screen. Inside a scroll box the content can exceed its
+						// room and stay reachable; outside one, a vertical box simply
+						// draws past the bottom edge and the frame showed exactly that
+						// — "В РЕЙД" sliced off by the screen edge.
+						//
+						// It also decides where the SLACK goes when the column is nearly
+						// empty: a scroll box hands its child the child's desired size,
+						// so the blocks stack from the TOP and the air collects in one
+						// place above the buttons. That is the composition this screen
+						// was missing — two labelled blocks under the title and the
+						// buttons on the floor, rather than everything sunk to the
+						// bottom with a void over it.
 						+ SVerticalBox::Slot().FillHeight(1.f)
 						[
 							SNew(SScrollBox)
 							+ SScrollBox::Slot()
 							[
-								SAssignNew(HaulBox, SVerticalBox)
-							]
-						]
+								SNew(SVerticalBox)
 
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 6.f, 0.f, 2.f)
-						[
-							SAssignNew(GarageParts, SVerticalBox)
-						]
-
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
-						[
-							// The payoff sentence. Empty until a craft succeeds, and
-							// it stays for the rest of the visit rather than
-							// flashing: this is what every raid before it was for.
-							SAssignNew(CraftLineText, STextBlock)
-							.Font(ShelterFont(13.f))
-							.ColorAndOpacity(FSlateColor(FLinearColor(0.35f, 0.85f, 0.40f)))
-							.AutoWrapText(true)
-						]
-
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
-						[
-							SNew(SBox)
-							// 48 pt tall, past the 44 pt tap-target minimum. Width is
-							// the left column's, so "НЕ ВИСТАЧАЄ: Мале колесо" fits
-							// on one line at 13 pt rather than being ellipsed into a
-							// button that no longer explains anything.
-							.HeightOverride(48.f)
-							[
-								SAssignNew(CraftButton, SButton)
-								.ContentPadding(FMargin(14.f, 0.f))
-								.HAlign(HAlign_Center)
-								.VAlign(VAlign_Center)
-								.IsEnabled_Lambda([this]() { return bCraftEnabled; })
-								.OnClicked(this, &SSarkoShelterWidget::HandleCraft)
+								// Two LABELLED blocks, the same shape the right column
+								// has always had (СХОВОК, a rule, then the thing). The
+								// left column used to open with a bare outcome string
+								// that is empty until the first raid ends, so the top
+								// 40% of the screen was blank. A heading plus a note
+								// occupies that region and says what it is for.
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
 								[
-									SAssignNew(CraftLabel, STextBlock)
+									SNew(STextBlock)
+									.Font(ShelterFont(11.f))
+									.ColorAndOpacity(LabelColour)
+									.Text(FText::FromString(TEXT("ОСТАННІЙ РЕЙД")))
+								]
+
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 8.f)
+								[
+									HorizontalRule()
+								]
+
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 4.f)
+								[
+									SAssignNew(OutcomeText, STextBlock)
+									.Font(ShelterFont(17.f))
+									.ColorAndOpacity(BrightColour)
+								]
+
+								// The haul list itself. No scroll box of its own — the
+								// column's own one above holds it, and a nested vertical
+								// scroll box inside another just grows to its content and
+								// never scrolls anyway. A long haul lengthens the column
+								// and the column scrolls.
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 2.f)
+								[
+									SNew(SOverlay)
+
+									+ SOverlay::Slot()
+									[
+										SAssignNew(HaulBox, SVerticalBox)
+									]
+
+									// Over the list rather than instead of it, exactly as
+									// StashNoteText is over the grid.
+									+ SOverlay::Slot()
+									.HAlign(HAlign_Left).VAlign(VAlign_Top)
+									[
+										SAssignNew(HaulNoteText, STextBlock)
+										.Font(ShelterFont(13.f))
+										.ColorAndOpacity(LabelColour)
+									]
+								]
+
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 8.f, 0.f, 5.f)
+								[
+									HorizontalRule()
+								]
+
+								// The garage's own heading. The word is on the header line
+								// too — that line is the STATE ("ГАРАЖ: ВЕЛОСИПЕД 2/3", read
+								// at a glance from across the screen) and this is the block
+								// that itemises it, and a dim 11 pt label under a rule is how
+								// this screen already says "here begins a section".
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
+								[
+									SNew(STextBlock)
+									.Font(ShelterFont(11.f))
+									.ColorAndOpacity(LabelColour)
+									.Text(FText::FromString(TEXT("ГАРАЖ")))
+								]
+
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 2.f)
+								[
+									SAssignNew(GarageParts, SVerticalBox)
+								]
+
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
+								[
+									// The payoff sentence. Empty until a craft succeeds, and
+									// it stays for the rest of the visit rather than
+									// flashing: this is what every raid before it was for.
+									SAssignNew(CraftLineText, STextBlock)
 									.Font(ShelterFont(13.f))
-									.Justification(ETextJustify::Center)
-									.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+									.ColorAndOpacity(MetColour)
+									.AutoWrapText(true)
+								]
+
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
+								[
+									SNew(SBox)
+									// 48 pt tall, past the 44 pt tap-target minimum.
+									.HeightOverride(48.f)
+									[
+										SAssignNew(CraftButton, SButton)
+										.ContentPadding(FMargin(CraftButtonPadX, 0.f))
+										.HAlign(HAlign_Center)
+										.VAlign(VAlign_Center)
+										.IsEnabled_Lambda([this]() { return bCraftEnabled; })
+										.OnClicked(this, &SSarkoShelterWidget::HandleCraft)
+										[
+											// WRAPPED, not ellipsed. The longest label this
+											// button carries is "НЕ ВИСТАЧАЄ: Рама велосипеда"
+											// at ~271 pt against 262 pt of inner width, and the
+											// frame showed what an ellipsis does to a CENTRED
+											// line: it cut BOTH ends, so the button read
+											// "Е ВИСТАЧАЄ: Рама велосипед" — a label that names
+											// the missing part with its name mangled is worse
+											// than no ellipsis at all. Two 13 pt lines are 30 pt,
+											// so the 48 pt box holds it.
+											//
+											// WrapTextAt and not AutoWrapText, which is the second
+											// thing a frame settled: auto-wrap takes its width from
+											// the allotted geometry, and inside a CENTRE-aligned
+											// button the allotted width IS the text's own desired
+											// width — the two feed each other down to the widest
+											// single word, so the label wrapped to "НЕ /
+											// ВИСТАЧАЄ:" and the part name fell off the bottom of
+											// the box entirely. An explicit width derived from the
+											// column cannot do that.
+											SAssignNew(CraftLabel, STextBlock)
+											.Font(ShelterFont(13.f))
+											.Justification(ETextJustify::Center)
+											.WrapTextAt(CraftLabelWrap)
+										]
+									]
+								]
+
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 6.f, 0.f, 6.f)
+								[
+									// Wrapped, not one line: the status line carries a
+									// verbatim backend error, and this column is
+									// narrower than the whole screen was.
+									SAssignNew(StatusText, STextBlock)
+									.Font(ShelterFont(12.f))
+									.ColorAndOpacity(WarnColour)
+									.AutoWrapText(true)
 								]
 							]
-						]
-
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 8.f, 0.f, 8.f)
-						[
-							// Wrapped, not one line: the status line carries a
-							// verbatim backend error, and this column is narrower
-							// than the whole screen was.
-							SAssignNew(StatusText, STextBlock)
-							.Font(ShelterFont(12.f))
-							.ColorAndOpacity(WarnColour)
-							.AutoWrapText(true)
 						]
 
 						+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Left)
@@ -436,12 +556,27 @@ void SSarkoShelterWidget::SetView(const FSarkoShelterView& View)
 	bRaidEnabled = View.bRaidEnabled;
 
 	TitleText->SetText(FText::FromString(View.Title));
-	OutcomeText->SetText(FText::FromString(View.OutcomeTitle));
 	GarageText->SetText(FText::FromString(View.Garage.Title));
 	CraftLabel->SetText(FText::FromString(View.Garage.CraftLabel));
-	CraftLineText->SetText(FText::FromString(View.CraftLine));
 	bCraftEnabled = View.Garage.bCanCraft;
-	StatusText->SetText(FText::FromString(View.StatusLine));
+
+	// COLLAPSED when empty, not merely blank. An STextBlock measures its FONT and
+	// not its string, so an empty one still reserves a whole line — and these three
+	// are empty most of the time (no raid yet, nothing crafted, nothing wrong), so
+	// they were reserving ~75 pt of a 299 pt column for nothing. That is what
+	// pushed the left column past the bottom of a 390 pt canvas once the canvas was
+	// really 390 pt: the frame showed "В РЕЙД" sliced off by the screen edge.
+	// SBoxPanel skips a collapsed slot's PADDING as well as its size, which is the
+	// whole 75.
+	const auto SetLine = [](const TSharedPtr<STextBlock>& Text, const FString& Value)
+	{
+		Text->SetText(FText::FromString(Value));
+		Text->SetVisibility(Value.IsEmpty() ? EVisibility::Collapsed : EVisibility::SelfHitTestInvisible);
+	};
+
+	SetLine(OutcomeText, View.OutcomeTitle);
+	SetLine(CraftLineText, View.CraftLine);
+	SetLine(StatusText, View.StatusLine);
 
 	const auto Fill = [](const TSharedPtr<SVerticalBox>& Box, const TArray<FString>& Lines, float Size)
 	{
@@ -459,8 +594,26 @@ void SSarkoShelterWidget::SetView(const FSarkoShelterView& View)
 	};
 
 	Fill(HaulBox, View.HaulLines, 14.f);
-	Fill(GarageParts, View.Garage.PartLines, 13.f);
 
+	// The garage's lines carry a colour as well as a sentence: a met requirement is
+	// GREEN and a short one stays body grey. That is what makes "Ланцюг 1/1" read
+	// as satisfied rather than as a number the player has to compare against
+	// another number — and the information colour carries is deliberately
+	// redundant, because the craft button below still spells the missing part out
+	// in words ("НЕ ВИСТАЧАЄ: Мале колесо") for anyone who cannot see the hue.
+	GarageParts->ClearChildren();
+	for (const FSarkoGaragePart& Part : View.Garage.PartLines)
+	{
+		GarageParts->AddSlot().AutoHeight().Padding(0.f, 0.f, 0.f, 1.f)
+		[
+			SNew(STextBlock)
+			.Font(ShelterFont(13.f))
+			.ColorAndOpacity(Part.bMet ? MetColour : BodyColour)
+			.Text(FText::FromString(Part.Text))
+		];
+	}
+
+	SetLine(HaulNoteText, View.HaulNote);
 	StashNoteText->SetText(FText::FromString(View.StashNote));
 
 	// Rebuilt wholesale, once per profile fetch and once per craft — never per

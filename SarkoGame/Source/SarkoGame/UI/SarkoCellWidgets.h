@@ -24,23 +24,24 @@ namespace SarkoUI
 	/**
 	 * The stash's grid, in the shelter's right column.
 	 *
-	 * SEVEN and not the eight the layout table computes, and the missing column is
-	 * the shelter's known ~9 % scale deviation made visible. SSarkoShelterWidget
-	 * scales itself by PointScaleForViewport while SGameLayerManager is already
-	 * scaling the overlay by ~1.092, so the two compound: the right column is
-	 * 405.9 pt on paper and 405.9 / 1.092 = 371.7 pt on the glass. Eight columns
-	 * is 8*44 + 7*4 = 380 pt — nine points too many, and the frame showed the last
-	 * column sliced in half behind the scroll bar. Seven is 332 pt, which clears
-	 * the scroll bar with room.
+	 * EIGHT, which is what the layout table computes: the right column is
+	 * 724 * 0.58 - 14 = 405.9 pt wide and eight columns are 8*44 + 7*4 = 380,
+	 * leaving 25.9 pt for the scroll bar.
 	 *
-	 * This goes back to eight the day the shelter adopts SarkoUI::OverlayPointScale
-	 * like the container panel already has; that change moves every number in this
-	 * screen and is deliberately not made in the same commit as the grid.
+	 * It was SEVEN, as a workaround for the shelter's ~9% scale deviation — the
+	 * widget scaled itself by PointScaleForViewport while SGameLayerManager was
+	 * already scaling the overlay by ~1.092, so 405.9 pt on paper was 371.7 pt on
+	 * the glass and the eighth column came out sliced in half behind the scroll
+	 * bar. That debt is PAID: SSarkoShelterWidget::UiScaleForViewport is
+	 * SarkoUI::OverlayPointScale now, the layer manager's factor divides out, and a
+	 * point on this screen is a point. Do not put this back to seven without
+	 * putting that back too — seven columns against a 405.9 pt column leaves a
+	 * 74 pt strip of nothing down the right of the grid.
 	 *
 	 * Five rows is what ~271 pt of viewport shows, with a sixth peeking so the
 	 * grid visibly scrolls.
 	 */
-	constexpr int32 StashColumns = 7;
+	constexpr int32 StashColumns = 8;
 	constexpr int32 StashMinRows = 5;
 
 	/** A w x h item is ONE rounded box spanning its cells and the gutters between
@@ -52,12 +53,54 @@ namespace SarkoUI
 	FVector2D CellOriginPt(const FSarkoGridSlot& Slot);
 
 	/**
-	 * What is written *inside* a cell: the shortened label, and the count when
-	 * there is more than one. No box and no rim, so the container row — whose
-	 * cells are SButtons that bring their own FButtonStyle — can share the exact
-	 * same interior as the two grids that draw their own borders.
+	 * More than one slot, so its interior is laid out as a PLATE rather than as a
+	 * cell: label centred, type scaled, count beside the label.
+	 *
+	 * A 3x2 frame and a 2x2 wheel were the flaw this splits out. Drawn like a 1x1
+	 * — a 7.5 pt label pinned to the top-left corner and a 10 pt number in the
+	 * far bottom-right — a 140x92 pt rectangle reads as an UNFILLED PANEL with a
+	 * stray tag on it, not as an object: the two marks are 150 pt apart and the
+	 * eye never groups them.
 	 */
-	TSharedRef<SWidget> BuildCellContent(const FSarkoItemStack& Stack);
+	inline bool IsMultiCell(FIntPoint Size)
+	{
+		return FMath::Max(1, Size.X) * FMath::Max(1, Size.Y) > 1;
+	}
+
+	/**
+	 * The label's type size for a cell of this footprint, in points.
+	 *
+	 * Scaled by the GEOMETRIC MEAN of the rectangle's two sides — literally "with
+	 * the rectangle", and the one measure that answers a 2x1 (which gains only
+	 * width) differently from a 2x2 (which gains both). 0.17 of that mean is the
+	 * factor, and it is not a new number: a 1x1 is 44 pt square and 44 * 0.17 is
+	 * 7.48, i.e. exactly the CellLabelPt this screen was already judged at. So the
+	 * rule is anchored on the size that works and only ever grows from it.
+	 *
+	 * BOUNDED at both ends. The floor is CellLabelPt, so nothing this returns is
+	 * ever smaller than the size a 1x1 draws — the fix for truncation must not
+	 * shrink type anywhere. The ceiling is 15 pt: a 3x2's mean would ask for 19,
+	 * and a label that large stops being a label and starts being a headline
+	 * competing with the screen's own title at 26.
+	 */
+	float CellLabelPtFor(FIntPoint Size);
+
+	/** The count's type size, at the same 4:3 ratio to the label it has on a 1x1
+	 *  (10 : 7.5) — the count is the thing the eye stops on and it stays the larger
+	 *  of the two at every footprint. */
+	float CellCountPtFor(FIntPoint Size);
+
+	/**
+	 * What is written *inside* a cell: the label, and the count when there is more
+	 * than one. No box and no rim, so the container row — whose cells are SButtons
+	 * that bring their own FButtonStyle — can share the exact same interior as the
+	 * two grids that draw their own borders.
+	 *
+	 * A 1x1 (the default, and what the container row always is) is unchanged:
+	 * label top-left, count bottom-right, at the sizes this screen was judged at.
+	 * Anything larger is laid out as a plate — see IsMultiCell.
+	 */
+	TSharedRef<SWidget> BuildCellContent(const FSarkoItemStack& Stack, FIntPoint Size = FIntPoint(1, 1));
 
 	/** An occupied cell: category fill, category rim, the shortened label, and the
 	 *  count when there is more than one. Not a button — the panel wraps it in

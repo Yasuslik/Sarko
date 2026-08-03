@@ -49,8 +49,22 @@ bool FSarkoPointScaleIsOneRuleForEveryScreen::RunTest(const FString& Parameters)
 	// The HUD and the shelter menu must be the same size on the same phone. They
 	// are separate rendering paths — DrawHUD primitives and Slate — and the only
 	// thing keeping them agreeing is that they divide by the same two constants.
-	TestEqual(TEXT("the shelter menu scales by exactly the shared rule"),
-		SSarkoShelterWidget::UiScaleForViewport(FVector2D(2556.f, 1179.f)), Phone);
+	//
+	// Asserted as a PRODUCT since 2026-08-03, because the shelter is a viewport
+	// overlay widget and SGameLayerManager scales that overlay by its own factor
+	// before the widget's scaler is reached. What has to equal the HUD's scale is
+	// therefore what the glass sees — the widget's factor times the layer
+	// manager's — and not the widget's factor alone. Asserting the factor alone is
+	// what let the menu ship 9% oversized on a phone and a third undersized on a
+	// 720-tall window while this test stayed green.
+	for (const FVector2D Viewport : { FVector2D(2556.f, 1179.f), FVector2D(1560.f, 720.f) })
+	{
+		const float OnGlass = SSarkoShelterWidget::UiScaleForViewport(Viewport)
+			* SarkoUI::GameLayerDpiScale(Viewport);
+		TestTrue(*FString::Printf(TEXT("at %.0fx%.0f the shelter measures the same point the HUD does"),
+				Viewport.X, Viewport.Y),
+			FMath::IsNearlyEqual(OnGlass, SarkoUI::PointScaleForViewport(Viewport), 0.001f));
+	}
 
 	// The touch rule, stated in the unit it is written in. The interact button is
 	// drawn and hit-tested against this same rect, so this is the tap target

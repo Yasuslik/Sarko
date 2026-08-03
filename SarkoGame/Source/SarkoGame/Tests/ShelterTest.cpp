@@ -70,13 +70,14 @@ namespace
 	FSarkoItemCatalog MakeTestCatalog()
 	{
 		FSarkoItemCatalog Catalog;
-		// Aggregate init, so the order is id / name / stackSize / width / height /
-		// category — the rectangle sits between the stack size and the category.
-		Catalog.Items.Add(FSarkoItemDef{ FName(TEXT("scrap_metal")), TEXT("Металолом"), 10, 1, 1, ESarkoItemCategory::Junk });
-		Catalog.Items.Add(FSarkoItemDef{ FName(TEXT("medkit")),      TEXT("Аптечка"),   3,  1, 1, ESarkoItemCategory::Med });
-		Catalog.Items.Add(FSarkoItemDef{ FName(TEXT("bike_frame")),  TEXT("Рама"),      1,  3, 2, ESarkoItemCategory::VehiclePart });
-		Catalog.Items.Add(FSarkoItemDef{ FName(TEXT("chain")),       TEXT("Ланцюг"),    1,  1, 1, ESarkoItemCategory::VehiclePart });
-		Catalog.Items.Add(FSarkoItemDef{ FName(TEXT("wheel_small")), TEXT("Колесо"),    2,  2, 2, ESarkoItemCategory::VehiclePart });
+		// Aggregate init, so the order is id / name / short / stackSize / width /
+		// height / category — the rectangle sits between the stack size and the
+		// category, and the cell label sits with the name it is short FOR.
+		Catalog.Items.Add(FSarkoItemDef{ FName(TEXT("scrap_metal")), TEXT("Металолом"), TEXT("ЛОМ"),    10, 1, 1, ESarkoItemCategory::Junk });
+		Catalog.Items.Add(FSarkoItemDef{ FName(TEXT("medkit")),      TEXT("Аптечка"),   TEXT("АПТ"),    3,  1, 1, ESarkoItemCategory::Med });
+		Catalog.Items.Add(FSarkoItemDef{ FName(TEXT("bike_frame")),  TEXT("Рама"),      TEXT("РАМА"),   1,  3, 2, ESarkoItemCategory::VehiclePart });
+		Catalog.Items.Add(FSarkoItemDef{ FName(TEXT("chain")),       TEXT("Ланцюг"),    TEXT("ЛАНЦ"),   1,  1, 1, ESarkoItemCategory::VehiclePart });
+		Catalog.Items.Add(FSarkoItemDef{ FName(TEXT("wheel_small")), TEXT("Колесо"),    TEXT("КОЛЕСО"), 2,  2, 2, ESarkoItemCategory::VehiclePart });
 		return Catalog;
 	}
 }
@@ -459,7 +460,32 @@ bool FSarkoGarageViewNamesTheMissingPart::RunTest(const FString& Parameters)
 		Missing.CraftLabel.Contains(TEXT("Мале колесо")));
 	TestEqual(TEXT("one line per recipe entry"), Missing.PartLines.Num(), 3);
 	TestTrue(TEXT("have/need is on the line, both numbers"),
-		Missing.PartLines[1].Contains(TEXT("1/2")));
+		Missing.PartLines[1].Text.Contains(TEXT("1/2")));
+	TestFalse(TEXT("and a short part is not marked met"), Missing.PartLines[1].bMet);
+	TestTrue(TEXT("while the parts that ARE there are"),
+		Missing.PartLines[0].bMet && Missing.PartLines[2].bMet);
+
+	// A SURPLUS is the case that read as a bug: three chains against a recipe that
+	// wants one printed "Ланцюг  3/1" — have/need is a progress statement, and one
+	// past 100% looks like the screen is miscounting. The requirement is met, so
+	// the line says met.
+	FSarkoProfile Spare = Short;
+	Spare.Stash[1].Quantity = 2;
+	Spare.Stash[2].Quantity = 3;              // the recipe wants one chain
+	const FSarkoGarageView Surplus = SarkoShelter::BuildGarageView(Spare, /*bProfileLoaded*/ true);
+	TestEqual(TEXT("a surplus part reads as satisfied, not as 3/1"),
+		Surplus.PartLines[2].Text, FString(TEXT("Ланцюг  1/1")));
+	TestTrue(TEXT("and is marked met, which is what colours it"), Surplus.PartLines[2].bMet);
+	TestTrue(TEXT("a surplus still crafts"), Surplus.bCanCraft);
+	for (const FSarkoGaragePart& Part : Surplus.PartLines)
+	{
+		// The have number is CLAMPED, never above the need — the thing that made
+		// the line look wrong. Checked over every entry rather than just the chain,
+		// so a future recipe cannot reintroduce it somewhere else.
+		TestFalse(*FString::Printf(TEXT("'%s' does not print a have above its need"), *Part.Text),
+			Part.Text.Contains(TEXT("2/1")) || Part.Text.Contains(TEXT("3/1")) ||
+			Part.Text.Contains(TEXT("3/2")));
+	}
 
 	FSarkoProfile Ready = Short;
 	Ready.Stash[1].Quantity = 2;

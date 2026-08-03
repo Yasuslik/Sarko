@@ -68,6 +68,40 @@ one-time starter kit stays. If the stash has no weapon, the raid button says so 
 than blocking — "БЕЗ ЗБРОЇ" is a choice, not an error. This must be true before the loadout is
 debited, or the game can strand a player.
 
+## 4.5 ВИЛАЗКА — the free run that gets you out of a hole
+
+Owner decision, 2026-08-03: the genre's scav run, under our own name. The run is a **вилазка**
+(a sortie); the player goes as a **ходок** — someone who walks into the zone with what he could
+borrow.
+
+**Why it exists:** §4 makes the loadout real, and a real loadout can strand a player. "You may
+enter unarmed" is a floor, not a ladder — you go in with nothing and, statistically, come back
+with nothing. A вилазка is the ladder: **you go with borrowed gear, and what you extract is
+yours.** Broke → sortie → walk out with a pistol → you own a pistol. That is the recovery path,
+and it is the reason the mechanic is worth building rather than just tolerating an unarmed run.
+
+**The rules:**
+- **Free.** Nothing is debited from the stash; the kit is granted for the raid.
+- **The kit is granted by the server**, never claimed by the client — one of a few authored
+  loadout tables (a worn pistol and a few rounds; sometimes a bag, sometimes not; occasionally
+  something better). The variance is the appeal.
+- **Extraction keeps everything** — the borrowed gear and the haul both credit to the stash.
+  Death loses all of it, as always.
+- **A cooldown**, server-owned and server-timed, so it cannot be farmed: the sortie is available
+  again some minutes after the last one ends. The client displays the remaining time; it does not
+  decide it.
+- **It does not count as the tutorial.** `tutorial_completed` latches only on a normal raid's
+  extraction — otherwise a free run could teach the wrong lesson and skip the teaching layout.
+- **The trade-off is quality, not danger:** the kit is mediocre by design, and the clock is
+  shorter than a normal raid. No mechanic makes a вилазка *safer*; it makes it cheaper.
+
+**Where it lives:** a second button beside В РЕЙД in the shelter, showing either "ВИЛАЗКА" or the
+cooldown remaining. Two ways into a raid, one of which costs nothing.
+
+**Trust boundary:** the mode is a parameter on raid start, but everything it implies — free entry,
+the granted kit, the cooldown — is decided and enforced on the server. A client that asks for a
+sortie during the cooldown is refused by name, and a client cannot ask for a *better* kit.
+
 ## 5. What this does not add
 
 No armour mechanics (the clothing slot is a hook, not a system), no weapon mods, no drag to

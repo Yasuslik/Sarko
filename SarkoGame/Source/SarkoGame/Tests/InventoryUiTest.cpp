@@ -66,10 +66,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSarkoCellLabelFitsACell::RunTest(const FString& Parameters)
 {
-	// A 44 pt cell with 4 pt padding is about seven Cyrillic glyphs wide at
-	// 8.5 pt, and items.json has no short name. Deriving one is cheaper than a
-	// schema field and cannot drift from the catalog, because there is nothing
-	// to keep in step.
+	// The FALLBACK derivation, which is all this is since items.json started
+	// authoring `short` (see Sarko.UI.ShortNamesAreAuthoredAndDistinct). It stays
+	// tested because it is still what an id the catalog does not know falls back
+	// to, and that path is the visible symptom of drift with the backend.
 	TestEqual(TEXT("a multi-word name keeps its first word"),
 		SarkoUI::CellLabel(TEXT("Ящик з інструментами")), FString(TEXT("ЯЩИК")));
 	TestEqual(TEXT("a name with a number keeps the word, not the number"),
@@ -102,6 +102,167 @@ bool FSarkoCellLabelFitsACell::RunTest(const FString& Parameters)
 			TestTrue(*FString::Printf(TEXT("'%s' produces a label"), *Def.Name), !Label.IsEmpty());
 			TestTrue(*FString::Printf(TEXT("'%s' -> '%s' fits a cell"), *Def.Name, *Label), Label.Len() <= 10);
 		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoShortNamesAreAuthoredAndDistinct,
+	"Sarko.UI.ShortNamesAreAuthoredAndDistinct",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoShortNamesAreAuthoredAndDistinct::RunTest(const FString& Parameters)
+{
+	// The flaw this replaces, from a frame of the shelter: ПАТР…, АПТЕ…, ОБЕЗ…,
+	// АРМО…, МЕТА…, МІДН…, ЦИГА…, ЛАНЦ…, ГОРІЛ…, КОНС… — ten of sixteen cells
+	// ellipsed. Six Cyrillic glyphs is not enough for Ukrainian names, and the
+	// failure that matters is not the ellipsis: it is two junk greys that both read
+	// ЛОМ…, because telling two items of the SAME hue apart is the only job the
+	// label has that the category colour does not already do.
+	//
+	// So the label is AUTHORED per item, and this is what makes that mandatory for
+	// the file that ships. The parser deliberately treats `short` as optional (a
+	// missing one must not make the whole catalog unloadable and leave the game
+	// with no loot at all), which means the shipped file is exactly what needs a
+	// guard.
+	FSarkoItemCatalog Catalog;
+	FString Error;
+	if (!TestTrue(TEXT("the shipped catalog loads"), SarkoLoot::LoadItemCatalogFromDisk(Catalog, Error)))
+	{
+		AddError(FString::Printf(TEXT("%s — nothing below can be checked"), *Error));
+		return false;
+	}
+
+	TMap<FString, FName> Seen;
+	for (const FSarkoItemDef& Def : Catalog.Items)
+	{
+		// 1. Present. An item without one silently falls back to the derivation
+		//    that produced the ellipses in the first place.
+		if (!TestTrue(*FString::Printf(TEXT("'%s' (%s) has an authored short name"),
+				*Def.Id.ToString(), *Def.Name), !Def.ShortName.IsEmpty()))
+		{
+			continue;
+		}
+
+		// 2. Two to six characters. Six is what a 2x2 or wider cell holds; two is
+		//    the floor because ПМ is the pistol's actual name and padding it would
+		//    invent a letter. A 1x1 cell is stricter — see 4.
+		TestTrue(*FString::Printf(TEXT("'%s' is 2..6 characters (%d)"), *Def.ShortName, Def.ShortName.Len()),
+			Def.ShortName.Len() >= 2 && Def.ShortName.Len() <= 6);
+
+		// 3. One word. A cell draws a single line and a space in it is either a
+		//    wrap or an ellipsis, both of which waste the room the field bought.
+		TestFalse(*FString::Printf(TEXT("'%s' is one word"), *Def.ShortName),
+			Def.ShortName.Contains(TEXT(" ")));
+
+		// 4. Five for a single-cell item. A 44 pt cell with 4 pt of padding holds
+		//    about five Cyrillic capitals at 7.5 pt — measured off the frame, where
+		//    "ОБЕЗ…" was four plus an ellipsis in that space. A six-character label
+		//    on a 1x1 would be ellipsed again, which is the bug.
+		if (Def.Width <= 1 && Def.Height <= 1)
+		{
+			TestTrue(*FString::Printf(TEXT("'%s' is a 1x1 item, so its label is at most 5 (%d)"),
+					*Def.Id.ToString(), Def.ShortName.Len()),
+				Def.ShortName.Len() <= 5);
+		}
+
+		// 5. Unique. THE point of the field: two cells reading the same word is the
+		//    failure the ellipses were causing, and authoring them by hand is
+		//    exactly how it comes back.
+		const FString Label = SarkoUI::CellLabelFor(&Def, Def.Id);
+		if (const FName* Clash = Seen.Find(Label))
+		{
+			AddError(FString::Printf(TEXT("'%s' and '%s' both draw '%s' — they are indistinguishable in the grid"),
+				*Clash->ToString(), *Def.Id.ToString(), *Label));
+		}
+		Seen.Add(Label, Def.Id);
+
+		// 6. What a cell actually draws is the authored label, uppercased, with
+		//    nothing cut off it.
+		TestEqual(*FString::Printf(TEXT("'%s' draws its authored label whole"), *Def.Id.ToString()),
+			Label, Def.ShortName);
+		TestFalse(*FString::Printf(TEXT("'%s' is not ellipsed"), *Label), Label.Contains(TEXT("…")));
+	}
+
+	// And the two paths with no authored label. An unknown id must still print
+	// SOMETHING — an id on a cell is what drift with the backend looks like, and
+	// hiding it would hide an item the player owns.
+	TestEqual(TEXT("an item with no short name falls back to the derived cut"),
+		SarkoUI::CellLabelFor(nullptr, FName(TEXT("mystery_thing"))), FString(TEXT("MYSTERY_T…")));
+	FSarkoItemDef NoShort;
+	NoShort.Name = TEXT("Обезболювальне");
+	TestEqual(TEXT("so does a definition that has a name but no short name"),
+		SarkoUI::CellLabelFor(&NoShort, FName(TEXT("x"))), FString(TEXT("ОБЕЗБОЛЮВ…")));
+	FSarkoItemDef LowerCase;
+	LowerCase.ShortName = TEXT("ланц");
+	TestEqual(TEXT("and a label typed in the wrong case is uppercased, not shipped as typed"),
+		SarkoUI::CellLabelFor(&LowerCase, FName(TEXT("x"))), FString(TEXT("ЛАНЦ")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoMultiCellLabelScalesWithItsRectangle,
+	"Sarko.UI.MultiCellLabelScalesWithItsRectangle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoMultiCellLabelScalesWithItsRectangle::RunTest(const FString& Parameters)
+{
+	// A 3x2 frame and a 2x2 wheel drew like a 1x1: a 7.5 pt label in the top-left
+	// corner and a 10 pt number in the far bottom-right of a 140x92 pt rectangle,
+	// 150 pt apart. That reads as an unfilled panel with a stray tag on it rather
+	// than as an object, and it is the second thing a frame of this screen showed.
+	const FIntPoint One(1, 1);
+
+	// The anchor: a single cell is EXACTLY what it was, because that size was
+	// judged on a frame and works. A fix for truncation that shrinks or grows the
+	// case that already reads correctly is not a fix.
+	TestEqual(TEXT("a 1x1 label is exactly CellLabelPt"),
+		SarkoUI::CellLabelPtFor(One), SarkoUI::CellLabelPt);
+	TestEqual(TEXT("a 1x1 count is exactly CellCountPt"),
+		SarkoUI::CellCountPtFor(One), SarkoUI::CellCountPt);
+	TestFalse(TEXT("and a 1x1 is not laid out as a plate"), SarkoUI::IsMultiCell(One));
+	TestTrue(TEXT("while everything larger is"),
+		SarkoUI::IsMultiCell(FIntPoint(2, 1)) && SarkoUI::IsMultiCell(FIntPoint(1, 2)) &&
+		SarkoUI::IsMultiCell(FIntPoint(2, 2)) && SarkoUI::IsMultiCell(FIntPoint(3, 2)));
+
+	// Bigger rectangle, bigger type — never smaller, and never past the cap.
+	const TArray<FIntPoint> Sizes = { { 1, 1 }, { 2, 1 }, { 2, 2 }, { 3, 2 }, { 4, 2 } };
+	float Previous = 0.f;
+	for (const FIntPoint Size : Sizes)
+	{
+		const float Pt = SarkoUI::CellLabelPtFor(Size);
+		TestTrue(*FString::Printf(TEXT("%dx%d's label (%.2f) is never below a 1x1's"), Size.X, Size.Y, Pt),
+			Pt >= SarkoUI::CellLabelPt - KINDA_SMALL_NUMBER);
+		TestTrue(*FString::Printf(TEXT("%dx%d's label (%.2f) is bounded"), Size.X, Size.Y, Pt),
+			Pt <= SarkoUI::CellLabelMaxPt + KINDA_SMALL_NUMBER);
+		TestTrue(*FString::Printf(TEXT("%dx%d's label does not shrink as the cell grows"), Size.X, Size.Y),
+			Pt >= Previous - KINDA_SMALL_NUMBER);
+		Previous = Pt;
+
+		// And the label STACKED OVER the count fits the interior height, padding
+		// clear on both sides. 1.25 lines per point of type is a generous estimate
+		// of Roboto's line height (~1.17), so this is the pessimistic reading: the
+		// plate layout must not be able to put type on a cell's own rim.
+		const FVector2D Extent = SarkoUI::CellExtentPt(Size);
+		const float Stacked = 1.25f * (SarkoUI::CellLabelPtFor(Size) + SarkoUI::CellCountPtFor(Size));
+		TestTrue(*FString::Printf(TEXT("%dx%d's label over its count (%.1f pt) fits %.0f pt of interior"),
+				Size.X, Size.Y, Stacked, Extent.Y - 2.0 * SarkoUI::CellPadPt),
+			Stacked < Extent.Y - 2.f * SarkoUI::CellPadPt);
+	}
+
+	// The two footprints the flaw was reported on actually grow, and to the cap —
+	// a rule that is monotonic but never moves would pass everything above.
+	TestTrue(TEXT("a 2x2 wheel's label is visibly larger than a cell's"),
+		SarkoUI::CellLabelPtFor(FIntPoint(2, 2)) > SarkoUI::CellLabelPt * 1.5f);
+	TestEqual(TEXT("and a 3x2 frame's is at the cap"),
+		SarkoUI::CellLabelPtFor(FIntPoint(3, 2)), SarkoUI::CellLabelMaxPt);
+
+	// The count keeps the 4:3 relationship it has on a 1x1 at every footprint, so
+	// the number stays the thing the eye stops on.
+	for (const FIntPoint Size : Sizes)
+	{
+		TestTrue(*FString::Printf(TEXT("%dx%d's count is the larger of the two"), Size.X, Size.Y),
+			SarkoUI::CellCountPtFor(Size) > SarkoUI::CellLabelPtFor(Size));
 	}
 	return true;
 }

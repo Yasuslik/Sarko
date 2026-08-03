@@ -25,13 +25,33 @@
  * and "why not" have to be decided together — the failure mode this replaces is
  * a disabled button with no explanation (spec §3).
  */
+/**
+ * One recipe entry as the screen says it: the sentence, and whether it is done.
+ *
+ * The flag is not derivable from the sentence any more, and that is the point.
+ * The line used to print the raw held quantity, so a stash with three chains in
+ * it read "Ланцюг  3/1" — which is not a surplus to a player, it is arithmetic
+ * that has gone wrong, and a screen that looks like it is miscounting is a screen
+ * you stop trusting. It now prints the requirement as MET (1/1) and carries
+ * bMet so the widget can colour it, which is what makes "satisfied" a state
+ * rather than a number the reader has to compare.
+ */
+struct FSarkoGaragePart
+{
+	/** "Ланцюг  1/1" — have CLAMPED to need, never above it. */
+	FString Text;
+
+	/** The full required quantity is in the stash. Green, in the widget. */
+	bool bMet = false;
+};
+
 struct FSarkoGarageView
 {
 	/** "ГАРАЖ: ВЕЛОСИПЕД 2/3", or "…—/3" while the profile is unknown. */
 	FString Title;
 
-	/** One "<UA name>  n/m" line per recipe entry, in the recipe's order. */
-	TArray<FString> PartLines;
+	/** One line per recipe entry, in the recipe's order. */
+	TArray<FSarkoGaragePart> PartLines;
 
 	/** True only when every part's full quantity is in the stash AND the profile
 	 *  was actually fetched. A craft offered against an unknown stash is a 409
@@ -55,6 +75,19 @@ struct FSarkoShelterView
 
 	/** The haul, one line per stack. Task 5. */
 	TArray<FString> HaulLines;
+
+	/**
+	 * "ЩЕ НЕ БУЛО РЕЙДІВ" before the first raid of the session, otherwise empty.
+	 *
+	 * The exact counterpart of StashNote, and it exists for a layout reason that is
+	 * also an honesty one: with no summary the whole upper-left of the landscape
+	 * screen was blank, so the garage block and the buttons sank to the bottom and
+	 * the screen read half-drawn. A heading with a sentence under it saying there
+	 * is nothing yet occupies the same region and *explains* it, which is what
+	 * "composed" means here. It is a NOTE and not a haul line, so nothing can
+	 * mistake it for something that was carried.
+	 */
+	FString HaulNote;
 
 	/** The garage block. Replaces the old one-line GarageLine. */
 	FSarkoGarageView Garage;

@@ -122,6 +122,11 @@ private:
 	/** Rebuilt wholesale on SetView. A few dozen rows, a few times per session. */
 	TSharedPtr<SVerticalBox> HaulBox;
 
+	/** "ЩЕ НЕ БУЛО РЕЙДІВ" under the ОСТАННІЙ РЕЙД heading, or empty once there
+	 *  has been one. The left column's answer to StashNoteText: a labelled block
+	 *  saying it is empty is composed, an unlabelled void is not. */
+	TSharedPtr<STextBlock> HaulNoteText;
+
 	/**
 	 * The stash grid, not a list of lines: the same cell the raid's crate panel
 	 * draws (spec §2, one visual language for "things you own"). An SBox rather
