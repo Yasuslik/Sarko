@@ -3,6 +3,7 @@
 #include "Core/SarkoRaidSettings.h"
 #include "Engine/StaticMesh.h"
 #include "Map/SarkoMapBuilder.h"
+#include "Map/SarkoMapDefinition.h"
 #include "Map/SarkoMapKinds.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
@@ -11,6 +12,233 @@
 #include "UObject/SoftObjectPath.h"
 
 #if WITH_AUTOMATION_TESTS
+
+namespace
+{
+	/**
+	 * THE PALETTE, AS THE PLAYER ACTUALLY RECEIVES IT.
+	 *
+	 * A palette entry is a LINEAR base colour, and comparing two of those tells
+	 * you almost nothing: linear values are not perceptually spaced, and the
+	 * frame the player sees has been through the exposure and the tonemapper
+	 * first. Ground and Dirt differ by 0.069 of linear green and by 13 units of
+	 * L*; Concrete and Structure differ by 0.085 of linear and by 15. The same
+	 * arithmetic distance, two very different pictures.
+	 *
+	 * So the checks below measure the SCREEN colour: exposure, a compressive
+	 * tonemap, sRGB encoding, then CIELAB. The exposure is not a guess — at 5.0
+	 * this model puts the ground at (119,124,98) and a real 1600x900 frame from
+	 * the shipping camera measures the ground at (118,124,98). Rust and Timber
+	 * are predicted 5.90 apart and a wagon and a crate in that same frame measure
+	 * 5.03. The model tracks the renderer to about 1.5 dE00, which is the margin
+	 * the threshold below is chosen to survive.
+	 */
+	constexpr float PaletteExposure = 5.0f;
+
+	FVector ScreenLab(const FLinearColor& Linear)
+	{
+		const auto Encode = [](float Channel)
+		{
+			const float Exposed = PaletteExposure * Channel;
+			const float Tonemapped = Exposed / (1.f + Exposed);   // compressive shoulder
+			const float Clamped = FMath::Clamp(Tonemapped, 0.f, 1.f);
+			return Clamped <= 0.0031308f ? 12.92f * Clamped
+										 : 1.055f * FMath::Pow(Clamped, 1.f / 2.4f) - 0.055f;
+		};
+		// Encode to sRGB and decode again: the round trip is what applies the
+		// display transfer function, which is the thing CIELAB is defined on.
+		const auto Decode = [](float Channel)
+		{
+			return Channel <= 0.04045f ? Channel / 12.92f
+									   : FMath::Pow((Channel + 0.055f) / 1.055f, 2.4f);
+		};
+		const float R = Decode(Encode(Linear.R));
+		const float G = Decode(Encode(Linear.G));
+		const float B = Decode(Encode(Linear.B));
+
+		const float X = (0.4124f * R + 0.3576f * G + 0.1805f * B) / 0.95047f;
+		const float Y = (0.2126f * R + 0.7152f * G + 0.0722f * B);
+		const float Z = (0.0193f * R + 0.1192f * G + 0.9505f * B) / 1.08883f;
+		const auto F = [](float T)
+		{
+			return T > 216.f / 24389.f ? FMath::Pow(T, 1.f / 3.f)
+									   : (841.f / 108.f) * T + 4.f / 29.f;
+		};
+		const float Fx = F(X), Fy = F(Y), Fz = F(Z);
+		return FVector(116.f * Fy - 16.f, 500.f * (Fx - Fy), 200.f * (Fy - Fz));
+	}
+
+	float LabChroma(const FVector& Lab)
+	{
+		return FMath::Sqrt(Lab.Y * Lab.Y + Lab.Z * Lab.Z);
+	}
+
+	/** CIEDE2000, verbatim from the standard. */
+	float DeltaE2000(const FVector& A, const FVector& B)
+	{
+		const float L1 = A.X, a1 = A.Y, b1 = A.Z;
+		const float L2 = B.X, a2 = B.Y, b2 = B.Z;
+		const float C1 = FMath::Sqrt(a1 * a1 + b1 * b1);
+		const float C2 = FMath::Sqrt(a2 * a2 + b2 * b2);
+		const float CBar = 0.5f * (C1 + C2);
+		const float CBar7 = FMath::Pow(CBar, 7.f);
+		const float G = 0.5f * (1.f - FMath::Sqrt(CBar7 / (CBar7 + FMath::Pow(25.f, 7.f))));
+		const float a1p = (1.f + G) * a1, a2p = (1.f + G) * a2;
+		const float C1p = FMath::Sqrt(a1p * a1p + b1 * b1);
+		const float C2p = FMath::Sqrt(a2p * a2p + b2 * b2);
+		const auto Hue = [](float Ap, float Bp)
+		{
+			if (FMath::IsNearlyZero(Ap) && FMath::IsNearlyZero(Bp))
+			{
+				return 0.f;
+			}
+			const float Deg = FMath::RadiansToDegrees(FMath::Atan2(Bp, Ap));
+			return Deg < 0.f ? Deg + 360.f : Deg;
+		};
+		const float h1p = Hue(a1p, b1), h2p = Hue(a2p, b2);
+		const float dLp = L2 - L1;
+		const float dCp = C2p - C1p;
+		float dhp = 0.f;
+		if (C1p * C2p != 0.f)
+		{
+			dhp = h2p - h1p;
+			if (dhp > 180.f)       { dhp -= 360.f; }
+			else if (dhp < -180.f) { dhp += 360.f; }
+		}
+		const float dHp = 2.f * FMath::Sqrt(C1p * C2p) * FMath::Sin(FMath::DegreesToRadians(dhp) * 0.5f);
+		const float LBarP = 0.5f * (L1 + L2);
+		const float CBarP = 0.5f * (C1p + C2p);
+		float hBarP = h1p + h2p;
+		if (C1p * C2p != 0.f)
+		{
+			if (FMath::Abs(h1p - h2p) <= 180.f)  { hBarP = 0.5f * (h1p + h2p); }
+			else if (h1p + h2p < 360.f)          { hBarP = 0.5f * (h1p + h2p + 360.f); }
+			else                                 { hBarP = 0.5f * (h1p + h2p - 360.f); }
+		}
+		const auto Cos = [](float Deg) { return FMath::Cos(FMath::DegreesToRadians(Deg)); };
+		const float T = 1.f - 0.17f * Cos(hBarP - 30.f) + 0.24f * Cos(2.f * hBarP)
+			+ 0.32f * Cos(3.f * hBarP + 6.f) - 0.20f * Cos(4.f * hBarP - 63.f);
+		const float dTheta = 30.f * FMath::Exp(-FMath::Square((hBarP - 275.f) / 25.f));
+		const float CBarP7 = FMath::Pow(CBarP, 7.f);
+		const float Rc = 2.f * FMath::Sqrt(CBarP7 / (CBarP7 + FMath::Pow(25.f, 7.f)));
+		const float Sl = 1.f + (0.015f * FMath::Square(LBarP - 50.f))
+			/ FMath::Sqrt(20.f + FMath::Square(LBarP - 50.f));
+		const float Sc = 1.f + 0.045f * CBarP;
+		const float Sh = 1.f + 0.015f * CBarP * T;
+		const float Rt = -FMath::Sin(FMath::DegreesToRadians(2.f * dTheta)) * Rc;
+		return FMath::Sqrt(FMath::Square(dLp / Sl) + FMath::Square(dCp / Sc) + FMath::Square(dHp / Sh)
+			+ Rt * (dCp / Sc) * (dHp / Sh));
+	}
+
+	/**
+	 * The separation metric, and the one place it is not plain CIEDE2000.
+	 *
+	 * Between two NEAR-NEUTRAL colours only the lightness term counts. CIEDE2000
+	 * inflates the chroma axes at low chroma (that is what its G factor is for),
+	 * so two greys whose hues happen to be 150 degrees apart at chroma 2 score
+	 * several units of "hue difference" that no player has ever seen. Structure
+	 * and Concrete are both neutral by definition, so the only honest thing they
+	 * can separate on is lightness, and this makes the metric say so.
+	 */
+	constexpr float NeutralChroma = 6.f;
+
+	float SurfaceSeparation(const FVector& A, const FVector& B)
+	{
+		if (LabChroma(A) < NeutralChroma && LabChroma(B) < NeutralChroma)
+		{
+			return DeltaE2000(FVector(A.X, 0.f, 0.f), FVector(B.X, 0.f, 0.f));
+		}
+		return DeltaE2000(A, B);
+	}
+
+	/**
+	 * THE THRESHOLD, and why it is this number.
+	 *
+	 * Every textured surface is modulated by its detail map by up to
+	 * +-0.4 x DetailStrength around its palette colour (see the DetailStrength
+	 * comment in SarkoMapPalette.h). Run that swing through the model above and a
+	 * single surface varies by up to 6.5 dE00 WITHIN ITSELF — the ground by 6.5,
+	 * bark by 6.4, rust by 6.3. Two surfaces closer together than that are inside
+	 * each other's texture noise, which is not a figure of speech: it is what the
+	 * rail depot looked like, wagons and crates and pallets one brown mass told
+	 * apart by silhouette alone.
+	 *
+	 * 10 is that noise floor with half again on top. It is also, conveniently,
+	 * about where two colours stop being shades of one thing and start having
+	 * different names — which is the read a 40-to-120 pixel prop on a phone, in
+	 * motion, under a shadow, actually gets.
+	 */
+	constexpr float MinSurfaceSeparation = 10.f;
+
+	/** Where a surface appears in the sector, for the co-occurrence sweep below. */
+	struct FSurfacePlacement
+	{
+		FVector2D Where = FVector2D::ZeroVector;
+		ESarkoSurface Surface = ESarkoSurface::Ground;
+	};
+
+	/**
+	 * How far apart two things can be and still share a frame.
+	 *
+	 * The spring arm is 1400 uu at -70 degrees, which frames roughly 3000 uu of
+	 * ground across the long axis. Two surfaces within that of each other are a
+	 * pair the player compares side by side; beyond it they are never seen
+	 * together and their colours are free to collide.
+	 */
+	constexpr double FrameFootprintUU = 3000.0;
+
+	/**
+	 * The pairs that are a DELIBERATE RAMP rather than two things to tell apart.
+	 *
+	 * The edge skirt is a monotone luminance fall-off standing in for distance
+	 * (see ESarkoSurface's comment on the bands). Consecutive steps of a gradient
+	 * are supposed to be close; separating them would replace "further away" with
+	 * "another field", which is the exact failure the bands exist to prevent.
+	 * Nothing else is exempt.
+	 */
+	bool IsTheEdgeGradient(ESarkoSurface A, ESarkoSurface B)
+	{
+		const auto InRamp = [](ESarkoSurface S)
+		{
+			return S == ESarkoSurface::Ground || S == ESarkoSurface::SkirtNear
+				|| S == ESarkoSurface::SkirtMid || S == ESarkoSurface::SkirtFar;
+		};
+		return InRamp(A) && InRamp(B);
+	}
+
+	/** Every surface the sector actually places, with where it places it. */
+	void CollectPlacements(const FSarkoMapDefinition& Map, TArray<FSurfacePlacement>& Out)
+	{
+		const auto Add = [&Out](const FVector& Location, ESarkoSurface Surface)
+		{
+			Out.Add({ FVector2D(Location.X, Location.Y), Surface });
+		};
+		for (const FSarkoCoverBlock& Block : Map.Blocks)
+		{
+			Add(Block.Location, Block.Surface);
+		}
+		for (const FSarkoBuilding& Building : Map.Buildings)
+		{
+			Add(Building.Location, Building.Surface);
+		}
+		for (const FSarkoMapProp& Prop : Map.Props)
+		{
+			FSarkoPropKind Kind;
+			if (!SarkoMap::FindPropKind(Prop.Kind, Kind))
+			{
+				continue;
+			}
+			for (const FSarkoPropPart& Part : Kind.Parts)
+			{
+				Add(Prop.Location, Part.Surface);
+			}
+		}
+		for (const FSarkoExtractionSpot& Spot : Map.Extractions)
+		{
+			Add(Spot.Location, ESarkoSurface::Extraction);
+		}
+	}
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FSarkoSettingsHaveSaneDefaults,
@@ -240,6 +468,116 @@ bool FSarkoSurfacePaletteIsReadable::RunTest(const FString& Parameters)
 		TestTrue(FString::Printf(TEXT("'%s' is muted enough not to fight the characters"),
 			*SurfaceName(Surface)),
 			FMath::Max3(Colour.R, Colour.G, Colour.B) < 0.35f && Spread(Colour) < 0.20f);
+	}
+
+	// ---- PAIRWISE SEPARATION, over the surfaces that share a frame ----
+	//
+	// Everything above is a relation between two named surfaces, written down one
+	// clause at a time because someone noticed it in a picture. This is the rule
+	// that does not need noticing first: it derives its own list of pairs from
+	// the map, so a prop kind that starts appearing beside a wagon next year is
+	// checked without anybody remembering to check it.
+	//
+	// It is derived rather than tabulated for a specific reason. The sandbag kind
+	// moved from Structure to Dirt in this same pass, and that one edit took
+	// Dirt-beside-Structure from 36 co-occurrences to 205 — a hard-coded pair
+	// list would have gone quietly stale at exactly the moment it mattered.
+	{
+		FSarkoMapDefinition Map;
+		FString MapError;
+		const bool bLoaded = SarkoMap::LoadDefinitionFromDisk(TEXT("bridge"), Map, MapError);
+		TestTrue(FString::Printf(TEXT("the sector loads, so its surfaces can be paired up: %s"), *MapError), bLoaded);
+
+		if (bLoaded)
+		{
+			TArray<FSurfacePlacement> Placements;
+			CollectPlacements(Map, Placements);
+			TestTrue(TEXT("the sector places surfaces at all"), Placements.Num() > 100);
+
+			// Which pairs actually share a frame. The ground is under every one of
+			// them, so it pairs with everything by definition rather than by sweep.
+			TSet<TPair<uint8, uint8>> Together;
+			for (uint8 Raw = 0; Raw < static_cast<uint8>(ESarkoSurface::Count); ++Raw)
+			{
+				if (Raw != static_cast<uint8>(ESarkoSurface::Ground))
+				{
+					Together.Add({ static_cast<uint8>(ESarkoSurface::Ground), Raw });
+				}
+			}
+			for (int32 I = 0; I < Placements.Num(); ++I)
+			{
+				for (int32 J = I + 1; J < Placements.Num(); ++J)
+				{
+					if (Placements[I].Surface == Placements[J].Surface)
+					{
+						continue;
+					}
+					if (FVector2D::DistSquared(Placements[I].Where, Placements[J].Where)
+						> FrameFootprintUU * FrameFootprintUU)
+					{
+						continue;
+					}
+					const uint8 A = static_cast<uint8>(Placements[I].Surface);
+					const uint8 B = static_cast<uint8>(Placements[J].Surface);
+					Together.Add({ FMath::Min(A, B), FMath::Max(A, B) });
+				}
+			}
+
+			TArray<FVector> Labs;
+			for (uint8 Raw = 0; Raw < static_cast<uint8>(ESarkoSurface::Count); ++Raw)
+			{
+				Labs.Add(ScreenLab(ColourFor(static_cast<ESarkoSurface>(Raw))));
+			}
+
+			int32 Checked = 0;
+			for (const TPair<uint8, uint8>& Pair : Together)
+			{
+				const ESarkoSurface A = static_cast<ESarkoSurface>(Pair.Key);
+				const ESarkoSurface B = static_cast<ESarkoSurface>(Pair.Value);
+				if (IsTheEdgeGradient(A, B))
+				{
+					continue;
+				}
+				++Checked;
+				const float Apart = SurfaceSeparation(Labs[Pair.Key], Labs[Pair.Value]);
+				TestTrue(FString::Printf(
+					TEXT("'%s' and '%s' share a frame and are %.2f dE00 apart (needs %.0f)"),
+					*SurfaceName(A), *SurfaceName(B), Apart, MinSurfaceSeparation),
+					Apart >= MinSurfaceSeparation);
+			}
+			TestTrue(FString::Printf(TEXT("the sweep found pairs to check (%d)"), Checked), Checked > 40);
+		}
+	}
+
+	// ---- AND THE CHARACTERS STAY THE LOUDEST THING IN THE FRAME ----
+	//
+	// The palette's whole licence to exist is that it does not compete with
+	// friend/foe reading, and "muted" above is the input to that claim rather
+	// than the claim itself. These are the output: no scenery may be as saturated
+	// as the enemy tint, and no scenery may come as close to a character as two
+	// surfaces are allowed to come to each other.
+	{
+		// SarkoBody's two tints. Duplicated as literals on purpose: if someone
+		// repaints a scav, this test should fail and force the question, not
+		// silently re-measure against the new colour and keep passing.
+		const FVector PlayerLab = ScreenLab(FLinearColor(0.16f, 0.34f, 0.85f));
+		const FVector EnemyLab = ScreenLab(FLinearColor(0.80f, 0.12f, 0.10f));
+		const float EnemyChroma = LabChroma(EnemyLab);
+
+		for (uint8 Raw = 0; Raw < static_cast<uint8>(ESarkoSurface::Count); ++Raw)
+		{
+			const ESarkoSurface Surface = static_cast<ESarkoSurface>(Raw);
+			const FVector Lab = ScreenLab(ColourFor(Surface));
+			TestTrue(FString::Printf(TEXT("'%s' is not louder than the enemy red (%.1f vs %.1f)"),
+				*SurfaceName(Surface), LabChroma(Lab), EnemyChroma),
+				LabChroma(Lab) < EnemyChroma);
+			TestTrue(FString::Printf(TEXT("a scav in blue stands out against '%s' (%.2f dE00)"),
+				*SurfaceName(Surface), SurfaceSeparation(PlayerLab, Lab)),
+				SurfaceSeparation(PlayerLab, Lab) >= MinSurfaceSeparation);
+			TestTrue(FString::Printf(TEXT("a scav in red stands out against '%s' (%.2f dE00)"),
+				*SurfaceName(Surface), SurfaceSeparation(EnemyLab, Lab)),
+				SurfaceSeparation(EnemyLab, Lab) >= MinSurfaceSeparation);
+		}
 	}
 
 	// The two original constants still mean what the previous palette test says

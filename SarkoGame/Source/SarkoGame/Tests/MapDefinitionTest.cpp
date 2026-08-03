@@ -426,10 +426,16 @@ bool FSarkoPropKindsAreComplete::RunTest(const FString& Parameters)
 		//    houses, pallets and log piles in exactly the same grey as the walls
 		//    they lean on, which is the single largest block of miscoloured
 		//    geometry left in the map.
+		//  * sandbag: hessian filled with the earth that was under it, not cast
+		//    concrete. The mesh models its top course as individual bags and the
+		//    neutral grey threw that away — twenty-four emplacements read as rows
+		//    of blocks, and at the АЗС and the checkpoint they read as the same
+		//    tone as the wall they are stacked against.
 		static const TMap<FName, ESarkoSurface> Repainted = {
 			{ TEXT("bridge_deck"), ESarkoSurface::Asphalt },
 			{ TEXT("freight_car"), ESarkoSurface::Rust },
 			{ TEXT("crate"),       ESarkoSurface::Timber },
+			{ TEXT("sandbag"),     ESarkoSurface::Dirt },
 		};
 		if (const ESarkoSurface* Deliberate = Repainted.Find(Expected.Key))
 		{
