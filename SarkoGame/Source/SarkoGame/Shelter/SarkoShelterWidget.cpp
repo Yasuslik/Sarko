@@ -75,6 +75,18 @@ namespace
 	constexpr float NavButtonGapPt = 6.f;
 
 	/**
+	 * ВИЛАЗКА's button, at the tap minimum exactly and shorter than В РЕЙД's ~48.
+	 *
+	 * Deliberately the smaller of the two. They are not equals: В РЕЙД is the verb the
+	 * shelter serves and a sortie is the exception you take when you have nothing, so
+	 * the hierarchy is read before either label is. 44 + 6 + ~48 = 98 pt at the foot of
+	 * a ~300 pt column, which the slack above the pair absorbs — the column's spacer
+	 * is what pins both to the floor.
+	 */
+	constexpr float SortieButtonPt = 44.f;
+	constexpr float SortieGapPt = 6.f;
+
+	/**
 	 * The character panel's width, and it is derived rather than chosen.
 	 *
 	 * The two 2×2 slots sit SIDE BY SIDE — the height arithmetic in
@@ -267,6 +279,7 @@ const FSlateBrush* SSarkoShelterWidget::CharacterPlateBrush() const
 void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 {
 	OnEnterRaid = InArgs._OnEnterRaid;
+	OnEnterSortie = InArgs._OnEnterSortie;
 	OnCraft = InArgs._OnCraft;
 	OnSelectScreen = InArgs._OnSelectScreen;
 	OnEquipStack = InArgs._OnEquipStack;
@@ -368,6 +381,58 @@ void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 							+ SVerticalBox::Slot().FillHeight(1.f)
 							[
 								SNew(SSpacer).Size(FVector2D(1.f, 1.f))
+							]
+
+							// ---- ВИЛАЗКА (spec §4.5) ------------------------
+							// ABOVE В РЕЙД, and that ordering is the whole of "a
+							// second button beside В РЕЙД" in a left-edge column: the
+							// verb keeps the floor, where a thumb rests and where it
+							// has always been, and the exception sits one step up.
+							// Reversing them would move the one control on this screen
+							// a player finds without reading.
+							+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, SortieGapPt)
+							[
+								SNew(SBox)
+								// 44 pt exactly, the tap minimum — one point under and
+								// this is a control a thumb misses. Shorter than В РЕЙД's
+								// ~48, because the two must not read as equals.
+								.HeightOverride(SortieButtonPt)
+								[
+									SAssignNew(SortieButton, SButton)
+									.ContentPadding(FMargin(6.f, 2.f))
+									.HAlign(HAlign_Center)
+									.VAlign(VAlign_Center)
+									// An attribute, like the raid button's: SetView flips
+									// the flag and Slate re-reads it, so a countdown that
+									// reaches zero on the next profile fetch needs no tick.
+									.IsEnabled_Lambda([this]() { return bSortieEnabled; })
+									.OnClicked(this, &SSarkoShelterWidget::HandleEnterSortie)
+									[
+										SNew(SVerticalBox)
+
+										+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+										[
+											// "ВИЛАЗКА", or the cooldown remaining — the
+											// label IS the countdown, because what a player
+											// wants from a button they cannot press is the
+											// number and not the verb.
+											SAssignNew(SortieLabel, STextBlock)
+											.Font(ShelterFont(12.f))
+											.Justification(ETextJustify::Center)
+										]
+
+										+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+										[
+											// "БЕЗКОШТОВНО", dim, and collapsed during the
+											// cooldown — an empty text block still measures
+											// its font and would reserve a line.
+											SAssignNew(SortieSubLabel, STextBlock)
+											.Font(ShelterFont(8.5f))
+											.ColorAndOpacity(LabelColour)
+											.Justification(ETextJustify::Center)
+										]
+									]
+								]
 							]
 
 							+ SVerticalBox::Slot().AutoHeight()
@@ -919,6 +984,17 @@ void SSarkoShelterWidget::SetView(const FSarkoShelterView& View)
 	RaidLabel->SetText(FText::FromString(View.Raid.Label));
 	SetLine(RaidSubLabel, View.Raid.SubLabel);
 
+	// ---- ВИЛАЗКА ------------------------------------------------------------
+	// The label is either the word or the countdown, and the colour says which
+	// without being the only thing that does: dim while it is counting down, bright
+	// when it can be pressed. Redundant with the enabled state on purpose — a
+	// greyed-out button and a bright number are two readings of one fact, and a
+	// player glancing at a column should not have to test which.
+	bSortieEnabled = View.Raid.bSortieEnabled;
+	SortieLabel->SetText(FText::FromString(View.Raid.SortieLabel));
+	SortieLabel->SetColorAndOpacity(View.Raid.bSortieOnCooldown ? LabelColour : BrightColour);
+	SetLine(SortieSubLabel, View.Raid.SortieSubLabel);
+
 	ScreenSwitcher->SetActiveWidgetIndex(static_cast<int32>(View.Screen));
 
 	// ---- the destination column ---------------------------------------------
@@ -990,6 +1066,11 @@ void SSarkoShelterWidget::SetView(const FSarkoShelterView& View)
 
 	// ---- the character ------------------------------------------------------
 	CharacterTitle->SetText(FText::FromString(View.Character.Title));
+	// AMBER while the panel is showing a ВИЛАЗКА's borrowed kit, not the dim label
+	// grey it wears for "ХОДОК". The heading already says "ПОЗИЧЕНЕ" in words; this is
+	// the second reading of the same fact, because "is this mine" is the one question
+	// on this screen that must not be carried by a hue alone — nor by a word alone.
+	CharacterTitle->SetColorAndOpacity(View.Character.bBorrowed ? WarnColour : LabelColour);
 	PocketsCaption->SetText(FText::FromString(View.Character.PocketsCaption));
 	SetLine(PocketsNote, View.Character.PocketsNote);
 
@@ -1161,6 +1242,19 @@ bool SSarkoShelterWidget::SimulateEnterRaidClickIfEnabled()
 	return true;
 }
 
+bool SSarkoShelterWidget::SimulateSortieClickIfEnabled()
+{
+	// Same reason as above: the engine's SimulateClick does not consult the enabled
+	// state, so a scripted press would take a free run the button itself was refusing
+	// — and a screenshot of that would prove the opposite of what it is for.
+	if (!SortieButton.IsValid() || !SortieButton->IsEnabled())
+	{
+		return false;
+	}
+	SortieButton->SimulateClick();
+	return true;
+}
+
 bool SSarkoShelterWidget::SimulateCraftClickIfEnabled()
 {
 	// Same reason as above: the engine's SimulateClick does not consult the enabled
@@ -1183,6 +1277,12 @@ TSharedPtr<SWidget> SSarkoShelterWidget::WidgetToFocus() const
 FReply SSarkoShelterWidget::HandleEnterRaid()
 {
 	OnEnterRaid.ExecuteIfBound();
+	return FReply::Handled();
+}
+
+FReply SSarkoShelterWidget::HandleEnterSortie()
+{
+	OnEnterSortie.ExecuteIfBound();
 	return FReply::Handled();
 }
 

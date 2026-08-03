@@ -46,6 +46,15 @@ public:
 	SLATE_BEGIN_ARGS(SSarkoShelterWidget) {}
 		/** Fired when "В РЕЙД" is pressed. The controller owns the travel. */
 		SLATE_EVENT(FSimpleDelegate, OnEnterRaid)
+		/**
+		 * Fired when "ВИЛАЗКА" is pressed (spec §4.5). The controller owns everything
+		 * that follows — the free start, the kit reveal and the travel.
+		 *
+		 * A SECOND event and not a parameter on OnEnterRaid, because the two are
+		 * different requests to the server and the widget must not be the thing that
+		 * chooses between them by inspecting its own state.
+		 */
+		SLATE_EVENT(FSimpleDelegate, OnEnterSortie)
 		/** Fired when the craft button is pressed. The controller owns the call. */
 		SLATE_EVENT(FSimpleDelegate, OnCraft)
 		/** Fired when a destination in the left column is pressed. */
@@ -118,6 +127,10 @@ public:
 	 *  button's own enabled state and its delegate, so nothing can craft what the
 	 *  player could not have crafted by pressing it. */
 	bool SimulateCraftClickIfEnabled();
+
+	/** Same shape again for the sortie button, so a headless screenshot run can take a
+	 *  free run without a finger — and cannot take one the player could not have. */
+	bool SimulateSortieClickIfEnabled();
 #endif
 
 private:
@@ -125,6 +138,7 @@ private:
 	float UiScale() const;
 
 	FReply HandleEnterRaid();
+	FReply HandleEnterSortie();
 	FReply HandleCraft();
 
 	/** The three screens, built once in Construct and switched between. Separate
@@ -136,6 +150,7 @@ private:
 	TSharedRef<SWidget> BuildShopScreen();
 
 	FSimpleDelegate OnEnterRaid;
+	FSimpleDelegate OnEnterSortie;
 	FSimpleDelegate OnCraft;
 	FSarkoOnSelectScreen OnSelectScreen;
 	FSarkoOnEquipStack OnEquipStack;
@@ -158,6 +173,25 @@ private:
 	TSharedPtr<class SButton> RaidButton;
 	TSharedPtr<STextBlock> RaidLabel;
 	TSharedPtr<STextBlock> RaidSubLabel;
+
+	/**
+	 * ВИЛАЗКА, directly under В РЕЙД at the foot of the destination column (spec §4.5:
+	 * "a second button beside В РЕЙД").
+	 *
+	 * Under and not beside, literally: the column is 126 pt wide and two buttons side
+	 * by side in it would be 56 pt each, under the 44 pt tap minimum once padding is
+	 * taken out — and "beside" in a left-edge column means "the next thing your thumb
+	 * reaches", which is below. В РЕЙД stays the lower and larger of the two, because
+	 * it is the verb the shelter serves and the sortie is the exception.
+	 */
+	TSharedPtr<class SButton> SortieButton;
+	TSharedPtr<STextBlock> SortieLabel;
+	TSharedPtr<STextBlock> SortieSubLabel;
+
+	/** Read by the sortie button through an attribute. False during the cooldown and
+	 *  before the first profile — a DISPLAY of the server's rule, never the rule (the
+	 *  server refuses `sortie_cooldown` by name regardless). */
+	bool bSortieEnabled = false;
 
 	TSharedPtr<STextBlock> TitleText;
 	TSharedPtr<STextBlock> StatusText;

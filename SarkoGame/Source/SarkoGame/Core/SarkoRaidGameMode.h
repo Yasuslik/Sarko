@@ -196,8 +196,19 @@ private:
 	void SetTutorialLoot(bool bEnabled);
 
 	/** /v1/raid/start -> /v1/raid/confirm -> ActivateRaid. Split from OnAuthenticated
-	 *  so the profile hop sits between auth and the session opening. */
+	 *  so the profile hop sits between auth and the session opening.
+	 *
+	 *  It ADOPTS a ВИЛАЗКА the shelter already started (USarkoGameInstance's
+	 *  PendingSortie) instead of starting one of its own — the granted kit only exists
+	 *  in the start response, and the reveal it feeds needs the shelter's character
+	 *  panel. */
 	void BeginRaidSession();
+
+	/** /v1/raid/confirm -> ActivateRaid, for a session that is already open — whichever
+	 *  side opened it. One copy, because everything after the start is identical for a
+	 *  raid and for a ВИЛАЗКА: the deadline is the server's and the clock is derived
+	 *  from it, so two copies would be two places for that rule to drift. */
+	void ConfirmAdoptedSession();
 
 	/** Everything after a failed call: log, use the local seed, keep playing (spec §4.6). */
 	void FallBackToOfflineRaid(const FString& Reason);

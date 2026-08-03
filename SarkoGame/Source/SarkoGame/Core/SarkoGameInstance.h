@@ -196,6 +196,37 @@ public:
 	/** Called by the shelter when a fresh profile lands. */
 	void RecordProfile(const FSarkoProfile& Profile);
 
+	/**
+	 * A ВИЛАЗКА the SHELTER already started, waiting for the raid world to adopt
+	 * (spec §4.5).
+	 *
+	 * Why the shelter starts it at all, when every other raid is started by the raid
+	 * game mode: the granted kit only exists in /v1/raid/start's answer, and the kit is
+	 * the point — "the variance is the appeal" is a reveal, and a reveal has to happen
+	 * on a screen that has a character panel on it. Starting it in the raid world would
+	 * mean the player never sees what they were lent until they are already holding it.
+	 *
+	 * It lives HERE and not on the shelter's controller because that controller is
+	 * destroyed by the travel it triggers. This object is the one thing that survives.
+	 *
+	 * ADOPTED ONCE: ASarkoRaidGameMode::BeginRaidSession takes it with
+	 * TakePendingSortie(), which clears it, so a session can never be confirmed twice
+	 * or ride into a second raid. A sortie that is started and never travelled to is
+	 * abandoned as `pending` and voided by the server's sweeper after PENDING_TTL —
+	 * which costs nothing and does not burn the cooldown, because the cooldown counts
+	 * only sorties that actually closed.
+	 */
+	UPROPERTY()
+	FSarkoRaidSession PendingSortie;
+
+	/** True when a started-but-not-yet-entered sortie is waiting. Reads the session id,
+	 *  which is the one field a successful start always fills. */
+	bool HasPendingSortie() const { return !PendingSortie.SessionId.IsEmpty(); }
+
+	/** The pending sortie, cleared as it is handed over. Consuming rather than reading
+	 *  is the whole guarantee that one granted kit becomes at most one raid. */
+	FSarkoRaidSession TakePendingSortie();
+
 private:
 	TSharedPtr<class FSarkoBackendClient> Backend;
 

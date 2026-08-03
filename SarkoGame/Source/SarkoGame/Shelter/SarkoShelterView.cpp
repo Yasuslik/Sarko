@@ -252,8 +252,48 @@ FSarkoCharacterView SarkoShelter::BuildCharacterView(const FSarkoEquipment& Equi
 	return View;
 }
 
+FSarkoCharacterView SarkoShelter::BuildBorrowedCharacterView(const TArray<FSarkoItemStack>& GrantedKit,
+	const FSarkoItemCatalog& Catalog)
+{
+	// The kit becomes equipment by asking the CATALOG which slot each id is worn in —
+	// the same authored `slot` the ІНВЕНТАР screen's tap rules use, so a borrowed
+	// pistol lands where an owned one would and the panel needs no second layout.
+	//
+	// An item with no slot (ammunition, a bandage) contributes nothing: it is what the
+	// raid gives you to USE, not something worn, and inventing a slot for it would put
+	// bandages on the character's chest.
+	FSarkoEquipment Worn;
+	for (const FSarkoItemStack& Stack : GrantedKit)
+	{
+		const ESarkoEquipSlot Slot = SarkoEquip::SlotFor(Catalog.Find(Stack.Item));
+		if (Slot != ESarkoEquipSlot::None)
+		{
+			SarkoEquip::Set(Worn, Slot, Stack.Item);
+		}
+	}
+
+	FSarkoCharacterView View = BuildCharacterView(Worn, Catalog);
+	View.bBorrowed = true;
+	// SAID IN WORDS as well as coloured, because "is this mine" is the one question
+	// this screen must never leave to a hue. A player who reads the pistol in the
+	// weapon slot as theirs will expect it after a death that takes it.
+	View.Title = TEXT("ХОДОК — ПОЗИЧЕНЕ");
+	// The pockets note becomes the promise, which is the sentence the whole mechanic
+	// rests on: the borrowed gear is yours if you walk out with it.
+	View.PocketsNote = TEXT("ВИНЕСЕШ — ТВОЄ");
+	return View;
+}
+
+FString SarkoShelter::FormatSortieCooldown(int32 Seconds)
+{
+	// Clamped, not trusted: this comes from the wire via FSarkoProfile, and a negative
+	// would print a countdown running backwards on a button.
+	const int32 Safe = FMath::Max(0, Seconds);
+	return FString::Printf(TEXT("%d:%02d"), Safe / 60, Safe % 60);
+}
+
 FSarkoRaidButtonView SarkoShelter::BuildRaidButton(const FSarkoEquipment& Equipment,
-	bool bProfileLoaded, const FString& Error)
+	bool bProfileLoaded, const FString& Error, int32 SortieCooldownSeconds)
 {
 	FSarkoRaidButtonView View;
 	View.bUnarmed = !SarkoEquip::HasWeapon(Equipment);
@@ -276,6 +316,34 @@ FSarkoRaidButtonView SarkoShelter::BuildRaidButton(const FSarkoEquipment& Equipm
 	// fetch still allows a raid: it degrades to offline on its own, and the game
 	// must never hard-lock on the network (spec §4.6).
 	View.bEnabled = bProfileLoaded || !Error.IsEmpty();
+
+	// ---- ВИЛАЗКА, the second button (spec §4.5) --------------------------------
+	//
+	// The cooldown is the SERVER's number, taken from the profile and displayed. This
+	// function does not tick it, does not compare clocks and does not remember it:
+	// the shelter redraws when a profile lands, and the only thing that actually
+	// refuses a sortie is /v1/raid/start answering `sortie_cooldown` by name.
+	//
+	// So a wrongly-enabled button costs one refused round trip and a status line —
+	// which is exactly what a countdown a few seconds stale produces anyway, and the
+	// reason it is safe for this to be a label rather than a rule.
+	View.bSortieOnCooldown = SortieCooldownSeconds > 0;
+	View.SortieLabel = View.bSortieOnCooldown
+		? FormatSortieCooldown(SortieCooldownSeconds)
+		: FString(TEXT("ВИЛАЗКА"));
+	// The one word that makes the button legible as the ladder rather than as a second
+	// door. During the cooldown the label is already the whole message, so this is
+	// empty and the button draws one line — and an empty sub-label is COLLAPSED by the
+	// widget, so nothing reserves a row for it.
+	View.SortieSubLabel = View.bSortieOnCooldown ? FString() : FString(TEXT("БЕЗКОШТОВНО"));
+
+	// Unlike the raid button, this one IS refused before the first profile lands —
+	// and unlike the raid button, that is honest: В РЕЙД must never block because a
+	// player with nothing has no other way in, whereas a sortie whose cooldown is
+	// unknown has В РЕЙД sitting right above it. An OFFLINE shelter refuses it too:
+	// a sortie is worthless without the server that grants the kit, so offering it
+	// would offer a raid with nothing in it.
+	View.bSortieEnabled = bProfileLoaded && !View.bSortieOnCooldown;
 	return View;
 }
 
@@ -294,7 +362,8 @@ TArray<FString> SarkoShelter::NewlyUnlockedMaps(const TArray<FString>& Before, c
 
 FSarkoShelterView SarkoShelter::BuildView(const FSarkoLastRaid& LastRaid, const FSarkoProfile& Profile,
 	bool bProfileLoaded, const FString& Error, const FString& CraftLine,
-	const FSarkoItemCatalog& Catalog, ESarkoShelterScreen Screen)
+	const FSarkoItemCatalog& Catalog, ESarkoShelterScreen Screen,
+	const TArray<FSarkoItemStack>& BorrowedKit)
 {
 	FSarkoShelterView View;
 	View.Title = TEXT("УКРИТТЯ");
@@ -313,8 +382,20 @@ FSarkoShelterView SarkoShelter::BuildView(const FSarkoLastRaid& LastRaid, const 
 	// three empty slots, which is what the screen would show anyway a moment before
 	// the fetch lands, and the raid button's label degrades to "БЕЗ ЗБРОЇ" — the
 	// pessimistic direction, and one that grants nothing.
-	View.Character = BuildCharacterView(Profile.Equipment, Catalog);
-	View.Raid = BuildRaidButton(Profile.Equipment, bProfileLoaded, Error);
+	//
+	// A ВИЛАЗКА in flight REPLACES it with the borrowed kit, and that is the reveal
+	// the mechanic is built on: the player sees what the server lent them, on the
+	// panel that already means "what goes into the raid", before the travel takes them
+	// there. It is the granted kit and not their own gear because a sortie carries
+	// nothing of theirs — showing the pistol they own beside a free run that cannot
+	// lose it would be the screen promising the wrong stake.
+	View.Character = BorrowedKit.Num() > 0
+		? BuildBorrowedCharacterView(BorrowedKit, Catalog)
+		: BuildCharacterView(Profile.Equipment, Catalog);
+	// The raid button reads the player's OWN equipment whatever the panel is showing:
+	// "БЕЗ ЗБРОЇ" is a fact about the stash and not about a kit that is on loan.
+	View.Raid = BuildRaidButton(Profile.Equipment, bProfileLoaded, Error,
+		Profile.SortieCooldownSeconds);
 
 	View.OutcomeTitle = BuildOutcomeTitle(LastRaid.Outcome, LastRaid.bPersisted);
 	View.HaulLines = BuildHaulLines(LastRaid, Catalog);

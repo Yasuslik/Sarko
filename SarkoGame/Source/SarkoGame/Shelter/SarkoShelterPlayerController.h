@@ -121,6 +121,30 @@ public:
 	UFUNCTION(Exec)
 	void SarkoDebugEquip(float DelaySeconds = 4.f, bool bRefuse = false);
 
+	/**
+	 * Debug only: photographs the two ВИЛАЗКА states a headless run cannot otherwise
+	 * reach (spec §4.5), DelaySeconds in.
+	 *
+	 * CooldownSeconds > 0 fakes the **cached profile's** countdown, so the second
+	 * button draws "4:32" and greys out. Zero instead fakes the **reveal**: a borrowed
+	 * kit in the character panel, as if a sortie had just been granted.
+	 *
+	 * WHY IT IS FAKED, honestly: a real sortie needs a server that has migration 0005,
+	 * and until that is deployed a live `mode: "sortie"` is answered with an ordinary
+	 * raid — so the states could not be photographed at all. Same discipline as
+	 * SarkoDebugStash and SarkoDebugEquip: it writes nothing to the backend, entitles
+	 * nothing, and the drawing it produces goes through the SHIPPED
+	 * BuildBorrowedCharacterView and BuildRaidButton. It does NOT travel, because the
+	 * frame wanted is the shelter's.
+	 *
+	 * The kit it fakes is a copy of one authored server-side row, and it is the only
+	 * copy of that table on this client — deliberately, and only here: the real kit
+	 * always arrives in /v1/raid/start's `granted_kit`, and nothing outside this
+	 * function ever invents one.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugSortie(float DelaySeconds = 4.f, int32 CooldownSeconds = 0);
+
 private:
 	/** Switches the hub's screen and redraws. What the nav buttons fire. */
 	void SelectScreen(ESarkoShelterScreen Screen);
@@ -149,6 +173,28 @@ private:
 	void FetchProfile();
 
 	void EnterRaid();
+
+	/**
+	 * ВИЛАЗКА (spec §4.5): start the free run HERE, show what the server lent, then
+	 * travel.
+	 *
+	 * It is the one raid this side starts, and the reason is the kit. The granted kit
+	 * exists only in /v1/raid/start's answer, and "the variance is the appeal" is a
+	 * reveal — so it has to land on a screen with a character panel on it, which the
+	 * raid world does not have. The session is parked on the game instance and adopted
+	 * by ASarkoRaidGameMode, which is why that mode does not start a second one.
+	 *
+	 * Nothing about the free run is decided here. This sends `mode: "sortie"` and
+	 * displays the answer: the kit, or a refusal shown verbatim — `sortie_cooldown`
+	 * arrives with the remaining time in its message, and a refused press does not
+	 * travel.
+	 */
+	void EnterSortie();
+
+	/** Travels to the raid once the borrowed kit has been on screen long enough to
+	 *  read. A timer and not an immediate travel, because a reveal nobody sees is not
+	 *  a reveal — and because the widget has to draw at least one frame of it. */
+	void TravelAfterSortieReveal();
 
 	/** POST /v1/garage/craft, then refetch the profile. The server decides which
 	 *  tier is next and debits the parts in one transaction, so there is nothing
@@ -190,6 +236,40 @@ private:
 
 	/** True between the press and the answer. A second debit is not undoable. */
 	bool bCraftInFlight = false;
+
+	/**
+	 * True from the ВИЛАЗКА press until the travel.
+	 *
+	 * It guards a SECOND press, and what a second press would cost is not nothing: the
+	 * first sortie holds an open session, so the second is refused
+	 * `raid_in_progress` — a confusing message for a button that had just worked — and
+	 * a player who pressed twice quickly would be told the wrong reason for the right
+	 * refusal. It also stops the reveal timer being scheduled twice.
+	 */
+	bool bSortieInFlight = false;
+
+	/**
+	 * The kit the server lent, held only until the travel.
+	 *
+	 * Drawn by the character panel INSTEAD of the player's own equipment, because a
+	 * sortie carries nothing of theirs. Never merged into the cached profile: it is not
+	 * owned, the server credits it from the session row on extraction, and a client
+	 * that wrote it into the profile would be a client showing gear the stash does not
+	 * contain.
+	 */
+	TArray<FSarkoItemStack> BorrowedKit;
+
+	FTimerHandle SortieRevealTimer;
+
+	/**
+	 * How long the borrowed kit stays on screen before the travel.
+	 *
+	 * Long enough to read three cells and the word "ПОЗИЧЕНЕ", short enough that it
+	 * does not feel like a stall on a button that is meant to be the quick way back
+	 * into the game. The session is `pending` for this whole window and PENDING_TTL is
+	 * 60 s, so there is no risk in it.
+	 */
+	static constexpr float SortieRevealSeconds = 1.6f;
 
 	/**
 	 * Debug only, and set by nothing else: SarkoDebugEquip raises it so its taps go

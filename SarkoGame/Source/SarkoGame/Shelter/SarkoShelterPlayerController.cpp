@@ -1,6 +1,7 @@
 #include "Shelter/SarkoShelterPlayerController.h"
 
 #include "Core/SarkoGameInstance.h"
+#include "Core/SarkoRaidSettings.h"
 #include "Core/SarkoTravel.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
@@ -63,6 +64,7 @@ void ASarkoShelterPlayerController::BeginPlay()
 
 	Widget = SNew(SSarkoShelterWidget)
 		.OnEnterRaid(FSimpleDelegate::CreateUObject(this, &ASarkoShelterPlayerController::EnterRaid))
+		.OnEnterSortie(FSimpleDelegate::CreateUObject(this, &ASarkoShelterPlayerController::EnterSortie))
 		.OnCraft(FSimpleDelegate::CreateUObject(this, &ASarkoShelterPlayerController::Craft))
 		.OnSelectScreen(FSarkoOnSelectScreen::CreateUObject(
 			this, &ASarkoShelterPlayerController::SelectScreen))
@@ -156,7 +158,7 @@ void ASarkoShelterPlayerController::RefreshWidget()
 	}
 	Widget->SetView(SarkoShelter::BuildView(
 		GameInstance->LastRaid, GameInstance->CachedProfile, GameInstance->bProfileLoaded,
-		LastError, LastCraftLine, SarkoLoot::GetItemCatalog(), CurrentScreen));
+		LastError, LastCraftLine, SarkoLoot::GetItemCatalog(), CurrentScreen, BorrowedKit));
 }
 
 void ASarkoShelterPlayerController::SelectScreen(ESarkoShelterScreen Screen)
@@ -468,6 +470,56 @@ void ASarkoShelterPlayerController::SarkoDebugEquip(float DelaySeconds, bool bRe
 #endif
 }
 
+void ASarkoShelterPlayerController::SarkoDebugSortie(float DelaySeconds, int32 CooldownSeconds)
+{
+#if !UE_BUILD_SHIPPING
+	TWeakObjectPtr<ASarkoShelterPlayerController> WeakThis(this);
+	FTimerHandle Handle;
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda([WeakThis, CooldownSeconds]()
+	{
+		ASarkoShelterPlayerController* Self = WeakThis.Get();
+		USarkoGameInstance* GameInstance = Self ? Self->GetGameInstance<USarkoGameInstance>() : nullptr;
+		if (!GameInstance)
+		{
+			return;
+		}
+		GameInstance->bProfileLoaded = true;
+
+		if (CooldownSeconds > 0)
+		{
+			// The cooldown state. It goes into the CACHED PROFILE and not into the
+			// button, so what is photographed is BuildRaidButton reading the same field
+			// /v1/profile fills — the label, the colour and the refusal are all the
+			// shipped ones.
+			GameInstance->CachedProfile.SortieCooldownSeconds = CooldownSeconds;
+			Self->BorrowedKit.Reset();
+			UE_LOG(LogTemp, Warning,
+				TEXT("SarkoDebugSortie: the CACHED profile now claims %d s of cooldown. Nothing was sent to the backend, and the server would refuse or allow a sortie on its own count."),
+				CooldownSeconds);
+		}
+		else
+		{
+			// The reveal. A copy of the server's richest authored kit ("provisioned" in
+			// domain.SortieKits) — the only copy of that table on this client, and it
+			// exists to be drawn and nothing else. It is NOT written into the profile's
+			// equipment: the player owns none of it until an extraction credits it.
+			GameInstance->CachedProfile.SortieCooldownSeconds = 0;
+			Self->BorrowedKit = {
+				FSarkoItemStack{ FName(TEXT("pistol")), 1 },
+				FSarkoItemStack{ FName(TEXT("ammo_9mm")), 20 },
+				FSarkoItemStack{ FName(TEXT("backpack")), 1 },
+				FSarkoItemStack{ FName(TEXT("jacket")), 1 },
+				FSarkoItemStack{ FName(TEXT("medkit")), 1 },
+			};
+			UE_LOG(LogTemp, Warning,
+				TEXT("SarkoDebugSortie: showing a FAKE borrowed kit of %d stack(s) in the character panel. No session was opened, nothing was granted, and no travel is scheduled."),
+				Self->BorrowedKit.Num());
+		}
+		Self->RefreshWidget();
+	}), FMath::Max(0.01f, DelaySeconds), false);
+#endif
+}
+
 void ASarkoShelterPlayerController::Craft()
 {
 	if (bCraftInFlight)
@@ -604,6 +656,106 @@ void ASarkoShelterPlayerController::EnterRaid()
 	// Seed 0 means "no override", so the raid uses the backend's seed (or its own
 	// default offline). ?Seed= stays a command-line tool for reproducing a raid.
 	SarkoTravel::TravelTo(this, SarkoTravel::RaidOptions(/*SeedOverride*/ 0));
+}
+
+void ASarkoShelterPlayerController::EnterSortie()
+{
+	if (bSortieInFlight)
+	{
+		// A second press would hold a second open session against the first, and the
+		// server would refuse it `raid_in_progress` — the right refusal for the wrong
+		// reason, on a button that had just worked.
+		return;
+	}
+
+	USarkoGameInstance* GameInstance = GetGameInstance<USarkoGameInstance>();
+	const TSharedPtr<FSarkoBackendClient> Backend = GameInstance ? GameInstance->EnsureBackend() : nullptr;
+	if (!Backend.IsValid())
+	{
+		// A sortie is worthless offline: the kit is the server's, so there is nothing
+		// to borrow and nothing to credit. Unlike В РЕЙД — which must work offline,
+		// because a player with nothing must always have a way in — this one says so
+		// and does not travel.
+		LastError = TEXT("no backend client");
+		RefreshWidget();
+		return;
+	}
+
+	bSortieInFlight = true;
+	// The map is the same one an ordinary raid enters, and the same setting decides it:
+	// a sortie is a raid with a worse kit and a shorter clock, not a different place.
+	const FString MapId = GetDefault<USarkoRaidSettings>()->BackendMapId;
+
+	// Weak: this completion can land after the reveal timer has already travelled, or
+	// after the player has pressed В РЕЙД instead.
+	TWeakObjectPtr<ASarkoShelterPlayerController> WeakThis(this);
+	Backend->StartRaid(MapId, /*Loadout*/ {},
+		[WeakThis](bool bStarted, const FSarkoRaidSession& Session, const FString& Error)
+		{
+			ASarkoShelterPlayerController* Self = WeakThis.Get();
+			USarkoGameInstance* Instance = Self ? Self->GetGameInstance<USarkoGameInstance>() : nullptr;
+			if (!Self || !Instance)
+			{
+				return;
+			}
+			Self->bSortieInFlight = false;
+
+			if (!bStarted)
+			{
+				// `sortie_cooldown` arrives here, and its message names the remaining
+				// time. Shown VERBATIM, like every other refusal on this screen — and
+				// then the profile is refetched, because the server's countdown is the
+				// only honest source for the button's label and the one this client had
+				// was evidently wrong.
+				Self->LastError = Error;
+				Self->FetchProfile();
+				Self->RefreshWidget();
+				return;
+			}
+			Self->LastError.Reset();
+
+			if (!Session.IsSortie())
+			{
+				// The service answered `raid` to a request that said `sortie` — an older
+				// deployment, or one that dropped the field. It is a REAL raid now: it
+				// debited nothing (the loadout was empty), but nothing about it is free
+				// or kitted, so saying "ПОЗИЧЕНЕ" over an empty character panel would be
+				// the screen inventing a mechanic the server does not have.
+				UE_LOG(LogTemp, Warning,
+					TEXT("SarkoShelter: asked for a sortie and the server opened a '%s' session — entering it as an ordinary raid"),
+					*Session.Mode);
+			}
+
+			// Parked on the game instance, which is the only thing that survives the
+			// travel this is about to start. ASarkoRaidGameMode adopts it instead of
+			// opening a second session.
+			Instance->PendingSortie = Session;
+			Self->BorrowedKit = Session.GrantedKit;
+			UE_LOG(LogTemp, Display,
+				TEXT("SarkoShelter: ВИЛАЗКА %s granted %d stack(s) — showing them, then travelling"),
+				*Session.SessionId, Session.GrantedKit.Num());
+
+			// The reveal: the borrowed kit goes into the character panel, and the travel
+			// waits long enough for it to be read.
+			Self->RefreshWidget();
+			Self->TravelAfterSortieReveal();
+		},
+		TEXT("sortie"));
+
+	// Drawn immediately so the press is acknowledged: the button greys out on the next
+	// SetView anyway, and a button that looks untouched for a whole round trip reads as
+	// a button that did not work.
+	RefreshWidget();
+}
+
+void ASarkoShelterPlayerController::TravelAfterSortieReveal()
+{
+	// CreateWeakLambda, so a timer still pending when this controller is destroyed —
+	// the player pressed В РЕЙД during the reveal — fires nothing. A second travel out
+	// of a half-unloaded shelter is not a recoverable state.
+	GetWorldTimerManager().SetTimer(SortieRevealTimer,
+		FTimerDelegate::CreateWeakLambda(this, [this]() { EnterRaid(); }),
+		SortieRevealSeconds, /*bLoop*/ false);
 }
 
 #if !UE_BUILD_SHIPPING

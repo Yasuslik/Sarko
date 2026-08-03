@@ -99,10 +99,22 @@ FString SarkoBackend::MakeAnonymousBody(const FString& DeviceId)
 	return FString::Printf(TEXT("{\"device_id\":\"%s\"}"), *EscapeJson(DeviceId));
 }
 
-FString SarkoBackend::MakeRaidStartBody(const FString& MapId, const TArray<FSarkoItemStack>& Loadout)
+FString SarkoBackend::MakeRaidStartBody(const FString& MapId, const TArray<FSarkoItemStack>& Loadout,
+	const FString& Mode)
 {
-	return FString::Printf(TEXT("{\"map_id\":\"%s\",\"loadout\":%s}"),
-		*EscapeJson(MapId), *StacksToJsonArray(Loadout));
+	// OMITTED when empty, rather than sent as "". A raid built the way it always was
+	// produces the body it always did, so nothing about the ordinary path changed
+	// shape when the sortie arrived — and the backend's own default for an absent
+	// mode is `raid`, which is the direction that costs the player something.
+	const FString ModeField = Mode.IsEmpty()
+		? FString()
+		: FString::Printf(TEXT(",\"mode\":\"%s\""), *EscapeJson(Mode));
+	// The loadout is sent even for a sortie, and the server discards it unread. Not
+	// suppressed here on purpose: whether a sortie is free is the SERVER's rule, and
+	// a client that decided to send nothing would be a client whose good behaviour
+	// the rule depended on.
+	return FString::Printf(TEXT("{\"map_id\":\"%s\",\"loadout\":%s%s}"),
+		*EscapeJson(MapId), *StacksToJsonArray(Loadout), *ModeField);
 }
 
 FString SarkoBackend::MakeSessionBody(const FString& SessionId, const FString& SessionToken)
@@ -183,6 +195,54 @@ bool SarkoBackend::ParseRaidStartResponse(const FString& Json, FSarkoRaidSession
 		OutError = TEXT("raid/start response has no parseable 'expires_at'");
 		OutSession = FSarkoRaidSession();
 		return false;
+	}
+
+	// `mode` and `granted_kit` are both OPTIONAL, and neither absence is an error: a
+	// service older than spec §4.5 answers with neither, and an ordinary raid answers
+	// with `mode` alone (`granted_kit` is omitempty). An absent mode leaves the empty
+	// string, which IsSortie() reads as "not a sortie" — the direction that shows no
+	// borrowed gear rather than inventing some.
+	Root->TryGetStringField(TEXT("mode"), OutSession.Mode);
+
+	// The granted kit. A row with no id or a non-positive quantity FAILS the whole
+	// parse rather than being skipped, exactly as a stash row does: this list is what
+	// the shelter shows the player they were lent, and a silently shortened one is a
+	// screen understating what the server is about to credit them.
+	if (Root->HasField(TEXT("granted_kit")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Kit = nullptr;
+		if (!Root->TryGetArrayField(TEXT("granted_kit"), Kit) || !Kit)
+		{
+			OutError = TEXT("raid/start response has a 'granted_kit' that is not an array");
+			OutSession = FSarkoRaidSession();
+			return false;
+		}
+		OutSession.GrantedKit.Reserve(Kit->Num());
+		for (const TSharedPtr<FJsonValue>& Value : *Kit)
+		{
+			const TSharedPtr<FJsonObject>* Object = nullptr;
+			if (!Value->TryGetObject(Object) || !Object)
+			{
+				OutError = TEXT("'granted_kit' contains a non-object entry");
+				OutSession = FSarkoRaidSession();
+				return false;
+			}
+			FString ItemId;
+			double Quantity = 0.0;
+			if (!(*Object)->TryGetStringField(TEXT("item_id"), ItemId) || ItemId.IsEmpty())
+			{
+				OutError = TEXT("a granted_kit row has no 'item_id'");
+				OutSession = FSarkoRaidSession();
+				return false;
+			}
+			if (!(*Object)->TryGetNumberField(TEXT("quantity"), Quantity) || Quantity < 1.0)
+			{
+				OutError = FString::Printf(TEXT("granted_kit row '%s' has no positive 'quantity'"), *ItemId);
+				OutSession = FSarkoRaidSession();
+				return false;
+			}
+			OutSession.GrantedKit.Add(FSarkoItemStack{ FName(*ItemId), static_cast<int32>(Quantity) });
+		}
 	}
 	return true;
 }
@@ -310,6 +370,20 @@ bool SarkoBackend::ParseProfileResponse(const FString& Json, FSarkoProfile& OutP
 	// The one field whose absence is meaningful rather than merely tolerated:
 	// absent == false == tutorial mode (spec §6.5).
 	Root->TryGetBoolField(TEXT("tutorial_completed"), OutProfile.bTutorialCompleted);
+
+	// The ВИЛАЗКА countdown (spec §4.5). Optional, and absent parses as 0 — the
+	// button then offers a sortie the server may refuse by name, which costs one
+	// round trip; the other direction would hide the recovery path from a player
+	// whose service is a version behind.
+	//
+	// CLAMPED AT ZERO rather than trusted: a negative would format as a countdown
+	// running backwards, and this number reaches a label without passing through a
+	// rule that could have noticed.
+	double CooldownSeconds = 0.0;
+	if (Root->TryGetNumberField(TEXT("sortie_cooldown_seconds"), CooldownSeconds))
+	{
+		OutProfile.SortieCooldownSeconds = FMath::Max(0, static_cast<int32>(CooldownSeconds));
+	}
 
 	// `equipment` is slot -> item id, and an ABSENT object is "wearing nothing"
 	// rather than an error — the same direction tutorial_completed takes, so a
@@ -719,9 +793,10 @@ void FSarkoBackendClient::SetEquipment(ESarkoEquipSlot Slot, FName Item, FOnEqui
 		});
 }
 
-void FSarkoBackendClient::StartRaid(const FString& MapId, const TArray<FSarkoItemStack>& Loadout, FOnSession OnDone)
+void FSarkoBackendClient::StartRaid(const FString& MapId, const TArray<FSarkoItemStack>& Loadout, FOnSession OnDone,
+	const FString& Mode)
 {
-	Send(TEXT("POST"), TEXT("/v1/raid/start"), SarkoBackend::MakeRaidStartBody(MapId, Loadout), /*bAuthenticated*/ true,
+	Send(TEXT("POST"), TEXT("/v1/raid/start"), SarkoBackend::MakeRaidStartBody(MapId, Loadout, Mode), /*bAuthenticated*/ true,
 		[OnDone](bool bSuccess, const FString& Body, const FString& Error)
 		{
 			if (!bSuccess)
@@ -737,8 +812,12 @@ void FSarkoBackendClient::StartRaid(const FString& MapId, const TArray<FSarkoIte
 				OnDone(false, FSarkoRaidSession(), ParseError);
 				return;
 			}
-			UE_LOG(LogTemp, Display, TEXT("SarkoBackend: raid session %s opened, seed %d"),
-				*Session.SessionId, Session.Seed);
+			UE_LOG(LogTemp, Display, TEXT("SarkoBackend: %s session %s opened, seed %d%s"),
+				Session.IsSortie() ? TEXT("SORTIE") : TEXT("raid"),
+				*Session.SessionId, Session.Seed,
+				Session.GrantedKit.Num() > 0
+					? *FString::Printf(TEXT(", %d granted stack(s)"), Session.GrantedKit.Num())
+					: TEXT(""));
 			OnDone(true, Session, FString());
 		});
 }
