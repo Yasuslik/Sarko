@@ -328,18 +328,39 @@ bool FSarkoPropKindsAreComplete::RunTest(const FString& Parameters)
 	// keep their exact extents, because bridge.json's 238 props are placed with
 	// pos.z equal to the kind's own half-height. A changed half-height sinks or
 	// floats every instance of that kind at once.
+	//
+	// ONE ROW HAS MOVED SINCE THIS WAS WRITTEN, and it is fuel_pump's X and Y.
+	// Extent.Z is 110 exactly as it always was — that is the number the three
+	// placed pumps' pos.z is pinned to, and it is the only one of the three that
+	// can move a prop. The footprint went 60x40 -> 65x34 because the dispenser
+	// stopped being a cube: the mesh is 1.17 x 0.62 x 1.98 m and those are its
+	// own proportions at the pinned height, so the alternative to this edit was
+	// a stretched pump. The right response to a mesh arriving is to re-derive X
+	// and Y from Z and the mesh, which is what the kind table's own comment has
+	// said since car_wreck; the guard that matters is Z, and Z is untouched.
 	const TArray<TPair<FName, FVector>> LegacyExtents = {
 		{ TEXT("wall"),        FVector(400.f, 60.f, 140.f) },
 		{ TEXT("car_wreck"),   FVector(230.f, 95.f, 75.f) },
 		{ TEXT("bus"),         FVector(600.f, 130.f, 160.f) },
 		{ TEXT("house"),       FVector(500.f, 400.f, 300.f) },
-		{ TEXT("fuel_pump"),   FVector(60.f, 40.f, 110.f) },
+		{ TEXT("fuel_pump"),   FVector(65.f, 34.f, 110.f) },
 		{ TEXT("freight_car"), FVector(700.f, 150.f, 200.f) },
 		{ TEXT("water_tower"), FVector(220.f, 220.f, 700.f) },
 		{ TEXT("sandbag"),     FVector(180.f, 70.f, 55.f) },
 		{ TEXT("crate"),       FVector(70.f, 70.f, 70.f) },
 		{ TEXT("pipe"),        FVector(90.f, 90.f, 600.f) },
 		{ TEXT("bridge_deck"), FVector(900.f, 300.f, 30.f) },
+	};
+	// Stated separately from the table above so it cannot be edited by accident:
+	// the half-HEIGHT of every one of these is frozen, full stop. This is the
+	// claim the 238 shipped pos.z values actually depend on.
+	static const TMap<FName, float> FrozenHalfHeight = {
+		{ TEXT("wall"), 140.f },        { TEXT("car_wreck"), 75.f },
+		{ TEXT("bus"), 160.f },         { TEXT("house"), 300.f },
+		{ TEXT("fuel_pump"), 110.f },   { TEXT("freight_car"), 200.f },
+		{ TEXT("water_tower"), 700.f }, { TEXT("sandbag"), 55.f },
+		{ TEXT("crate"), 70.f },        { TEXT("pipe"), 600.f },
+		{ TEXT("bridge_deck"), 30.f },
 	};
 	for (const TPair<FName, FVector>& Expected : LegacyExtents)
 	{
@@ -351,6 +372,9 @@ bool FSarkoPropKindsAreComplete::RunTest(const FString& Parameters)
 		}
 		TestTrue(FString::Printf(TEXT("kind '%s' keeps its extent"), *Expected.Key.ToString()),
 			Resolved.Parts[0].Extent.Equals(Expected.Value, 0.01f));
+		TestEqual(FString::Printf(TEXT("kind '%s' keeps the half-height its pos.z values assume"),
+			*Expected.Key.ToString()),
+			static_cast<float>(Resolved.Parts[0].Extent.Z), FrozenHalfHeight[Expected.Key]);
 		TestTrue(FString::Printf(TEXT("kind '%s' keeps its zero offset"), *Expected.Key.ToString()),
 			Resolved.Parts[0].Offset.IsNearlyZero());
 		TestTrue(FString::Printf(TEXT("kind '%s' still blocks movement"), *Expected.Key.ToString()),
@@ -359,37 +383,58 @@ bool FSarkoPropKindsAreComplete::RunTest(const FString& Parameters)
 		// keeps every number in this table true and still changes the map. So it
 		// is pinned BY PATH, per kind, rather than by "is it a primitive" — which
 		// is what this line used to say and what stopped being the point the day
-		// two of these eleven got real art. car_wreck is a car body and
-		// water_tower is a legged tower with a tank on it; both kept their extents
-		// to the unit, so all fifty-two placed props stayed exactly where they
-		// were, and the rest of the table is still primitives because nothing in
-		// the packs fits their proportions.
+		// two of these eleven got real art.
+		//
+		// SIX OF THE ELEVEN NOW NAME A MESH, and four of those were added by the
+		// procedural pass: the meshes were authored TO these extents rather than
+		// found and fitted, so freight_car, sandbag and crate are exact to the
+		// unit against their metres and not one of their 79 placed props moved.
+		// What is left on a primitive is left there on purpose — `wall`, `house`
+		// and `bus` are abstractions rather than objects (a "wall" prop is a
+		// fence, a shelter end and a yard boundary depending on where it stands),
+		// `bridge_deck` is road paint, and `pipe` is the one primitive that is
+		// not a lie from overhead: a cylinder seen from above is a circle, which
+		// is what a standing pipe is.
 		static const TMap<FName, FString> ExpectedMesh = {
 			{ TEXT("wall"),        TEXT("/Engine/BasicShapes/Cube.Cube") },
 			{ TEXT("car_wreck"),   TEXT("/Game/ThirdParty/Cars/NormalCar1.NormalCar1") },
 			{ TEXT("bus"),         TEXT("/Engine/BasicShapes/Cube.Cube") },
 			{ TEXT("house"),       TEXT("/Engine/BasicShapes/Cube.Cube") },
-			{ TEXT("fuel_pump"),   TEXT("/Engine/BasicShapes/Cube.Cube") },
-			{ TEXT("freight_car"), TEXT("/Engine/BasicShapes/Cube.Cube") },
+			{ TEXT("fuel_pump"),   TEXT("/Game/Generated/Props/FuelPump.FuelPump") },
+			{ TEXT("freight_car"), TEXT("/Game/Generated/Props/FreightWagon.FreightWagon") },
 			{ TEXT("water_tower"), TEXT("/Game/ThirdParty/ZombieApocalypse/WaterTower.WaterTower") },
-			{ TEXT("sandbag"),     TEXT("/Engine/BasicShapes/Cube.Cube") },
-			{ TEXT("crate"),       TEXT("/Engine/BasicShapes/Cube.Cube") },
+			{ TEXT("sandbag"),     TEXT("/Game/Generated/Props/SandbagStack.SandbagStack") },
+			{ TEXT("crate"),       TEXT("/Game/Generated/Props/Crate.Crate") },
 			{ TEXT("pipe"),        TEXT("/Engine/BasicShapes/Cylinder.Cylinder") },
 			{ TEXT("bridge_deck"), TEXT("/Engine/BasicShapes/Cube.Cube") },
 		};
 		TestEqual(FString::Printf(TEXT("kind '%s' keeps its mesh"), *Expected.Key.ToString()),
 			Resolved.Parts[0].Mesh.ToString(), ExpectedMesh[Expected.Key]);
 		// Every legacy kind was painted Palette::Structure before surfaces existed,
-		// so anything else here repaints the shipped map — with ONE deliberate
-		// exception, named rather than excluded by a loosened rule. ТЗ §5 asks for
-		// a dark deck with light rails and the sector had a pale deck with rails
-		// that vanished into it; bridge_deck is therefore asphalt, and the pale
-		// tone moved to the new bridge_rail kind. The extents are untouched, which
-		// is what kept all twenty-seven bridge props exactly where they were.
-		if (Expected.Key == TEXT("bridge_deck"))
+		// so anything else here repaints the shipped map — and every departure is
+		// NAMED here rather than allowed by a loosened rule, so that repainting
+		// eight per cent of the sector stays a decision somebody wrote down.
+		//
+		//  * bridge_deck (ТЗ §5): the sector had a pale deck with rails that
+		//    vanished into it, which is the inverse of what §5 asks for. Asphalt
+		//    here, and the pale tone moved to the new bridge_rail kind.
+		//  * freight_car: rolling stock is rust, not concrete. Twelve wagons in
+		//    Structure grey read as twelve blocks parked in a field, and the
+		//    siding is the one place in the sector with a named industrial
+		//    identity to lose.
+		//  * crate: it is made of wood. Forty-three of them stand against timber
+		//    houses, pallets and log piles in exactly the same grey as the walls
+		//    they lean on, which is the single largest block of miscoloured
+		//    geometry left in the map.
+		static const TMap<FName, ESarkoSurface> Repainted = {
+			{ TEXT("bridge_deck"), ESarkoSurface::Asphalt },
+			{ TEXT("freight_car"), ESarkoSurface::Rust },
+			{ TEXT("crate"),       ESarkoSurface::Timber },
+		};
+		if (const ESarkoSurface* Deliberate = Repainted.Find(Expected.Key))
 		{
-			TestEqual(TEXT("bridge_deck is asphalt-dark (ТЗ §5)"),
-				static_cast<uint8>(Resolved.Parts[0].Surface), static_cast<uint8>(ESarkoSurface::Asphalt));
+			TestEqual(FString::Printf(TEXT("kind '%s' carries its named surface"), *Expected.Key.ToString()),
+				static_cast<uint8>(Resolved.Parts[0].Surface), static_cast<uint8>(*Deliberate));
 		}
 		else
 		{
@@ -835,17 +880,19 @@ bool FSarkoNewPropKindsExist::RunTest(const FString& Parameters)
 				Piece.Extent.GetMin() > 0.f);
 			// Was "names an engine mesh", and it stopped being true the day the
 			// forest got real art. The claim worth keeping is that a part names
-			// a mesh THIS PROJECT SHIPS: an engine primitive or something under
-			// /Game/ThirdParty. A path to neither is a prop that silently does not
-			// appear (SpawnProps logs and skips), which is exactly the failure
-			// this line was added to catch.
+			// a mesh THIS PROJECT SHIPS: an engine primitive, something under
+			// /Game/ThirdParty, or one of the meshes we generate ourselves under
+			// /Game/Generated/Props. A path to none of the three is a prop that
+			// silently does not appear (SpawnProps logs and skips), which is
+			// exactly the failure this line was added to catch.
 			// Sarko.Config.PropMeshBoundsAreNormalised is the other half —
 			// it loads the /Game ones and checks they are the shape the extents
 			// below assume.
 			const FString MeshPath = Piece.Mesh.ToString();
 			TestTrue(FString::Printf(TEXT("'%s' part %d names a mesh this project ships (%s)"),
 				*Kind.ToString(), Index, *MeshPath),
-				MeshPath.StartsWith(TEXT("/Engine/BasicShapes/")) || MeshPath.StartsWith(TEXT("/Game/ThirdParty/")));
+				MeshPath.StartsWith(TEXT("/Engine/BasicShapes/")) || MeshPath.StartsWith(TEXT("/Game/ThirdParty/"))
+					|| MeshPath.StartsWith(TEXT("/Game/Generated/Props/")));
 			// Gated deliberately. Offset is measured from the PROP's origin, and
 			// it is the JSON `pos.z` that carries a single-box kind's half-height
 			// (the authoring convention this task documents). Ungated, this line
