@@ -40,7 +40,7 @@ enum class ESarkoSurface : uint8
 	 * yard from above. Bark is the same family, desaturated toward grey, so a
 	 * stand reads as wood without reading as lumber.
 	 *
-	 * It is 2.4x the ground's luminance and that is not generosity. A trunk is
+	 * It is 2.75x the ground's luminance and that is not generosity. A trunk is
 	 * VERTICAL and the sun here is 55 degrees up, so a trunk's sides catch a
 	 * fraction of what the flat ground catches; the first version of this colour
 	 * cleared every luminance rule on paper at 1.4x and rendered as black posts
@@ -118,8 +118,22 @@ namespace SarkoMap
 		 */
 		const FLinearColor Ground(0.046f, 0.051f, 0.028f);
 
-		/** Cover and props: neutral grey, deliberately much lighter than the ground. */
-		const FLinearColor Structure(0.150f, 0.150f, 0.155f);
+		/**
+		 * Cover and props: neutral grey, deliberately much lighter than the ground.
+		 *
+		 * 0.106 rather than the 0.150 this shipped at, and the reason is arithmetic
+		 * rather than taste. Structure and Concrete are BOTH near-neutral by
+		 * definition — one is "the neutral of the frame" and the other is "the pale
+		 * contrast tone" — so the only thing that can separate them is lightness,
+		 * and Concrete cannot climb: the muted ceiling caps it and at its old value
+		 * the depot pad already measured 223/255 in a real frame. That put the two
+		 * greys 4.96 dE00 apart, inside the wobble a single surface's own detail
+		 * map produces, and the pad and the pale boxes standing on it measured
+		 * (223,223,221) against (228,230,214). Dropping the neutral is what buys
+		 * the gap; it is still 2.19x the ground's luminance, so cover still stands
+		 * off the field it sits on.
+		 */
+		const FLinearColor Structure(0.106f, 0.105f, 0.111f);
 
 		/** Ground roughness. Near-matte, so a 400 m plane cannot catch a specular sheet. */
 		constexpr float GroundRoughness = 0.92f;

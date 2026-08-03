@@ -240,7 +240,14 @@ namespace
 			// twenty-four placed emplacements do not move. Everything below the
 			// top course is a box, because everything below the top course is a
 			// surface this game's camera never sees.
-			{ TEXT("sandbag"),     Box(MeshSandbagStack, FVector(180.f, 70.f, 55.f), true, ESarkoSurface::Structure) },
+			//
+			// DIRT, not Structure. A sandbag is hessian filled with whatever was
+			// under the shovel, and painting it the neutral built grey made an
+			// emplacement read as a row of cast concrete blocks — the wrong
+			// material and, at the АЗС and the checkpoint, the same tone as the
+			// wall it is stacked against. Dirt is the sector's own earth one
+			// stop paler than the field, which is what a filled bag is.
+			{ TEXT("sandbag"),     Box(MeshSandbagStack, FVector(180.f, 70.f, 55.f), true, ESarkoSurface::Dirt) },
 			// The single biggest count in the table — forty-three of them — and it
 			// was a cube. It is now a boarded crate with corner battens, a lid
 			// frame and one diagonal brace ACROSS THE LID, which is the only

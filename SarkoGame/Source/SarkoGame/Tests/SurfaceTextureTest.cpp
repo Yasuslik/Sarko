@@ -170,6 +170,49 @@ bool FSarkoSurfaceTexturesAreLinearMultipliers::RunTest(const FString& Parameter
 		const int32 Width = Texture->Source.GetSizeX();
 		TestTrue(*FString::Printf(TEXT("'%s' detail map is at most 512 (%d)"), *Name, Width),
 			Width > 0 && Width <= 512);
+
+		// THE MEAN, measured rather than believed.
+		//
+		// Every argument the palette makes rests on one sentence: "the maps are
+		// normalised to a mean of 0.5, which makes the mean multiplier 1.0, which
+		// makes a textured surface average to exactly its palette colour". The
+		// material earns the second half of that — base colour is
+		// Colour x lerp(1-Strength, 1+Strength, Detail), which is LINEAR in
+		// Detail, so the mean multiplier is exactly 1 + Strength x (2 x mean - 1).
+		// The first half is a property of a PNG that a Python script wrote, and
+		// nothing in this project checked it. It does now: a map whose mean drifts
+		// to 0.45 quietly shifts its whole surface toward black, and the symptom
+		// is a palette entry that no longer means what the separation test just
+		// finished proving it means.
+		//
+		// The tolerance is the generator's own (0.004) plus a texel of 8-bit
+		// rounding.
+		// The read is ASSERTED rather than guarded, because a check that quietly
+		// declines to run is worse than no check: it reports Success either way.
+		TArray64<uint8> Mip;
+		const bool bRead = Texture->Source.IsValid() && Texture->Source.GetMipData(Mip, 0);
+		if (TestTrue(*FString::Printf(TEXT("'%s' detail map's source texels can be read"), *Name), bRead))
+		{
+			const ETextureSourceFormat Format = Texture->Source.GetFormat();
+			const int32 Stride = Format == TSF_G8 ? 1 : (Format == TSF_G16 ? 2 : 4);
+			const int64 Texels = Mip.Num() / Stride;
+			if (TestTrue(*FString::Printf(TEXT("'%s' detail map has source texels"), *Name), Texels > 0))
+			{
+				double Total = 0.0;
+				for (int64 Texel = 0; Texel < Texels; ++Texel)
+				{
+					// Both TSF_G8 and the BGRA family put the channel this material
+					// samples (R, and every channel is equal in a greyscale map) in
+					// the first byte of the texel.
+					Total += Mip[Texel * Stride];
+				}
+				const double Mean = Total / (Texels * 255.0);
+				TestTrue(*FString::Printf(
+					TEXT("'%s' detail map means 0.5, so its surface averages to the palette colour (%.4f)"),
+					*Name, Mean),
+					FMath::Abs(Mean - 0.5) < 0.008);
+			}
+		}
 	}
 
 	TestTrue(TEXT("the generated texture set is present at all"), Checked > 0);

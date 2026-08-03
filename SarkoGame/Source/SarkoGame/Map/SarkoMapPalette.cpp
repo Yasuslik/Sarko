@@ -10,6 +10,39 @@ namespace
 	 * every relation that matters (dirt above ground, asphalt below it, deck
 	 * far above asphalt, water blue and below ground, treeline green and below
 	 * ground, ravine below water, nothing but the extraction saturated).
+	 *
+	 * AND, since the separation pass, one relation that is about the table as a
+	 * whole rather than about any row of it: every pair of surfaces that can
+	 * appear in the same frame must be at least 10 dE00 apart at the shipping
+	 * camera. That number is not a preference either. The detail maps modulate
+	 * each surface by +-0.4 x Strength around its palette colour, which is up to
+	 * 6.5 dE00 of variation WITHIN one surface — so two surfaces closer together
+	 * than that are inside each other's texture noise, and 10 is the nearest
+	 * round number that clears it by half again.
+	 *
+	 * WHAT THE RULE CAUGHT. Eight pairs failed it, and the worst of them is the
+	 * one a frame shows immediately: at the rail depot, Rust and Timber measured
+	 * 5.90 apart, and a real 1600x900 frame put a crate top at (212,187,161)
+	 * against a wagon top at (211,172,139). Wagons, crates, pallets, spools and
+	 * barrels were one brown mass distinguished by silhouette alone. Bark sat on
+	 * top of both (6.17 from Timber), the two greys sat on top of each other
+	 * (4.96), and the ford's water was 9.27 from the asphalt of the road that
+	 * crosses it.
+	 *
+	 * WHAT THE FIX IS. The warm end of this palette had four surfaces — Rust,
+	 * Bark, Timber, Dirt — packed into about 30 degrees of hue and 10 units of
+	 * lightness. There is no arrangement of four colours in that box that works,
+	 * so the pass SPREAD them along both axes instead of nudging them along one:
+	 * Rust went down and red, Timber went up and yellow, Bark took the gap
+	 * between them at low chroma, and Dirt left the warm family altogether for
+	 * the olive one it actually belongs to — a track is the sector's own soil,
+	 * walked pale, not a plank. The two greys separated by lightness because
+	 * lightness is the only thing two greys have.
+	 *
+	 * The world is no louder for it: the loudest world surface is Vegetation at
+	 * chroma 25.6 against the enemy tint's 27.4 (it was 26.2 before), and the
+	 * nearest any surface comes to a character is Bark at 13.3 from the red and
+	 * Concrete at 14.5 from the blue. A scav still pops.
 	 */
 	struct FSurfaceStyle
 	{
@@ -21,18 +54,43 @@ namespace
 	{
 		static const FSurfaceStyle Styles[static_cast<int32>(ESarkoSurface::Count)] = {
 			/* Ground     */ { SarkoMap::Palette::Ground,               SarkoMap::Palette::GroundRoughness },
-			/* Dirt       */ { FLinearColor(0.115f, 0.098f, 0.062f),    0.95f },
+			// OLIVE, not tan, and that is the separation pass's one change of
+			// family. A dirt track is the sector's own soil with the grass walked
+			// off it, so it belongs to the ground's hue and not to the village
+			// timber's — which is where it used to sit, 8.94 from Timber and 5.23
+			// from Bark, close enough that a road through a wood read as more wood.
+			// Now it is the ground one stop paler: same hue to within two degrees,
+			// 2.08x the luminance. Sandbags wear this too (see SarkoMapKinds.cpp),
+			// which is what raised its co-occurrence with Structure from 36 to 205
+			// and made the move worth making rather than merely defensible.
+			/* Dirt       */ { FLinearColor(0.094f, 0.106f, 0.062f),    0.95f },
 			// 0.90 rather than a glossier 0.80: measured in the Task 8 overview,
 			// glossy asphalt caught the same broad specular sheet the ground
 			// roughness exists to avoid, and the highway came out 123/255 against
 			// a 141/255 ground — a ribbon you had to look for. Matte asphalt is
 			// lit by its base colour instead, which is what §14's "dark" means.
 			/* Asphalt    */ { FLinearColor(0.022f, 0.022f, 0.025f),    0.90f },
-			/* Concrete   */ { FLinearColor(0.235f, 0.232f, 0.222f),    0.78f },
+			// Up from 0.235, and only as far as it can go: this is the surface the
+			// Structure comment in the header is arguing with, and it is the one
+			// that could not move much. The deck, the barriers and the depot pad
+			// already read near-white in a frame, so the gap between the two greys
+			// had to be bought mostly at the other end.
+			/* Concrete   */ { FLinearColor(0.276f, 0.281f, 0.246f),    0.78f },
 			/* Structure  */ { SarkoMap::Palette::Structure,            SarkoMap::Palette::StructureRoughness },
-			/* Rust       */ { FLinearColor(0.160f, 0.070f, 0.036f),    0.85f },
-			/* Timber     */ { FLinearColor(0.185f, 0.100f, 0.055f),    0.80f },
-			// 2.4x the ground's luminance, and greyer than the village timber
+			// DARKER AND REDDER. Iron oxide, not orange-brown: hue 38 rather than
+			// 64, luminance 1.51x the ground rather than 1.66x. It was 5.90 from
+			// Timber, which is what made the depot brown-on-brown; it is 22.6 now,
+			// and the pair that moved furthest in the whole pass. Still the reddest
+			// thing in the world set (chroma 20.1) and still comfortably under the
+			// enemy tint, which is the only red allowed to shout.
+			/* Rust       */ { FLinearColor(0.143f, 0.055f, 0.044f),    0.85f },
+			// LIGHTER AND YELLOWER, which is what sawn softwood actually is. It
+			// went the opposite way to Rust on purpose — separating a pair by
+			// moving both is cheaper in aesthetic damage than dragging one of them
+			// twice as far — and it is now the palest chromatic surface in the
+			// sector at 3.42x the ground, hue 92 against Rust's 38.
+			/* Timber     */ { FLinearColor(0.225f, 0.157f, 0.068f),    0.80f },
+			// Well above the ground's luminance, and greyer than the village timber
 			// rather than darker — which is the second attempt. The first was
 			// 1.4x and a warm brown, chosen on the numbers, and in a frame it
 			// produced black posts with pale lit caps: a trunk is VERTICAL, and
@@ -44,8 +102,20 @@ namespace
 			// lands on top of Timber, and "the fence tone" and "the tree tone"
 			// being the same colour is exactly the distinction this surface was
 			// added to make.
-			/* Bark       */ { FLinearColor(0.145f, 0.108f, 0.078f),    0.88f },
-			/* Vegetation */ { FLinearColor(0.020f, 0.042f, 0.016f),    0.95f },
+			//
+			// The separation pass moved it UP, from 2.35x the ground to 2.75x, and
+			// kept the greyness. Timber climbing to 0.225 would otherwise have
+			// closed on it from above (they were already 6.17 apart, which is why
+			// a fence in a wood read as a fallen trunk), and the argument above
+			// says which way this one is allowed to go: a vertical surface may be
+			// made brighter and may not be made darker.
+			/* Bark       */ { FLinearColor(0.198f, 0.118f, 0.087f),    0.88f },
+			// A shade darker and a shade cooler. The treeline masses stand ON
+			// SkirtNear, and at the shipped values the two were 9.22 apart — the
+			// wall and the ground beyond the border were the same tone, which is
+			// exactly the flattening the skirt bands were added to prevent. It is
+			// still green-dominant and still darker than the ground it borders.
+			/* Vegetation */ { FLinearColor(0.018f, 0.037f, 0.014f),    0.95f },
 			// Opaque, and that is a shipped limitation rather than a choice: a
 			// translucent material cannot exist here without authoring an asset
 			// (spec §5.2). Dark and blue is enough for the read from above.
@@ -58,22 +128,37 @@ namespace
 			// reading correctly at (105,119,138) in the west, i.e. the ravine's
 			// tone depended on where the sun happened to be. A gloss you cannot
 			// control across 400 m is worse than no gloss.
-			/* Water      */ { FLinearColor(0.018f, 0.028f, 0.046f),    0.90f },
+			//
+			// Bluer since the separation pass (0.013/0.028/0.050 rather than
+			// 0.018/0.028/0.046): the bridge crosses the ravine, so the deep water
+			// and the highway's asphalt are in the same frame, and two dark
+			// near-greys 9.27 apart is a gorge that reads as more road.
+			/* Water      */ { FLinearColor(0.013f, 0.028f, 0.050f),    0.90f },
 			// Lighter than the deep water and lighter than the GROUND — a shallow
 			// over pale stones is the one water tone that should read bright, which
 			// is what makes a ford legible from a top-down camera 20000 uu up.
 			// Near-matte for the same reason Water is: a gloss you cannot control
 			// across 400 m is worse than no gloss.
-			/* Shallow    */ { FLinearColor(0.045f, 0.062f, 0.085f),    0.90f },
-			/* Ravine     */ { FLinearColor(0.013f, 0.013f, 0.010f),    0.93f },
+			/* Shallow    */ { FLinearColor(0.048f, 0.060f, 0.087f),    0.90f },
+			// DEEPER, and neutral. The gorge bed and the highway were 6.80 apart
+			// and both of them are near-grey, so nothing but lightness could ever
+			// have told them apart — and there were only eight units of it. At
+			// 0.008 luminance it is still lit rather than black (the floor is
+			// 0.005) and it is now 1.7x below the outermost skirt band instead of
+			// 1.06x, which finally makes "the darkest thing in the sector" a
+			// statement about the picture and not just about the table.
+			/* Ravine     */ { FLinearColor(0.009f, 0.008f, 0.008f),    0.93f },
 			// THE EDGE SKIRT, near to far. 0.70x, 0.47x and 0.27x the ground's
 			// luminance — an even-looking fall-off, not an even numeric one.
 			// Matte throughout and getting matter: the outermost band must never
 			// catch a specular highlight, because a bright edge is the opposite of
 			// the thing being built. All three stay lighter than Ravine.
-			/* SkirtNear  */ { FLinearColor(0.032f, 0.036f, 0.020f),    0.93f },
-			/* SkirtMid   */ { FLinearColor(0.021f, 0.024f, 0.013f),    0.95f },
-			/* SkirtFar   */ { FLinearColor(0.008f, 0.016f, 0.006f),    0.97f },
+			// The ratios are untouched (0.700 / 0.492 / 0.287 of the ground); only
+			// the hue moved, a little grey and a little cool, so the treeline
+			// standing on the near band separates from it.
+			/* SkirtNear  */ { FLinearColor(0.033f, 0.035f, 0.024f),    0.93f },
+			/* SkirtMid   */ { FLinearColor(0.023f, 0.025f, 0.014f),    0.95f },
+			/* SkirtFar   */ { FLinearColor(0.009f, 0.016f, 0.007f),    0.97f },
 			// Mirrors ASarkoExtractionZone's pad tint so the two cannot drift.
 			/* Extraction */ { FLinearColor(0.160f, 0.620f, 0.240f),    0.70f },
 		};
