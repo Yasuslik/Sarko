@@ -26,6 +26,21 @@ namespace
 	}
 }
 
+float SarkoUI::WholeRowsHeightPt(float AvailablePt)
+{
+	const float Pitch = CellSizePt + CellGutterPt;
+	// One row is CellSizePt tall, not a whole pitch: the gutter belongs BETWEEN rows,
+	// so n rows measure n*Pitch - CellGutterPt. Adding the gutter back before the
+	// division is what makes a viewport exactly tall enough for n rows return n rather
+	// than n-1.
+	const int32 Rows = FMath::FloorToInt((AvailablePt + CellGutterPt) / Pitch);
+	if (Rows < 1)
+	{
+		return 0.f;
+	}
+	return Rows * Pitch - CellGutterPt;
+}
+
 FVector2D SarkoUI::CellExtentPt(FIntPoint Size)
 {
 	const float W = static_cast<float>(FMath::Max(1, Size.X));

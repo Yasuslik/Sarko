@@ -299,3 +299,16 @@ void USarkoGameInstance::RecordProfile(const FSarkoProfile& Profile)
 	CachedProfile = Profile;
 	bProfileLoaded = true;
 }
+
+FSarkoRaidSession USarkoGameInstance::TakePendingSortie()
+{
+	// CONSUMED, not read. This is the only guarantee that one granted kit becomes at
+	// most one raid: the raid game mode adopts the session by calling this, and a
+	// second world — a second travel, a re-entered raid, a scripted double press —
+	// finds nothing and starts an ordinary raid instead. Leaving it in place would let
+	// one free run's session be confirmed twice, and the second confirm would be
+	// answered `session_not_open` in the middle of a raid the player was playing.
+	const FSarkoRaidSession Taken = PendingSortie;
+	PendingSortie = FSarkoRaidSession();
+	return Taken;
+}

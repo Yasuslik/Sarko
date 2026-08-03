@@ -18,6 +18,14 @@ type Deps struct {
 	// deadline. It exists so a result submitted just inside the client's own
 	// timer is still credited when the network delays it.
 	GraceBuffer time.Duration
+	// SortieTTL is RaidTTL for a ВИЛАЗКА — shorter, because a sortie's trade-off is
+	// quality and clock, never safety (spec §4.5). Zero means "no sortie override",
+	// which is what every test that does not care about the mode passes.
+	SortieTTL time.Duration
+	// SortieCooldown is how long after a sortie ends before another may start.
+	// Enforced inside store.StartRaid under the player's row lock; reported on
+	// /v1/profile only so the button can show a number.
+	SortieCooldown time.Duration
 }
 
 // NewRouter builds the HTTP route table.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"time"
 
@@ -22,14 +23,32 @@ var (
 	ErrInsufficientItems = errors.New("insufficient items")
 	// ErrMapLocked means the player's vehicle tier does not unlock the map.
 	ErrMapLocked = errors.New("map locked")
+	// ErrSortieCooldown means the free run is not available yet (spec §4.5).
+	//
+	// Its own error, and therefore its own named API code, because it is the one
+	// refusal on this endpoint a well-behaved client will genuinely hit: the button
+	// shows the remaining time from a profile fetched some seconds ago, so pressing
+	// it a moment early is a race and not a bug. A client told only "conflict" would
+	// have nothing to say to the player.
+	ErrSortieCooldown = errors.New("sortie on cooldown")
 )
 
 // StartRaidParams is the input to StartRaid.
 type StartRaidParams struct {
-	PlayerID   string
-	MapID      string
+	PlayerID string
+	MapID    string
+	// Loadout is what the player is wearing. IGNORED ENTIRELY when Mode is
+	// ModeSortie: a sortie takes the server's kit and nothing of the player's, so
+	// there is nothing here for a client to be believed about.
 	Loadout    []domain.ItemStack
 	PendingTTL time.Duration
+	// Mode is raid or sortie. The client may ask; everything the answer implies —
+	// free entry, which kit, whether the cooldown has elapsed — is decided below.
+	Mode domain.RaidMode
+	// SortieCooldown is how long after a sortie ENDS before another may start. A
+	// duration from config rather than a constant here, because it is the knob that
+	// gets turned when the free run turns out to be too generous or too stingy.
+	SortieCooldown time.Duration
 }
 
 // StartedRaid is returned once, and carries the only copy of the plaintext token.
@@ -38,15 +57,51 @@ type StartedRaid struct {
 	SessionToken string    `json:"session_token"`
 	Seed         int64     `json:"seed"`
 	ExpiresAt    time.Time `json:"expires_at"`
+	// Mode is echoed so a client cannot be in doubt about which kind of run it
+	// just started — and so a client that asked for a sortie and got a raid (an
+	// older service, an omitted field) can tell.
+	Mode domain.RaidMode `json:"mode"`
+	// GrantedKit is what a sortie lent this player, and it is absent for an
+	// ordinary raid rather than empty — the field existing at all is the signal
+	// that the server, not the client, chose the loadout.
+	//
+	// It is exactly what went into the session row, which is exactly what an
+	// extraction credits back (see RaidResult.ReturnedLoadout). So this is not a
+	// promise about the kit: it is the same value, read from the same variable.
+	GrantedKit []domain.ItemStack `json:"granted_kit,omitempty"`
 }
 
 // StartRaid debits the loadout and opens a pending session, atomically.
 // Either the player loses the items and gets a session, or nothing happens.
+//
+// A SORTIE (spec §4.5) is the same function with three of its steps changed, and
+// keeping it here rather than in a StartSortie of its own is deliberate: the
+// serialisation (the garage row lock), the one-open-raid rule, the map gate, the
+// sweep and the session insert are the parts that must not diverge, and a second
+// entry point is how they diverge. What differs is stated in three places below,
+// each named.
 func (s *Store) StartRaid(ctx context.Context, p StartRaidParams) (StartedRaid, error) {
-	if err := domain.ValidateStacks(p.Loadout); err != nil {
-		return StartedRaid{}, err
+	mode := domain.NormaliseRaidMode(string(p.Mode))
+	sortie := mode == domain.ModeSortie
+
+	// DIFFERENCE 1 of 3: where the loadout comes from. For a raid it is the
+	// client's, validated and debited. For a sortie the client's list is discarded
+	// unread and the server rolls a kit — so there is no code path by which a
+	// client's bytes become a sortie's gear.
+	var (
+		loadout []domain.ItemStack
+		kitName string
+	)
+	if sortie {
+		kit := domain.PickSortieKit(sortieRoll())
+		kitName = kit.Name
+		loadout = domain.SortieKitStacks(kit)
+	} else {
+		if err := domain.ValidateStacks(p.Loadout); err != nil {
+			return StartedRaid{}, err
+		}
+		loadout = domain.MergeStacks(p.Loadout)
 	}
-	loadout := domain.MergeStacks(p.Loadout)
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -86,8 +141,33 @@ func (s *Store) StartRaid(ctx context.Context, p StartRaidParams) (StartedRaid, 
 		return StartedRaid{}, ErrRaidInProgress
 	}
 
-	if err := debitItemsTx(ctx, tx, p.PlayerID, loadout); err != nil {
-		return StartedRaid{}, err
+	// DIFFERENCE 2 of 3: the cooldown, and it is checked HERE — inside the
+	// transaction that holds this player's garage_progress row lock, which every
+	// start takes. That is what makes it un-farmable rather than merely rate-limited:
+	// two simultaneous sortie requests serialise on that lock, so the second one
+	// reads the first one's session and cannot slip past on a read-then-write race.
+	//
+	// It is a SERVER decision from a SERVER clock: the remaining time is computed by
+	// Postgres against now(), never against anything the caller sent.
+	if sortie {
+		if remaining, err := sortieRemainingTx(ctx, tx, p.PlayerID, p.SortieCooldown); err != nil {
+			return StartedRaid{}, err
+		} else if remaining > 0 {
+			return StartedRaid{}, fmt.Errorf("%w: another sortie in %d seconds",
+				ErrSortieCooldown, int(remaining.Seconds()+0.999))
+		}
+	}
+
+	// DIFFERENCE 3 of 3: a sortie is FREE. Nothing is debited, so nothing can be
+	// short — which is why a broke player can always take one, and the whole reason
+	// the mechanic exists. The kit is recorded on the session row all the same, and
+	// that is what makes extraction credit it: the extraction path (SubmitResult)
+	// returns the session's recorded loadout without caring where it came from, so
+	// "what you extract is yours" needs no code of its own.
+	if !sortie {
+		if err := debitItemsTx(ctx, tx, p.PlayerID, loadout); err != nil {
+			return StartedRaid{}, err
+		}
 	}
 
 	plain, hash, err := auth.NewSessionToken()
@@ -99,14 +179,14 @@ func (s *Store) StartRaid(ctx context.Context, p StartRaidParams) (StartedRaid, 
 		return StartedRaid{}, fmt.Errorf("marshal loadout: %w", err)
 	}
 
-	out := StartedRaid{SessionToken: plain, Seed: int64(rand.Uint32())}
+	out := StartedRaid{SessionToken: plain, Seed: int64(rand.Uint32()), Mode: mode}
 	err = tx.QueryRow(ctx,
 		`INSERT INTO raid_sessions
-		     (player_id, map_id, seed, session_token_hash, loadout, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, now() + $6::interval)
+		     (player_id, map_id, seed, session_token_hash, loadout, expires_at, mode)
+		 VALUES ($1, $2, $3, $4, $5, now() + $6::interval, $7)
 		 RETURNING id, expires_at`,
 		p.PlayerID, p.MapID, out.Seed, hash, loadoutJSON,
-		fmt.Sprintf("%d seconds", int(p.PendingTTL.Seconds())),
+		fmt.Sprintf("%d seconds", int(p.PendingTTL.Seconds())), string(mode),
 	).Scan(&out.SessionID, &out.ExpiresAt)
 	if err != nil {
 		return StartedRaid{}, fmt.Errorf("insert session: %w", err)
@@ -115,7 +195,97 @@ func (s *Store) StartRaid(ctx context.Context, p StartRaidParams) (StartedRaid, 
 	if err := tx.Commit(ctx); err != nil {
 		return StartedRaid{}, fmt.Errorf("commit: %w", err)
 	}
+	if sortie {
+		out.GrantedKit = loadout
+		// The kit's NAME is logged because "what did the server lend me" is the
+		// first question a player's report will contain, and the roll that chose it
+		// is recorded nowhere else — the session row stores the items, not which
+		// authored row they came from.
+		slog.Info("sortie granted", "player", p.PlayerID, "kit", kitName,
+			"session", out.SessionID, "stacks", len(loadout))
+	}
 	return out, nil
+}
+
+// sortieRoll draws the kit roll from the server's own generator.
+//
+// A function rather than an inline expression so the trust boundary has a name:
+// this is the ONLY source of a sortie's kit, it takes no argument, and there is
+// therefore nothing a request body can influence. math/rand/v2's global source is
+// seeded by the runtime and is safe for concurrent use.
+func sortieRoll() int {
+	total := domain.SumSortieWeights()
+	if total <= 0 {
+		return 0
+	}
+	return rand.IntN(total)
+}
+
+// sortieRemainingTx is how long until this player may take another sortie, or
+// zero when one is available now.
+//
+// DERIVED, not stored. "Available again some minutes after the last one ends" is
+// exactly the newest CLOSED sortie's closed_at plus the cooldown, and closed_at is
+// already written by every path that ends a session — SubmitResult's close and
+// closeExpiredSessionTx's died branch. A players.sortie_available_at column would
+// have needed a matching write in each of them, and the cost of missing one is a
+// cooldown that silently does not apply, i.e. exactly the farm it prevents.
+//
+// `state = 'closed'` and not "any sortie with a closed_at" is a decision, not an
+// oversight: a VOIDED sortie never entered the map, granted nothing and cost
+// nothing, so it has not "ended" in any sense the player would recognise —
+// burning a cooldown on a session lost to a network hiccup between start and
+// confirm would punish the client's most likely failure. It cannot be farmed
+// either: a voided session grants nothing (the kit is only credited on
+// extraction, which requires a confirm), and the one-open-raid rule means a
+// client can hold at most one at a time.
+//
+// The arithmetic is Postgres's, against now(): the app server's clock never
+// enters into it, for the same reason SubmitResult evaluates expiry in SQL.
+func sortieRemainingTx(ctx context.Context, tx pgx.Tx, playerID string,
+	cooldown time.Duration) (time.Duration, error) {
+	if cooldown <= 0 {
+		return 0, nil
+	}
+	var seconds float64
+	err := tx.QueryRow(ctx,
+		`SELECT GREATEST(0, EXTRACT(EPOCH FROM (max(closed_at) + $2::interval - now())))
+		 FROM raid_sessions
+		 WHERE player_id = $1 AND mode = 'sortie' AND state = 'closed' AND closed_at IS NOT NULL`,
+		playerID, fmt.Sprintf("%d seconds", int(cooldown.Seconds())),
+	).Scan(&seconds)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No sortie has ever ended for this player, so there is nothing to wait for.
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read sortie cooldown: %w", err)
+	}
+	return time.Duration(seconds * float64(time.Second)), nil
+}
+
+// SortieRemaining is sortieRemainingTx for a caller that has no transaction: it is
+// what GET /v1/profile reports so the button can show the time.
+//
+// The client DISPLAYS this and decides nothing with it. The refusal that actually
+// protects the cooldown is the one inside StartRaid, under the player's row lock,
+// and it is checked again there however stale this number has become.
+func (s *Store) SortieRemaining(ctx context.Context, playerID string,
+	cooldown time.Duration) (time.Duration, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	remaining, err := sortieRemainingTx(ctx, tx, playerID, cooldown)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+	return remaining, nil
 }
 
 func mapUnlocked(tier domain.Tier, mapID string) bool {
@@ -173,7 +343,7 @@ func sweepPlayerTx(ctx context.Context, tx pgx.Tx, playerID string) error {
 	// state is cast to text: pgx has no type mapping for our custom enum OIDs,
 	// so every enum column is read and written as text throughout this package.
 	_, _, err := closeExpiredTx(ctx, tx,
-		`SELECT id, player_id, state::text, loadout FROM raid_sessions
+		`SELECT id, player_id, state::text, loadout, mode FROM raid_sessions
 		 WHERE player_id = $1 AND state IN ('pending', 'active') AND expires_at <= now()
 		 FOR UPDATE`, playerID)
 	return err
@@ -225,6 +395,11 @@ type RaidResult struct {
 	ReturnedLoadout []domain.ItemStack `json:"returned_loadout"`
 	// AlreadyClosed is true when this call replayed an earlier result.
 	AlreadyClosed bool `json:"already_closed"`
+	// Mode is which kind of run this was, read off the session row. Reported so the
+	// shelter can say "the sortie kept its kit" rather than leaving a player to work
+	// out why a free run credited a pistol — and so a test can assert the server
+	// classified the run the way the client asked, without reading the database.
+	Mode domain.RaidMode `json:"mode"`
 }
 
 // ConfirmRaid marks a pending raid as actually entered and extends its deadline
@@ -239,7 +414,17 @@ type RaidResult struct {
 // playerID is the authenticated caller. A session token alone is not
 // authorisation: possession of one must not let a caller drive somebody else's
 // raid, so the session's owner has to match.
-func (s *Store) ConfirmRaid(ctx context.Context, playerID, sessionID, sessionToken string, deadline time.Duration) (time.Time, error) {
+//
+// TWO deadlines, chosen by the session's own stored mode and never by the caller:
+// a ВИЛАЗКА runs a SHORTER clock than a raid (spec §4.5's "the trade-off is
+// quality, not danger" — a shorter clock makes the free run worse, not safer).
+// It is enforced here rather than on the client because the client's in-raid clock
+// is already min(map duration, server deadline − margin)
+// (SarkoBackend::ClockSecondsFromDeadline), so shortening the deadline shortens the
+// raid with no client change at all — and a client that ignored it would simply be
+// playing past a deadline the sweeper then closes as death.
+func (s *Store) ConfirmRaid(ctx context.Context, playerID, sessionID, sessionToken string,
+	deadline, sortieDeadline time.Duration) (time.Time, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("begin: %w", err)
@@ -252,6 +437,7 @@ func (s *Store) ConfirmRaid(ctx context.Context, playerID, sessionID, sessionTok
 		ownerID    string
 		loadoutRaw []byte
 		expired    bool
+		modeText   string
 	)
 	// Enum columns are read as text — see the note in sweepPlayerTx.
 	//
@@ -259,10 +445,10 @@ func (s *Store) ConfirmRaid(ctx context.Context, playerID, sessionID, sessionTok
 	// clock, for the same reason SubmitResult does it that way: this call, that
 	// one and the sweeper must all agree on what "late" means.
 	err = tx.QueryRow(ctx,
-		`SELECT state::text, session_token_hash, player_id, loadout, expires_at <= now()
+		`SELECT state::text, session_token_hash, player_id, loadout, expires_at <= now(), mode
 		 FROM raid_sessions WHERE id = $1 FOR UPDATE`,
 		sessionID,
-	).Scan(&stateText, &storedHash, &ownerID, &loadoutRaw, &expired)
+	).Scan(&stateText, &storedHash, &ownerID, &loadoutRaw, &expired, &modeText)
 	notFound := errors.Is(err, pgx.ErrNoRows)
 	if err != nil && !notFound {
 		return time.Time{}, fmt.Errorf("load session: %w", err)
@@ -308,6 +494,7 @@ func (s *Store) ConfirmRaid(ctx context.Context, playerID, sessionID, sessionTok
 			playerID: ownerID,
 			state:    domain.StatePending,
 			loadout:  loadout,
+			mode:     domain.RaidMode(modeText),
 		}); err != nil {
 			return time.Time{}, err
 		}
@@ -319,13 +506,21 @@ func (s *Store) ConfirmRaid(ctx context.Context, playerID, sessionID, sessionTok
 		return time.Time{}, ErrSessionNotOpen
 	}
 
+	// The clock the session gets, decided by the row's OWN mode. A client that
+	// wanted the longer one would have to have started a raid, which costs it the
+	// loadout — which is the point.
+	granted := deadline
+	if domain.RaidMode(modeText) == domain.ModeSortie && sortieDeadline > 0 {
+		granted = sortieDeadline
+	}
+
 	var expiresAt time.Time
 	err = tx.QueryRow(ctx,
 		`UPDATE raid_sessions
 		 SET state = 'active', confirmed_at = now(), expires_at = now() + $2::interval
 		 WHERE id = $1
 		 RETURNING expires_at`,
-		sessionID, fmt.Sprintf("%d seconds", int(deadline.Seconds())),
+		sessionID, fmt.Sprintf("%d seconds", int(granted.Seconds())),
 	).Scan(&expiresAt)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("confirm raid: %w", err)
@@ -362,6 +557,7 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 		outcomeText *string
 		loadoutRaw  []byte
 		expired     bool
+		modeText    string
 	)
 	// Enum columns are read as text — see the note in sweepPlayerTx.
 	//
@@ -371,9 +567,9 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 	// the transaction's start time, which is also what the sweeper uses.
 	err = tx.QueryRow(ctx,
 		`SELECT player_id, state::text, session_token_hash, result_items, outcome::text,
-		        loadout, expires_at <= now()
+		        loadout, expires_at <= now(), mode
 		 FROM raid_sessions WHERE id = $1 FOR UPDATE`, p.SessionID,
-	).Scan(&playerID, &stateText, &storedHash, &storedRaw, &outcomeText, &loadoutRaw, &expired)
+	).Scan(&playerID, &stateText, &storedHash, &storedRaw, &outcomeText, &loadoutRaw, &expired, &modeText)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RaidResult{}, ErrNotFound
 	}
@@ -381,6 +577,10 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 		return RaidResult{}, fmt.Errorf("load session: %w", err)
 	}
 	state := domain.RaidState(stateText)
+	// The MODE comes off the session row, never from the caller. That is the whole
+	// of the trust boundary for the two rules below: which run this was was decided
+	// at start, under a row lock, and a result cannot reclassify it.
+	sortie := domain.RaidMode(modeText) == domain.ModeSortie
 
 	// The token is checked before anything else, and for every state.
 	//
@@ -404,6 +604,7 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 			AlreadyClosed:   true,
 			CreditedItems:   []domain.ItemStack{},
 			ReturnedLoadout: []domain.ItemStack{},
+			Mode:            domain.NormaliseRaidMode(modeText),
 		}
 		if outcomeText != nil {
 			out.Outcome = domain.RaidOutcome(*outcomeText)
@@ -439,7 +640,8 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 		if err := json.Unmarshal(loadoutRaw, &loadout); err != nil {
 			return RaidResult{}, fmt.Errorf("unmarshal loadout: %w", err)
 		}
-		e := expiredSession{id: p.SessionID, playerID: playerID, state: state, loadout: loadout}
+		e := expiredSession{id: p.SessionID, playerID: playerID, state: state,
+			loadout: loadout, mode: domain.RaidMode(modeText)}
 		if err := closeExpiredSessionTx(ctx, tx, e); err != nil {
 			return RaidResult{}, err
 		}
@@ -466,6 +668,7 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 			CreditedItems:   []domain.ItemStack{},
 			ReturnedLoadout: []domain.ItemStack{},
 			AlreadyClosed:   true,
+			Mode:            domain.NormaliseRaidMode(modeText),
 		}, nil
 	}
 
@@ -520,7 +723,15 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 	// playerID is the value loaded from the session row, not p.PlayerID: the two
 	// are already proven equal by the token check above, and using the loaded one
 	// keeps every write in this function keyed off the row it locked.
-	if p.Outcome == domain.OutcomeExtracted {
+	//
+	// AND NOT ON A SORTIE (spec §4.5: "it does not count as the tutorial"). The
+	// tutorial latch decides what is in every container of the next raid — while it
+	// is false the client reads the map's authored fixedItems instead of rolling —
+	// so latching it on a free run with borrowed gear would skip the teaching layout
+	// on the strength of a raid the player did not pay for. The condition is on the
+	// SESSION's mode and not on anything the result claims, so a client cannot
+	// choose to be taught or not.
+	if p.Outcome == domain.OutcomeExtracted && !sortie {
 		if _, err := tx.Exec(ctx,
 			`UPDATE players SET tutorial_completed = true
 			 WHERE id = $1 AND NOT tutorial_completed`, playerID); err != nil {
@@ -549,6 +760,19 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 	// stash does not contain and the next raid is refused for insufficient_items
 	// with the reason invisible. The safe-pocket allowance above is unaffected: it
 	// bounds what the HAUL may preserve, and equipment is not haul.
+	//
+	// A SORTIE runs through the SAME arithmetic, and that is the whole implementation
+	// of "extraction keeps everything — the borrowed gear and the haul both credit to
+	// the stash. Death loses all of it." The session row holds the granted kit
+	// because /v1/raid/start put it there, so an extraction credits exactly what was
+	// lent and a death credits nothing. Broke → sortie → walk out with a pistol → you
+	// own a pistol, and no branch here had to know that.
+	//
+	// The ONE difference is the death branch's equipment clear, and it is skipped for
+	// a sortie deliberately: that DELETE exists so a shelter cannot show gear the
+	// stash no longer holds, and a sortie debited nothing — the player's own pistol is
+	// still in their stash, still theirs, and unequipping it would be the free run
+	// taking something after all.
 	returned := []domain.ItemStack{}
 	if p.Outcome == domain.OutcomeExtracted {
 		if len(loadoutRaw) > 0 {
@@ -562,8 +786,10 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 		if err := addItemsTx(ctx, tx, playerID, returned); err != nil {
 			return RaidResult{}, err
 		}
-	} else if err := clearEquipmentTx(ctx, tx, playerID); err != nil {
-		return RaidResult{}, err
+	} else if !sortie {
+		if err := clearEquipmentTx(ctx, tx, playerID); err != nil {
+			return RaidResult{}, err
+		}
 	}
 
 	itemsJSON, err := json.Marshal(items)
@@ -586,5 +812,6 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 		Outcome:         p.Outcome,
 		CreditedItems:   items,
 		ReturnedLoadout: returned,
+		Mode:            domain.NormaliseRaidMode(modeText),
 	}, nil
 }

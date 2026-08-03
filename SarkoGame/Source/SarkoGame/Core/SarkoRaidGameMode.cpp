@@ -411,6 +411,34 @@ void ASarkoRaidGameMode::BeginRaidSession()
 	// here, /v1/raid/start still debits it from the real stash and refuses what is
 	// not there, so the worst a stale cached profile can do is fail the start and
 	// fall through to the offline raid.
+	// A ВИЛАЗКА IS ALREADY OPEN (spec §4.5), and this mode adopts it rather than
+	// starting a second one.
+	//
+	// The shelter starts the free run because the granted kit only exists in
+	// /v1/raid/start's answer and the reveal needs a character panel to land on. What
+	// arrives here is a `pending` session that has been paid for with nothing and
+	// whose loadout is the kit the server chose — so the only step left is the confirm,
+	// which is the same step this function's own start path ends with.
+	//
+	// TakePendingSortie CONSUMES it, so nothing can be confirmed twice: a re-entered
+	// raid, a second travel or a scripted double press finds nothing and starts an
+	// ordinary raid instead. And if this travel never happened, the session is
+	// abandoned as `pending`, voided by the server's sweeper after PENDING_TTL, and
+	// costs the player nothing — not even the cooldown, which counts only sorties that
+	// actually closed.
+	if (USarkoGameInstance* Instance = GetGameInstance<USarkoGameInstance>())
+	{
+		if (Instance->HasPendingSortie())
+		{
+			Session = Instance->TakePendingSortie();
+			UE_LOG(LogTemp, Display,
+				TEXT("SarkoRaidGameMode: adopting the shelter's ВИЛАЗКА %s (%d granted stack(s)) — no second start"),
+				*Session.SessionId, Session.GrantedKit.Num());
+			ConfirmAdoptedSession();
+			return;
+		}
+	}
+
 	const FString MapId = GetDefault<USarkoRaidSettings>()->BackendMapId;
 	FSarkoEquipment Equipped;
 	if (const USarkoGameInstance* Instance = GetGameInstance<USarkoGameInstance>())
@@ -435,46 +463,66 @@ void ASarkoRaidGameMode::BeginRaidSession()
 				return;
 			}
 			Inner->Session = NewSession;
+			Inner->ConfirmAdoptedSession();
+		});
+}
 
-			// Confirm immediately. Until it lands the session is `pending`
-			// and the sweeper hands the loadout back after PENDING_TTL (60 s
-			// on the deployed service), which would leave a raid running
-			// against a session that no longer accepts a result.
-			Inner->Backend->ConfirmRaid(NewSession,
-				[WeakThis](bool bConfirmed, const FDateTime& ExpiresAt, const FString& ConfirmError)
-				{
-					ASarkoRaidGameMode* Confirmed = WeakThis.Get();
-					if (!Confirmed)
-					{
-						return;
-					}
-					if (!bConfirmed)
-					{
-						Confirmed->FallBackToOfflineRaid(ConfirmError);
-						return;
-					}
+void ASarkoRaidGameMode::ConfirmAdoptedSession()
+{
+	if (!Backend || Session.SessionId.IsEmpty())
+	{
+		FallBackToOfflineRaid(TEXT("no session to confirm"));
+		return;
+	}
 
-					const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
-					const double SecondsLeft = (ExpiresAt - FDateTime::UtcNow()).GetTotalSeconds();
-					const float Clock = SarkoBackend::ClockSecondsFromDeadline(
-						Confirmed->CachedDefinition.RaidDurationSeconds, SecondsLeft,
-						Settings.BackendGraceMarginSeconds);
+	TWeakObjectPtr<ASarkoRaidGameMode> WeakThis(this);
 
-					if (Confirmed->MapClockSeconds() > Clock + 1.f)
-					{
-						// Loud, because it is a configuration mismatch a
-						// player would experience as "the raid was shorter
-						// than the map says". RAID_TTL is 20m on the deployed
-						// service against a 15-minute map, so this line
-						// should never appear — if it does, RAID_TTL was
-						// lowered and raising it is the fix.
-						UE_LOG(LogTemp, Warning,
-							TEXT("SarkoRaidGameMode: the map asks for %.0fs but the server's deadline allows %.0fs — raising RAID_TTL is the fix"),
-							Confirmed->MapClockSeconds(), Clock);
-					}
+	// Confirm immediately. Until it lands the session is `pending` and the sweeper
+	// hands the loadout back after PENDING_TTL (60 s on the deployed service), which
+	// would leave a raid running against a session that no longer accepts a result.
+	//
+	// ONE confirm for both paths — the raid this mode started, and the ВИЛАЗКА the
+	// shelter started — because everything after the start is identical: the deadline
+	// is the server's, the clock is derived from it, and the sortie's is simply
+	// shorter (SORTIE_TTL) with no client arithmetic involved. Two copies would be two
+	// places for the clock rule to drift.
+	Backend->ConfirmRaid(Session,
+		[WeakThis](bool bConfirmed, const FDateTime& ExpiresAt, const FString& ConfirmError)
+		{
+			ASarkoRaidGameMode* Confirmed = WeakThis.Get();
+			if (!Confirmed)
+			{
+				return;
+			}
+			if (!bConfirmed)
+			{
+				Confirmed->FallBackToOfflineRaid(ConfirmError);
+				return;
+			}
 
-					Confirmed->ActivateRaid(Confirmed->Session.Seed, Clock);
-				});
+			const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+			const double SecondsLeft = (ExpiresAt - FDateTime::UtcNow()).GetTotalSeconds();
+			const float Clock = SarkoBackend::ClockSecondsFromDeadline(
+				Confirmed->CachedDefinition.RaidDurationSeconds, SecondsLeft,
+				Settings.BackendGraceMarginSeconds);
+
+			if (Confirmed->MapClockSeconds() > Clock + 1.f)
+			{
+				// Loud, because it is a configuration mismatch a player would
+				// experience as "the raid was shorter than the map says". For an
+				// ordinary raid it should never appear — RAID_TTL is 20m on the
+				// deployed service against a 15-minute map — and for a ВИЛАЗКА it
+				// is EXPECTED: SORTIE_TTL is deliberately shorter than the map's own
+				// duration, because a shorter clock is the trade-off (spec §4.5).
+				UE_LOG(LogTemp, Warning,
+					TEXT("SarkoRaidGameMode: the map asks for %.0fs but the server's deadline allows %.0fs%s"),
+					Confirmed->MapClockSeconds(), Clock,
+					Confirmed->Session.IsSortie()
+						? TEXT(" — expected on a ВИЛАЗКА, whose clock is short on purpose")
+						: TEXT(" — raising RAID_TTL is the fix"));
+			}
+
+			Confirmed->ActivateRaid(Confirmed->Session.Seed, Clock);
 		});
 }
 

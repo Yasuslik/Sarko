@@ -75,6 +75,18 @@ namespace
 	constexpr float NavButtonGapPt = 6.f;
 
 	/**
+	 * ВИЛАЗКА's button, at the tap minimum exactly and shorter than В РЕЙД's ~48.
+	 *
+	 * Deliberately the smaller of the two. They are not equals: В РЕЙД is the verb the
+	 * shelter serves and a sortie is the exception you take when you have nothing, so
+	 * the hierarchy is read before either label is. 44 + 6 + ~48 = 98 pt at the foot of
+	 * a ~300 pt column, which the slack above the pair absorbs — the column's spacer
+	 * is what pins both to the floor.
+	 */
+	constexpr float SortieButtonPt = 44.f;
+	constexpr float SortieGapPt = 6.f;
+
+	/**
 	 * The character panel's width, and it is derived rather than chosen.
 	 *
 	 * The two 2×2 slots sit SIDE BY SIDE — the height arithmetic in
@@ -121,6 +133,10 @@ namespace
 	 *  Half the garage column, because the ladder sits beside the recipe now. */
 	constexpr float CraftButtonPadX = 14.f;
 	constexpr float GarageHalfPt = GarageColumnPt * 0.5f - 10.f;
+
+	/** Between two rungs of the vehicle ladder. Small, because the plates themselves
+	 *  are what separate them and the FillHeight slots supply the rest of the air. */
+	constexpr float RungGapPt = 5.f;
 	constexpr float CraftLabelWrap = GarageHalfPt - 2.f * CraftButtonPadX;
 
 	/** FCoreStyle is compiled into SlateCore, so no font asset is involved. */
@@ -246,6 +262,42 @@ TOptional<FSlateRenderTransform> SSarkoShelterWidget::StashCellTransform(int32 S
 	return TOptional<FSlateRenderTransform>(FSlateRenderTransform(FVector2D(Offset, 0.f)));
 }
 
+void SSarkoShelterWidget::QuantiseStashViewport()
+{
+	if (!StashRegion.IsValid() || !StashViewport.IsValid())
+	{
+		return;
+	}
+	// The height Slate ARRANGED for the region, not one this file predicted. Predicting
+	// it from the canvas is what put the fold inside a cell in the first place, and this
+	// file's own history holds two more clipping bugs caused by exactly that habit — so
+	// the number is measured, once per SetView, off the box that takes the slot's real
+	// height.
+	const float Available = StashRegion->GetTickSpaceGeometry().GetLocalSize().Y;
+	const float Quantised = SarkoUI::WholeRowsHeightPt(Available);
+	// Measured at 247 pt on the 844x390 canvas, which quantises to 236 — five whole
+	// rows of the 48 pt pitch, with 11 pt left over. The number is recorded here as a
+	// fact about the frame and is NOT used: the code reads the geometry, so a taller
+	// screen or a changed footer simply shows more rows.
+	//
+	// WHAT THIS DOES AND DOES NOT FIX. No 1x1 cell is ever cut again, because the fold
+	// now lands in a gutter. A MULTI-CELL item that spans the boundary — a 2x2 bag
+	// starting on the last visible row — is still cut by it, and that is not a defect
+	// to chase: it is what "there is more below" looks like in a grid that must scroll,
+	// the engine's own scroll shadow is drawn under it, and one scroll brings it whole
+	// into view. Chasing it further would mean teaching the placer where the fold is,
+	// i.e. making the layout depend on the scroll position.
+	if (Quantised <= 0.f)
+	{
+		// The first SetView runs before anything has been arranged, so this is the
+		// ordinary case exactly once. Nothing is set: an unset override means "take what
+		// the slot gives you", which is the behaviour this replaced, and it is the only
+		// honest fallback — a height of zero would hide the stash outright.
+		return;
+	}
+	StashViewport->SetHeightOverride(Quantised);
+}
+
 const FSlateBrush* SSarkoShelterWidget::CharacterPlateBrush() const
 {
 	// Signal 2 of the refusal: the character plate's rim pulses amber, because the
@@ -267,6 +319,7 @@ const FSlateBrush* SSarkoShelterWidget::CharacterPlateBrush() const
 void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 {
 	OnEnterRaid = InArgs._OnEnterRaid;
+	OnEnterSortie = InArgs._OnEnterSortie;
 	OnCraft = InArgs._OnCraft;
 	OnSelectScreen = InArgs._OnSelectScreen;
 	OnEquipStack = InArgs._OnEquipStack;
@@ -368,6 +421,58 @@ void SSarkoShelterWidget::Construct(const FArguments& InArgs)
 							+ SVerticalBox::Slot().FillHeight(1.f)
 							[
 								SNew(SSpacer).Size(FVector2D(1.f, 1.f))
+							]
+
+							// ---- ВИЛАЗКА (spec §4.5) ------------------------
+							// ABOVE В РЕЙД, and that ordering is the whole of "a
+							// second button beside В РЕЙД" in a left-edge column: the
+							// verb keeps the floor, where a thumb rests and where it
+							// has always been, and the exception sits one step up.
+							// Reversing them would move the one control on this screen
+							// a player finds without reading.
+							+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, SortieGapPt)
+							[
+								SNew(SBox)
+								// 44 pt exactly, the tap minimum — one point under and
+								// this is a control a thumb misses. Shorter than В РЕЙД's
+								// ~48, because the two must not read as equals.
+								.HeightOverride(SortieButtonPt)
+								[
+									SAssignNew(SortieButton, SButton)
+									.ContentPadding(FMargin(6.f, 2.f))
+									.HAlign(HAlign_Center)
+									.VAlign(VAlign_Center)
+									// An attribute, like the raid button's: SetView flips
+									// the flag and Slate re-reads it, so a countdown that
+									// reaches zero on the next profile fetch needs no tick.
+									.IsEnabled_Lambda([this]() { return bSortieEnabled; })
+									.OnClicked(this, &SSarkoShelterWidget::HandleEnterSortie)
+									[
+										SNew(SVerticalBox)
+
+										+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+										[
+											// "ВИЛАЗКА", or the cooldown remaining — the
+											// label IS the countdown, because what a player
+											// wants from a button they cannot press is the
+											// number and not the verb.
+											SAssignNew(SortieLabel, STextBlock)
+											.Font(ShelterFont(12.f))
+											.Justification(ETextJustify::Center)
+										]
+
+										+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+										[
+											// "БЕЗКОШТОВНО", dim, and collapsed during the
+											// cooldown — an empty text block still measures
+											// its font and would reserve a line.
+											SAssignNew(SortieSubLabel, STextBlock)
+											.Font(ShelterFont(8.5f))
+											.ColorAndOpacity(LabelColour)
+											.Justification(ETextJustify::Center)
+										]
+									]
+								]
 							]
 
 							+ SVerticalBox::Slot().AutoHeight()
@@ -477,28 +582,59 @@ TSharedRef<SWidget> SSarkoShelterWidget::BuildInventoryScreen()
 			// The stash is the SAME cell grid the raid's crate panel draws (spec §2:
 			// one visual language for "things you own"), and it can be any height —
 			// which is the reason this screen is Slate and not DrawHUD primitives.
+			//
+			// THE FOLD FALLS IN A GUTTER, and that is what StashRegion and the height
+			// override below are for. This slot is fill-height, so before the fix the
+			// scroll box was exactly as tall as whatever was left after a 22 pt title
+			// and a footer — which was 253 pt, five rows and a quarter, so the sixth
+			// row of a full stash drew as a strip of half-cells. Half a РЮКЗАК does not
+			// read as "scroll for more"; it reads as a grid that failed to draw, and it
+			// is the one thing a screen about what you own must never look like.
+			//
+			// StashRegion is the MEASURED slot (no override, so it takes the slot's real
+			// height) and the box inside it is quantised to that measurement. Two boxes
+			// and not one because the second reads the first's geometry: predicting the
+			// available height from the canvas is what produced the misaligned fold in
+			// the first place, and this file's own history has two more clipping bugs
+			// caused by exactly that habit.
 			+ SVerticalBox::Slot().FillHeight(1.f)
 			[
-				SNew(SOverlay)
-
-				+ SOverlay::Slot()
+				SAssignNew(StashRegion, SBox)
 				[
-					SNew(SScrollBox)
-					+ SScrollBox::Slot().Padding(0.f, 0.f, 0.f, 6.f)
+					SNew(SOverlay)
+
+					+ SOverlay::Slot()
+					.VAlign(VAlign_Top)
 					[
-						SAssignNew(StashBox, SBox)
+						// Its height is SET by SetView, not bound as an attribute. An
+						// attribute would be the tidier shape and it does not work here:
+						// SBox reads HeightOverride through Slate's attribute pass, which
+						// only runs for widgets under an invalidation panel, and this one is
+						// added straight to the viewport overlay — so the bound value was
+						// read once, while the region above was still unarranged and
+						// therefore zero, and never again. SetView is called on every
+						// profile fetch and every tap, which is often enough for a number
+						// that changes only with the viewport.
+						SAssignNew(StashViewport, SBox)
+						[
+							SNew(SScrollBox)
+							+ SScrollBox::Slot()
+							[
+								SAssignNew(StashBox, SBox)
+							]
+						]
 					]
-				]
 
-				+ SOverlay::Slot()
-				.HAlign(HAlign_Center).VAlign(VAlign_Top)
-				.Padding(0.f, 20.f, 0.f, 0.f)
-				[
-					// Over the grid, not instead of it: an empty stash still shows the
-					// shape it will fill.
-					SAssignNew(StashNoteText, STextBlock)
-					.Font(ShelterFont(15.f))
-					.ColorAndOpacity(LabelColour)
+					+ SOverlay::Slot()
+					.HAlign(HAlign_Center).VAlign(VAlign_Top)
+					.Padding(0.f, 20.f, 0.f, 0.f)
+					[
+						// Over the grid, not instead of it: an empty stash still shows the
+						// shape it will fill.
+						SAssignNew(StashNoteText, STextBlock)
+						.Font(ShelterFont(15.f))
+						.ColorAndOpacity(LabelColour)
+					]
 				]
 			]
 
@@ -835,6 +971,21 @@ TSharedRef<SWidget> SSarkoShelterWidget::BuildGarageScreen()
 							]
 						]
 					]
+
+					// WHY the rungs above the bicycle are grey, at the foot of the recipe
+					// column. It belongs on this side rather than under the ladder because
+					// it is an answer about CRAFTING — the reader is looking at a craft
+					// button that will only ever build one of four vehicles — and because
+					// the ladder column is now full of rungs. It also fills the bottom of
+					// this column, which was the other empty half of this screen.
+					+ SVerticalBox::Slot().FillHeight(1.f).VAlign(VAlign_Bottom)
+						.Padding(0.f, 8.f, 0.f, 0.f)
+					[
+						SAssignNew(LadderNoteText, STextBlock)
+						.Font(ShelterFont(9.5f))
+						.ColorAndOpacity(LabelColour)
+						.AutoWrapText(true)
+					]
 				]
 			]
 
@@ -850,13 +1001,29 @@ TSharedRef<SWidget> SSarkoShelterWidget::BuildGarageScreen()
 					.Text(FText::FromString(TEXT("ТЕХНІКА")))
 				]
 
+				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
+				[
+					HorizontalRule()
+				]
+
+				// NO SCROLL BOX, and the rungs FILL the column.
+				//
+				// This is the whole of the garage fix. The ladder was four 13 pt lines of
+				// text inside a scroll box in a fill-height slot, so it occupied ~64 pt of
+				// a ~300 pt column and the entire lower half of ГАРАЖ was empty — the
+				// screen offered a progression and drew a quarter of one, and an empty
+				// lower half on the one screen whose subject is "what comes next" reads as
+				// a screen nobody finished.
+				//
+				// The rungs are plates now, one per tier, sharing the height between them
+				// (SetView gives each an equal FillHeight slot). Four evenly-spaced plates
+				// up a column is the shape of a ladder; four lines at the top of one is a
+				// list. Nothing scrolls because the tier count is a client-side constant of
+				// four, and a scroll box over content that always fits is a bar that only
+				// ever takes width away from it.
 				+ SVerticalBox::Slot().FillHeight(1.f)
 				[
-					SNew(SScrollBox)
-					+ SScrollBox::Slot()
-					[
-						SAssignNew(GarageLadder, SVerticalBox)
-					]
+					SAssignNew(GarageLadder, SVerticalBox)
 				]
 			]
 		];
@@ -918,6 +1085,17 @@ void SSarkoShelterWidget::SetView(const FSarkoShelterView& View)
 	SetLine(HaulNoteText, View.HaulNote);
 	RaidLabel->SetText(FText::FromString(View.Raid.Label));
 	SetLine(RaidSubLabel, View.Raid.SubLabel);
+
+	// ---- ВИЛАЗКА ------------------------------------------------------------
+	// The label is either the word or the countdown, and the colour says which
+	// without being the only thing that does: dim while it is counting down, bright
+	// when it can be pressed. Redundant with the enabled state on purpose — a
+	// greyed-out button and a bright number are two readings of one fact, and a
+	// player glancing at a column should not have to test which.
+	bSortieEnabled = View.Raid.bSortieEnabled;
+	SortieLabel->SetText(FText::FromString(View.Raid.SortieLabel));
+	SortieLabel->SetColorAndOpacity(View.Raid.bSortieOnCooldown ? LabelColour : BrightColour);
+	SetLine(SortieSubLabel, View.Raid.SortieSubLabel);
 
 	ScreenSwitcher->SetActiveWidgetIndex(static_cast<int32>(View.Screen));
 
@@ -990,6 +1168,11 @@ void SSarkoShelterWidget::SetView(const FSarkoShelterView& View)
 
 	// ---- the character ------------------------------------------------------
 	CharacterTitle->SetText(FText::FromString(View.Character.Title));
+	// AMBER while the panel is showing a ВИЛАЗКА's borrowed kit, not the dim label
+	// grey it wears for "ХОДОК". The heading already says "ПОЗИЧЕНЕ" in words; this is
+	// the second reading of the same fact, because "is this mine" is the one question
+	// on this screen that must not be carried by a hue alone — nor by a word alone.
+	CharacterTitle->SetColorAndOpacity(View.Character.bBorrowed ? WarnColour : LabelColour);
 	PocketsCaption->SetText(FText::FromString(View.Character.PocketsCaption));
 	SetLine(PocketsNote, View.Character.PocketsNote);
 
@@ -1053,20 +1236,54 @@ void SSarkoShelterWidget::SetView(const FSarkoShelterView& View)
 		];
 	}
 
+	SetLine(LadderNoteText, View.Garage.LadderNote);
+
+	// The ladder, as PLATES that share the column's height rather than four lines at
+	// the top of it — BuildGarageScreen says why that mattered.
+	//
+	// Each rung states itself THREE ways and by none of them alone: a marker (a tick,
+	// an arrow, a dash), a colour, and the state in a word. The word is what the
+	// previous version was missing, and it is the one that separates "not yet" from
+	// "not in this build" — a distinction three shades of grey cannot make, and one a
+	// player will otherwise spend raids looking for an engine over.
 	GarageLadder->ClearChildren();
 	for (const FSarkoVehicleRung& Rung : View.Garage.Ladder)
 	{
-		// Three states, and the marker carries the same information as the colour so
-		// that neither is load-bearing alone: a tick for what is built, an arrow for
-		// what is next, a dash for the rest.
 		const TCHAR* Marker = Rung.bBuilt ? TEXT("+") : (Rung.bNext ? TEXT(">") : TEXT("-"));
 		const FSlateColor Colour = Rung.bBuilt ? MetColour : (Rung.bNext ? BrightColour : LabelColour);
-		GarageLadder->AddSlot().AutoHeight().Padding(0.f, 0.f, 0.f, 3.f)
+		GarageLadder->AddSlot()
+			// Equal shares, so the rungs space themselves evenly up the column whatever
+			// its height turns out to be — no per-rung height to keep in step with a font.
+			.FillHeight(1.f)
+			.Padding(0.f, 0.f, 0.f, RungGapPt)
 		[
-			SNew(STextBlock)
-			.Font(ShelterFont(13.f))
-			.ColorAndOpacity(Colour)
-			.Text(FText::FromString(FString::Printf(TEXT("%s %s"), Marker, *Rung.Text)))
+			SNew(SBorder)
+			// The same plate the character panel is drawn on, so a rung reads as an
+			// object on this screen rather than as a line of a paragraph.
+			.BorderImage(&Styles->PanelBrush)
+			.Padding(FMargin(10.f, 6.f))
+			.VAlign(VAlign_Center)
+			[
+				SNew(SVerticalBox)
+
+				+ SVerticalBox::Slot().AutoHeight()
+				[
+					SNew(STextBlock)
+					.Font(ShelterFont(13.f))
+					.ColorAndOpacity(Colour)
+					.Text(FText::FromString(FString::Printf(TEXT("%s %s"), Marker, *Rung.Text)))
+				]
+
+				+ SVerticalBox::Slot().AutoHeight()
+				[
+					// The state, dimmer and smaller than the name: it answers a question
+					// the name has already raised, so it must not compete with it.
+					SNew(STextBlock)
+					.Font(ShelterFont(9.5f))
+					.ColorAndOpacity(Rung.bBuilt ? MetColour : LabelColour)
+					.Text(FText::FromString(Rung.StateText))
+				]
+			]
 		];
 	}
 
@@ -1116,6 +1333,11 @@ void SSarkoShelterWidget::SetView(const FSarkoShelterView& View)
 
 	StashBox->SetContent(SarkoUI::BuildGridPage(View.StashStacks, Slots, /*PageIndex*/ 0,
 		Page, *Styles, Decorate));
+
+	// Last, and after the grid is in: the viewport is trimmed to a whole number of rows
+	// so the scroll fold falls in a gutter rather than through a cell. It is measured
+	// rather than computed — see QuantiseStashViewport.
+	QuantiseStashViewport();
 }
 
 void SSarkoShelterWidget::SetCraftInFlight(bool bInFlight)
@@ -1161,6 +1383,19 @@ bool SSarkoShelterWidget::SimulateEnterRaidClickIfEnabled()
 	return true;
 }
 
+bool SSarkoShelterWidget::SimulateSortieClickIfEnabled()
+{
+	// Same reason as above: the engine's SimulateClick does not consult the enabled
+	// state, so a scripted press would take a free run the button itself was refusing
+	// — and a screenshot of that would prove the opposite of what it is for.
+	if (!SortieButton.IsValid() || !SortieButton->IsEnabled())
+	{
+		return false;
+	}
+	SortieButton->SimulateClick();
+	return true;
+}
+
 bool SSarkoShelterWidget::SimulateCraftClickIfEnabled()
 {
 	// Same reason as above: the engine's SimulateClick does not consult the enabled
@@ -1183,6 +1418,12 @@ TSharedPtr<SWidget> SSarkoShelterWidget::WidgetToFocus() const
 FReply SSarkoShelterWidget::HandleEnterRaid()
 {
 	OnEnterRaid.ExecuteIfBound();
+	return FReply::Handled();
+}
+
+FReply SSarkoShelterWidget::HandleEnterSortie()
+{
+	OnEnterSortie.ExecuteIfBound();
 	return FReply::Handled();
 }
 

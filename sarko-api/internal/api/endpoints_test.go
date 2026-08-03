@@ -46,6 +46,10 @@ func newTestServer(t *testing.T) *client {
 		RaidTTL:     time.Minute,
 		PendingTTL:  time.Minute,
 		GraceBuffer: 30 * time.Second,
+		// ВИЛАЗКА's two knobs, at test scale: a clock visibly shorter than RaidTTL,
+		// and a cooldown long enough that a second sortie inside one test is refused.
+		SortieTTL:      20 * time.Second,
+		SortieCooldown: time.Hour,
 	}
 	srv := httptest.NewServer(api.NewRouter(deps))
 	t.Cleanup(srv.Close)
@@ -781,8 +785,10 @@ func TestEquipmentOverHTTPDrivesTheLoadout(t *testing.T) {
 	if refusal.Error.Message == "" {
 		t.Error("a refused equip must carry a reason")
 	}
-	// The jacket is in the catalog and in no loot table, so a new player does not
-	// own one — which is exactly the "equip what you do not own" case.
+	// The jacket is findable in a raid (the `good` tier) and lendable by a ВИЛАЗКА,
+	// but a brand-new player's stash is the starter kit and nothing else — so this is
+	// still exactly the "equip what you do not own" case, and it stays that way for as
+	// long as StarterKit() has no coat in it.
 	code = c.do(http.MethodPost, "/v1/profile/equipment",
 		map[string]string{"slot": "clothing", "item_id": "jacket"}, &refusal)
 	if code != http.StatusConflict || refusal.Error.Code != "insufficient_items" {

@@ -56,6 +56,32 @@ namespace SarkoUI
 	constexpr int32 StashColumns = 7;
 	constexpr int32 StashMinRows = 5;
 
+	/**
+	 * The tallest WHOLE number of grid rows that fits AvailablePt, as a height in
+	 * points — or 0 when not even one row fits.
+	 *
+	 * THE FLAW THIS FIXES: the shelter's stash grid is a scroll box in a fill-height
+	 * slot, so the fold landed wherever the arithmetic of a title's font and a
+	 * footer's padding happened to put it — mid-row. The bottom row of a full stash
+	 * rendered as a strip of half-cells, which does not read as "scroll for more": it
+	 * reads as a grid that failed to draw, and a player looking at half a РЮКЗАК has
+	 * no way to tell whether they own it.
+	 *
+	 * Quantising the VIEWPORT rather than the content is what makes the fold always
+	 * fall in a gutter. The grid inside is unchanged and still scrolls; what changes
+	 * is that every row it shows is a whole one.
+	 *
+	 * Measured rather than derived from the canvas on purpose. This screen's own
+	 * comments record two clipping failures caused by predicting a font's height in a
+	 * constant, and a third would be a matter of time: the caller passes the height
+	 * Slate actually arranged.
+	 *
+	 * 0 for anything under one row so the caller can leave the override unset — a
+	 * height of zero would hide the grid outright, and the honest fallback for "not
+	 * measured yet" is the unquantised box this replaces.
+	 */
+	float WholeRowsHeightPt(float AvailablePt);
+
 	/** A w x h item is ONE rounded box spanning its cells and the gutters between
 	 *  them — 2x1 is 92 pt wide, not two 44 pt boxes with a seam down the middle.
 	 *  The seam is what would make a rifle read as two objects. */

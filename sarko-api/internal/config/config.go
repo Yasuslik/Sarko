@@ -29,6 +29,20 @@ type Config struct {
 	// credited if the network delays it. It is slack for a slow submission, not
 	// extra play time: the client's in-raid timer must stay shorter than RaidTTL.
 	GraceBuffer time.Duration
+	// SortieTTL is RaidTTL for a ВИЛАЗКА, and it is SHORTER on purpose (spec §4.5:
+	// "the trade-off is quality, not danger ... the clock is shorter than a normal
+	// raid"). The client's in-raid clock is already min(map duration, server deadline
+	// − margin), so this is the one place the shorter run is decided, and no client
+	// change is needed to honour it.
+	//
+	// A shorter clock makes a sortie WORSE, never safer. Nothing in this config makes
+	// a free run less dangerous than a paid one, and nothing should.
+	SortieTTL time.Duration
+	// SortieCooldown is how long after a sortie ends before the next one may start,
+	// which is the whole of "so it cannot be farmed". Server-owned and server-timed:
+	// the client is told the remaining seconds so a button can display them, and
+	// /v1/raid/start refuses by name however stale that number has become.
+	SortieCooldown time.Duration
 }
 
 func Load() (Config, error) {
@@ -46,6 +60,17 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if c.GraceBuffer, err = envDuration("GRACE_BUFFER", 2*time.Minute); err != nil {
+		return Config{}, err
+	}
+	// Six minutes against RAID_TTL's twelve: half a raid, which is short enough to be
+	// felt as a limitation and long enough to reach an extraction on the shipped map.
+	if c.SortieTTL, err = envDuration("SORTIE_TTL", 6*time.Minute); err != nil {
+		return Config{}, err
+	}
+	// Fifteen minutes from the END of the last sortie. Longer than a sortie itself, so
+	// the free run cannot be the main loop; short enough that a player who lost
+	// everything is not locked out of the game for an evening.
+	if c.SortieCooldown, err = envDuration("SORTIE_COOLDOWN", 15*time.Minute); err != nil {
 		return Config{}, err
 	}
 

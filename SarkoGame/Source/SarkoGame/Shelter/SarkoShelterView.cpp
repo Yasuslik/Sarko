@@ -185,10 +185,40 @@ TArray<FSarkoVehicleRung> SarkoShelter::VehicleLadder(const FString& CurrentTier
 	{
 		// The ladder is CUMULATIVE (domain.UnlockedMaps walks tierOrder), so
 		// everything at or below the current tier is owned.
-		Ladder.Add(FSarkoVehicleRung{
-			FString::Printf(TEXT("%s — %s"), Rungs[Index].Name, Rungs[Index].Map),
-			/*bBuilt*/ Index <= Current,
-			/*bNext*/ Index == Current + 1 });
+		const bool bBuilt = Index <= Current;
+		const bool bNext = Index == Current + 1;
+		// ONLY THE BICYCLE, and this is a fact about the backend rather than a
+		// pessimistic guess: the later tiers' parts are deliberately absent from
+		// domain.ItemDefs, so nothing the game can produce will ever satisfy their
+		// recipes. A rung that looks reachable and is not is worse than a rung that
+		// says so.
+		const bool bCraftable = Index == 0;
+
+		FSarkoVehicleRung Rung;
+		Rung.Text = FString::Printf(TEXT("%s — %s"), Rungs[Index].Name, Rungs[Index].Map);
+		Rung.bBuilt = bBuilt;
+		Rung.bNext = bNext;
+		Rung.bCraftable = bCraftable;
+		// The state in a word. Four states and not three: "not yet" and "not in this
+		// build" are different disappointments, and a player who cannot tell them apart
+		// will go looking for an engine that does not exist.
+		if (bBuilt)
+		{
+			Rung.StateText = TEXT("ЗІБРАНО");
+		}
+		else if (!bCraftable)
+		{
+			Rung.StateText = TEXT("ДЕТАЛІ НЕ В ЗОНІ");
+		}
+		else if (bNext)
+		{
+			Rung.StateText = TEXT("НАСТУПНИЙ");
+		}
+		else
+		{
+			Rung.StateText = TEXT("ЗАБЛОКОВАНО");
+		}
+		Ladder.Add(MoveTemp(Rung));
 	}
 	return Ladder;
 }
@@ -252,8 +282,48 @@ FSarkoCharacterView SarkoShelter::BuildCharacterView(const FSarkoEquipment& Equi
 	return View;
 }
 
+FSarkoCharacterView SarkoShelter::BuildBorrowedCharacterView(const TArray<FSarkoItemStack>& GrantedKit,
+	const FSarkoItemCatalog& Catalog)
+{
+	// The kit becomes equipment by asking the CATALOG which slot each id is worn in —
+	// the same authored `slot` the ІНВЕНТАР screen's tap rules use, so a borrowed
+	// pistol lands where an owned one would and the panel needs no second layout.
+	//
+	// An item with no slot (ammunition, a bandage) contributes nothing: it is what the
+	// raid gives you to USE, not something worn, and inventing a slot for it would put
+	// bandages on the character's chest.
+	FSarkoEquipment Worn;
+	for (const FSarkoItemStack& Stack : GrantedKit)
+	{
+		const ESarkoEquipSlot Slot = SarkoEquip::SlotFor(Catalog.Find(Stack.Item));
+		if (Slot != ESarkoEquipSlot::None)
+		{
+			SarkoEquip::Set(Worn, Slot, Stack.Item);
+		}
+	}
+
+	FSarkoCharacterView View = BuildCharacterView(Worn, Catalog);
+	View.bBorrowed = true;
+	// SAID IN WORDS as well as coloured, because "is this mine" is the one question
+	// this screen must never leave to a hue. A player who reads the pistol in the
+	// weapon slot as theirs will expect it after a death that takes it.
+	View.Title = TEXT("ХОДОК — ПОЗИЧЕНЕ");
+	// The pockets note becomes the promise, which is the sentence the whole mechanic
+	// rests on: the borrowed gear is yours if you walk out with it.
+	View.PocketsNote = TEXT("ВИНЕСЕШ — ТВОЄ");
+	return View;
+}
+
+FString SarkoShelter::FormatSortieCooldown(int32 Seconds)
+{
+	// Clamped, not trusted: this comes from the wire via FSarkoProfile, and a negative
+	// would print a countdown running backwards on a button.
+	const int32 Safe = FMath::Max(0, Seconds);
+	return FString::Printf(TEXT("%d:%02d"), Safe / 60, Safe % 60);
+}
+
 FSarkoRaidButtonView SarkoShelter::BuildRaidButton(const FSarkoEquipment& Equipment,
-	bool bProfileLoaded, const FString& Error)
+	bool bProfileLoaded, const FString& Error, int32 SortieCooldownSeconds)
 {
 	FSarkoRaidButtonView View;
 	View.bUnarmed = !SarkoEquip::HasWeapon(Equipment);
@@ -276,6 +346,39 @@ FSarkoRaidButtonView SarkoShelter::BuildRaidButton(const FSarkoEquipment& Equipm
 	// fetch still allows a raid: it degrades to offline on its own, and the game
 	// must never hard-lock on the network (spec §4.6).
 	View.bEnabled = bProfileLoaded || !Error.IsEmpty();
+
+	// ---- ВИЛАЗКА, the second button (spec §4.5) --------------------------------
+	//
+	// The cooldown is the SERVER's number, taken from the profile and displayed. This
+	// function does not tick it, does not compare clocks and does not remember it:
+	// the shelter redraws when a profile lands, and the only thing that actually
+	// refuses a sortie is /v1/raid/start answering `sortie_cooldown` by name.
+	//
+	// So a wrongly-enabled button costs one refused round trip and a status line —
+	// which is exactly what a countdown a few seconds stale produces anyway, and the
+	// reason it is safe for this to be a label rather than a rule.
+	View.bSortieOnCooldown = SortieCooldownSeconds > 0;
+	View.SortieLabel = View.bSortieOnCooldown
+		? FormatSortieCooldown(SortieCooldownSeconds)
+		: FString(TEXT("ВИЛАЗКА"));
+	// The second line NAMES the button in both states, and a frame is why. With the
+	// countdown as the label and no second line, the column showed a greyed "4:32"
+	// sitting above В РЕЙД with nothing saying what it was counting towards — legible
+	// to a player who had just pressed it, cryptic to one arriving at the screen. So
+	// the sub-label carries the verb during the cooldown and the price when it is
+	// available: the button always says what it is, and the label is still the
+	// countdown the spec asks for.
+	View.SortieSubLabel = View.bSortieOnCooldown
+		? FString(TEXT("ВИЛАЗКА"))
+		: FString(TEXT("БЕЗКОШТОВНО"));
+
+	// Unlike the raid button, this one IS refused before the first profile lands —
+	// and unlike the raid button, that is honest: В РЕЙД must never block because a
+	// player with nothing has no other way in, whereas a sortie whose cooldown is
+	// unknown has В РЕЙД sitting right above it. An OFFLINE shelter refuses it too:
+	// a sortie is worthless without the server that grants the kit, so offering it
+	// would offer a raid with nothing in it.
+	View.bSortieEnabled = bProfileLoaded && !View.bSortieOnCooldown;
 	return View;
 }
 
@@ -294,7 +397,8 @@ TArray<FString> SarkoShelter::NewlyUnlockedMaps(const TArray<FString>& Before, c
 
 FSarkoShelterView SarkoShelter::BuildView(const FSarkoLastRaid& LastRaid, const FSarkoProfile& Profile,
 	bool bProfileLoaded, const FString& Error, const FString& CraftLine,
-	const FSarkoItemCatalog& Catalog, ESarkoShelterScreen Screen)
+	const FSarkoItemCatalog& Catalog, ESarkoShelterScreen Screen,
+	const TArray<FSarkoItemStack>& BorrowedKit)
 {
 	FSarkoShelterView View;
 	View.Title = TEXT("УКРИТТЯ");
@@ -313,8 +417,20 @@ FSarkoShelterView SarkoShelter::BuildView(const FSarkoLastRaid& LastRaid, const 
 	// three empty slots, which is what the screen would show anyway a moment before
 	// the fetch lands, and the raid button's label degrades to "БЕЗ ЗБРОЇ" — the
 	// pessimistic direction, and one that grants nothing.
-	View.Character = BuildCharacterView(Profile.Equipment, Catalog);
-	View.Raid = BuildRaidButton(Profile.Equipment, bProfileLoaded, Error);
+	//
+	// A ВИЛАЗКА in flight REPLACES it with the borrowed kit, and that is the reveal
+	// the mechanic is built on: the player sees what the server lent them, on the
+	// panel that already means "what goes into the raid", before the travel takes them
+	// there. It is the granted kit and not their own gear because a sortie carries
+	// nothing of theirs — showing the pistol they own beside a free run that cannot
+	// lose it would be the screen promising the wrong stake.
+	View.Character = BorrowedKit.Num() > 0
+		? BuildBorrowedCharacterView(BorrowedKit, Catalog)
+		: BuildCharacterView(Profile.Equipment, Catalog);
+	// The raid button reads the player's OWN equipment whatever the panel is showing:
+	// "БЕЗ ЗБРОЇ" is a fact about the stash and not about a kit that is on loan.
+	View.Raid = BuildRaidButton(Profile.Equipment, bProfileLoaded, Error,
+		Profile.SortieCooldownSeconds);
 
 	View.OutcomeTitle = BuildOutcomeTitle(LastRaid.Outcome, LastRaid.bPersisted);
 	View.HaulLines = BuildHaulLines(LastRaid, Catalog);
@@ -343,6 +459,19 @@ FSarkoShelterView SarkoShelter::BuildView(const FSarkoLastRaid& LastRaid, const 
 	// even before the profile lands: at worst every rung is "not yet", which is what
 	// a new player's ladder honestly looks like.
 	View.Garage.Ladder = VehicleLadder(Profile.VehicleTier);
+	// And the sentence that explains the grey rungs. Composed here rather than in
+	// VehicleLadder so that function stays a pure mapping from a tier to rungs, and
+	// because the note is about the LADDER as a whole rather than about any rung: it is
+	// the answer to "why can I only build one of these", which is a question the rungs
+	// individually cannot answer.
+	//
+	// Dropped entirely once nothing is left to explain, which today means never — but
+	// it will mean something on the day the motorcycle's parts enter a loot table, and
+	// a note that outlives its reason is a note that teaches the wrong thing.
+	View.Garage.LadderNote = View.Garage.Ladder.ContainsByPredicate(
+		[](const FSarkoVehicleRung& Rung) { return !Rung.bBuilt && !Rung.bCraftable; })
+		? FString(TEXT("ДЕТАЛІ ДЛЯ ТЕХНІКИ ВИЩЕ ВЕЛОСИПЕДА ЩЕ НЕ ТРАПЛЯЮТЬСЯ В ЗОНІ"))
+		: FString();
 	View.CraftLine = CraftLine;
 
 	if (bProfileLoaded)

@@ -276,7 +276,7 @@ bool FSarkoTheRaidButtonNeverBlocksAnUnarmedPlayer::RunTest(const FString& Param
 	// instead of going grey.
 	FSarkoEquipment Nothing;
 	const FSarkoRaidButtonView Unarmed =
-		SarkoShelter::BuildRaidButton(Nothing, /*bProfileLoaded*/ true, FString());
+		SarkoShelter::BuildRaidButton(Nothing, /*bProfileLoaded*/ true, FString(), /*SortieCooldownSeconds*/ 0);
 	TestTrue(TEXT("an unarmed player can still raid"), Unarmed.bEnabled);
 	TestTrue(TEXT("and the button knows it is unarmed"), Unarmed.bUnarmed);
 	TestEqual(TEXT("the verb does not change"), Unarmed.Label, FString(TEXT("В РЕЙД")));
@@ -286,7 +286,7 @@ bool FSarkoTheRaidButtonNeverBlocksAnUnarmedPlayer::RunTest(const FString& Param
 	// Armed: the same verb, and nothing extra said.
 	FSarkoEquipment Armed;
 	Armed.Weapon = FName(TEXT("pistol"));
-	const FSarkoRaidButtonView WithGun = SarkoShelter::BuildRaidButton(Armed, true, FString());
+	const FSarkoRaidButtonView WithGun = SarkoShelter::BuildRaidButton(Armed, true, FString(), 0);
 	TestTrue(TEXT("an armed player can raid"), WithGun.bEnabled);
 	TestFalse(TEXT("and is not flagged unarmed"), WithGun.bUnarmed);
 	TestEqual(TEXT("the verb is unchanged"), WithGun.Label, FString(TEXT("В РЕЙД")));
@@ -297,7 +297,7 @@ bool FSarkoTheRaidButtonNeverBlocksAnUnarmedPlayer::RunTest(const FString& Param
 	FSarkoEquipment Dressed;
 	Dressed.Backpack = FName(TEXT("backpack"));
 	Dressed.Clothing = FName(TEXT("jacket"));
-	const FSarkoRaidButtonView Kitted = SarkoShelter::BuildRaidButton(Dressed, true, FString());
+	const FSarkoRaidButtonView Kitted = SarkoShelter::BuildRaidButton(Dressed, true, FString(), 0);
 	TestTrue(TEXT("a bag and a coat still let you raid"), Kitted.bEnabled);
 	TestTrue(TEXT("and are still БЕЗ ЗБРОЇ"), Kitted.bUnarmed);
 
@@ -307,10 +307,10 @@ bool FSarkoTheRaidButtonNeverBlocksAnUnarmedPlayer::RunTest(const FString& Param
 	for (const FSarkoEquipment& Equipment : { Nothing, Armed })
 	{
 		TestFalse(TEXT("only an in-flight first fetch disables the button"),
-			SarkoShelter::BuildRaidButton(Equipment, /*bProfileLoaded*/ false, FString()).bEnabled);
+			SarkoShelter::BuildRaidButton(Equipment, /*bProfileLoaded*/ false, FString(), 0).bEnabled);
 		TestTrue(TEXT("a failed fetch still allows a raid"),
 			SarkoShelter::BuildRaidButton(Equipment, /*bProfileLoaded*/ false,
-				TEXT("/v1/profile: HTTP 500")).bEnabled);
+				TEXT("/v1/profile: HTTP 500"), 0).bEnabled);
 	}
 
 	// And through the whole view, which is what the widget actually reads.

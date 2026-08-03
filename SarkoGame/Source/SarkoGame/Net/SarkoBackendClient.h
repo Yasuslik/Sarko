@@ -35,6 +35,41 @@ struct FSarkoRaidSession
 
 	UPROPERTY()
 	FDateTime ExpiresAt = FDateTime(0);
+
+	/**
+	 * "raid" or "sortie", echoed by the server (spec §4.5).
+	 *
+	 * Read rather than assumed, because the client's ASK and the server's ANSWER are
+	 * different facts: a service older than the field, or one that refused the mode,
+	 * answers "raid" for a request that said "sortie". A client that assumed its own
+	 * ask would then show borrowed gear it was never lent.
+	 *
+	 * A string and not an enum, for the same reason FSarkoProfile::VehicleTier is one:
+	 * the client only ever compares and displays it, and an unknown future mode must
+	 * not fail a parse.
+	 */
+	UPROPERTY()
+	FString Mode;
+
+	/**
+	 * What a ВИЛАЗКА lent this player — the SERVER's choice, and the only place the
+	 * client learns it.
+	 *
+	 * Empty for an ordinary raid, and empty is not a failure: the field is absent from
+	 * a raid's response on purpose (`granted_kit,omitempty`), so its presence is
+	 * itself the signal that the server chose the loadout.
+	 *
+	 * NOTHING IS DERIVED FROM IT except what is drawn. It is not sent back, not
+	 * merged into the profile's equipment, and not used to decide the in-raid gun:
+	 * the stash credit on extraction is computed server-side from the session row, so
+	 * a client that lost or mangled this list still gets exactly what it was lent.
+	 */
+	UPROPERTY()
+	TArray<FSarkoItemStack> GrantedKit;
+
+	/** A ВИЛАЗКА rather than an ordinary raid. One place asks the string, so a
+	 *  spelling can only be wrong once. */
+	bool IsSortie() const { return Mode == TEXT("sortie"); }
 };
 
 /**
@@ -99,6 +134,24 @@ struct FSarkoProfile
 	 */
 	UPROPERTY()
 	FSarkoEquipment Equipment;
+
+	/**
+	 * How many seconds until this player may take another ВИЛАЗКА, or 0 for "now"
+	 * (spec §4.5).
+	 *
+	 * A NUMBER TO DRAW, and nothing else. The client displays it on the second
+	 * button; it does not decide with it, does not tick it down into a decision, and
+	 * does not gate the request on it — /v1/raid/start refuses a sortie inside the
+	 * cooldown by name (`sortie_cooldown`) however stale this value has become, which
+	 * is what makes the countdown a label rather than a rule.
+	 *
+	 * Absent parses as 0, i.e. "available". That is the direction that offers a
+	 * button the server may then refuse, which costs one round trip and a status
+	 * line; the other direction would hide the recovery path from a player who needs
+	 * it because their backend is a version behind.
+	 */
+	UPROPERTY()
+	int32 SortieCooldownSeconds = 0;
 };
 
 /**
@@ -131,7 +184,20 @@ namespace SarkoBackend
 	// names are visible in this file and cannot drift with a struct rename.
 
 	FString MakeAnonymousBody(const FString& DeviceId);
-	FString MakeRaidStartBody(const FString& MapId, const TArray<FSarkoItemStack>& Loadout);
+	/**
+	 * POST /v1/raid/start's body.
+	 *
+	 * Mode is the literal the backend accepts — "raid" or "sortie"
+	 * (domain.IsValidRaidMode) — and it is the ONLY thing this client says about a
+	 * free run. There is deliberately no parameter for a kit and none for a
+	 * cooldown: both are the server's, and a body that could carry them is a body
+	 * that could be forged into a better one.
+	 *
+	 * An EMPTY Mode omits the field entirely rather than sending `"mode":""`, so a
+	 * request built the way it always was is byte-identical to the one it always was.
+	 */
+	FString MakeRaidStartBody(const FString& MapId, const TArray<FSarkoItemStack>& Loadout,
+		const FString& Mode = FString());
 	FString MakeSessionBody(const FString& SessionId, const FString& SessionToken);
 
 	/**
@@ -363,8 +429,17 @@ public:
 	 */
 	void SetEquipment(ESarkoEquipSlot Slot, FName Item, FOnEquipment OnDone);
 
-	/** POST /v1/raid/start. Debits the loadout. */
-	void StartRaid(const FString& MapId, const TArray<FSarkoItemStack>& Loadout, FOnSession OnDone);
+	/**
+	 * POST /v1/raid/start. Debits the loadout — unless Mode is "sortie", in which
+	 * case the server debits nothing and grants a kit instead (spec §4.5).
+	 *
+	 * `409 sortie_cooldown` arrives here as an ordinary failure with the envelope's
+	 * message in Error, which the shelter shows verbatim: it names the remaining
+	 * time, and a refused free run with no reason is the failure the refusal
+	 * discipline exists to prevent.
+	 */
+	void StartRaid(const FString& MapId, const TArray<FSarkoItemStack>& Loadout, FOnSession OnDone,
+		const FString& Mode = FString());
 
 	/** POST /v1/raid/confirm. Until this lands the loadout comes back after PENDING_TTL. */
 	void ConfirmRaid(const FSarkoRaidSession& Session, FOnDeadline OnDone);

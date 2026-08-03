@@ -147,7 +147,7 @@ func TestExtractionReturnsTheLoadoutAndDeathLosesIt(t *testing.T) {
 		if got := held(t, s, playerID, "pistol"); got != 0 {
 			t.Fatalf("the pistol must be debited at start, stash holds %d", got)
 		}
-		if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute); err != nil {
+		if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute, 0); err != nil {
 			t.Fatalf("ConfirmRaid: %v", err)
 		}
 
@@ -213,7 +213,7 @@ func TestExtractionReturnsTheLoadoutAndDeathLosesIt(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StartRaid: %v", err)
 		}
-		if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute); err != nil {
+		if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, time.Minute, 0); err != nil {
 			t.Fatalf("ConfirmRaid: %v", err)
 		}
 		result, err := s.SubmitResult(ctx, store.SubmitResultParams{
@@ -310,7 +310,7 @@ func TestAnAbandonedActiveRaidLosesTheEquipment(t *testing.T) {
 		t.Fatalf("StartRaid: %v", err)
 	}
 	// Confirmed with a zero deadline: active, and already late.
-	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, 0); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, 0, 0); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 

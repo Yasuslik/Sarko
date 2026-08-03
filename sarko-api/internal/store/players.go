@@ -32,6 +32,24 @@ type Profile struct {
 	// shelter draws the character and the stash from one fetch, and two fetches
 	// would let the two halves of that screen disagree.
 	Equipment map[string]string `json:"equipment"`
+	// SortieCooldownSeconds is how long until this player may take another ВИЛАЗКА,
+	// and zero means "now" (spec §4.5).
+	//
+	// A DISPLAY VALUE, and the field comment is the trust boundary: the client shows
+	// it on the second button and decides nothing with it. What protects the cooldown
+	// is store.StartRaid's own check, under the player's row lock, against Postgres's
+	// clock — so a client that ignored this number, or held a stale one, or edited it
+	// in flight, is refused by name all the same.
+	//
+	// REMAINING SECONDS rather than an absolute instant, deliberately: an absolute
+	// timestamp makes the client subtract using its own clock, and a phone whose clock
+	// is minutes off would show a wrong number for a rule it has no part in. A
+	// countdown from a number the server measured is wrong only by the age of the
+	// fetch.
+	//
+	// It is filled by the /v1/profile HANDLER and not by Profile() below — see the
+	// comment there.
+	SortieCooldownSeconds int `json:"sortie_cooldown_seconds"`
 }
 
 // UpsertPlayer returns the player id for a device, creating the player and its
@@ -102,6 +120,15 @@ func (s *Store) GrantStarterKit(ctx context.Context, playerID string) (bool, err
 }
 
 // Profile reads stash, garage tier and derived map access.
+//
+// SortieCooldownSeconds is deliberately NOT read here, and the reason is that this
+// function takes no policy: the cooldown's length is configuration
+// (config.SortieCooldown), and threading a duration through the one call every
+// screen makes — for a number that decides nothing and is only drawn — would put a
+// tunable in the signature of the service's most-used read. The /v1/profile handler
+// asks store.SortieRemaining for it instead. The cost is that the cooldown is read
+// outside this repeatable-read snapshot, which is exactly as consistent as it needs
+// to be: it is a countdown on a button, and the authoritative check is StartRaid's.
 func (s *Store) Profile(ctx context.Context, playerID string) (Profile, error) {
 	p := Profile{PlayerID: playerID, Stash: []domain.ItemStack{}, Equipment: map[string]string{}}
 

@@ -103,6 +103,21 @@ struct FSarkoCharacterView
 	 *  an empty 2x2 beside a full stash reads as a bug rather than as the truth,
 	 *  which is that what you carry is packed in the raid and not here. */
 	FString PocketsNote;
+
+	/**
+	 * The slots are showing a ВИЛАЗКА's BORROWED kit, not what the player owns.
+	 *
+	 * It exists because those are different facts and the screen must not conflate
+	 * them: a player looking at a pistol in the weapon slot has to be able to tell
+	 * "mine" from "lent for this run", or the shelter is lying about what a death
+	 * costs. Title says so in words ("ХОДОК — ПОЗИЧЕНЕ"); this is the flag the
+	 * widget colours by, so the information is carried twice and by neither alone.
+	 *
+	 * Nothing about it is an entitlement. The kit came from /v1/raid/start's
+	 * `granted_kit`, the server credits it from the session row on extraction, and
+	 * this struct is drawn and then thrown away by the travel.
+	 */
+	bool bBorrowed = false;
 };
 
 /**
@@ -134,21 +149,40 @@ struct FSarkoRaidButtonView
 	bool bUnarmed = false;
 
 	/**
-	 * THE SEAM FOR ВИЛАЗКА (spec §4.5), which is the next task and is deliberately
-	 * not built here.
+	 * ВИЛАЗКА, the second button (spec §4.5) — built on the seam the equipment stage
+	 * left here, and to its terms: two more strings and one more flag, and NOT a
+	 * client-side timer or a client-chosen kit.
 	 *
-	 * The sortie is a SECOND button beside В РЕЙД, showing either "ВИЛАЗКА" or the
-	 * cooldown remaining — so it belongs in this struct, as a second label and a
-	 * second enabled flag, and the destination column already has the room for it
-	 * (the raid button sits alone at the foot of a column with slack above it).
-	 *
-	 * Everything it implies is the SERVER's: free entry, the granted kit, and the
-	 * cooldown are decided and enforced by sarko-api, and the client only displays
-	 * the remaining time. So the shape this will take is a mode parameter on
-	 * /v1/raid/start plus two more strings here — and NOT a client-side timer, and
-	 * not a client-chosen kit. Nothing in this file should acquire the ability to
-	 * decide either.
+	 * "ВИЛАЗКА" when the free run is available, and THE COOLDOWN REMAINING when it is
+	 * not ("4:32") — the spec's wording, and the reason the time replaces the label
+	 * rather than sitting under it: what the player needs from a button they cannot
+	 * press is the number, and reading a verb they already know first costs a glance.
 	 */
+	FString SortieLabel;
+
+	/** "БЕЗКОШТОВНО" while it is available, and empty during the cooldown — where the
+	 *  label is already the whole message. It is the one word that makes the second
+	 *  button legible as the ladder out of a hole rather than as another way in. */
+	FString SortieSubLabel;
+
+	/**
+	 * Whether the button may be pressed.
+	 *
+	 * False during the cooldown, but that is a DISPLAY of the server's rule and not
+	 * the rule: /v1/raid/start refuses a sortie inside the cooldown by name, however
+	 * stale the number this was computed from. So a button that is wrongly enabled
+	 * costs one refused round trip and a status line — which is exactly what happens
+	 * when the countdown is merely a few seconds old, and is why nothing here is
+	 * allowed to be load-bearing.
+	 *
+	 * Also false while the very first profile fetch is in flight, for the same reason
+	 * bEnabled is: the cooldown is unknown, and offering a free run that may be
+	 * refused is worse on a screen that has not drawn anything yet.
+	 */
+	bool bSortieEnabled = false;
+
+	/** On cooldown, as a fact rather than as a spelling of the label. Colours it. */
+	bool bSortieOnCooldown = false;
 };
 
 /** One rung of the garage's vehicle ladder (spec §3). */
@@ -163,6 +197,31 @@ struct FSarkoVehicleRung
 	/** The one the recipe above is for. Exactly one rung has this, unless the
 	 *  ladder is finished. */
 	bool bNext = false;
+
+	/**
+	 * "ЗІБРАНО" / "НАСТУПНИЙ" / "ДЕТАЛІ НЕ В ЗОНІ" / "ЗАБЛОКОВАНО" — the rung's state
+	 * in a word, beside its name.
+	 *
+	 * It exists because the ladder used to carry its state ONLY as a colour and a
+	 * one-character marker, which is enough to distinguish three rungs and not enough
+	 * to explain them: a player looking at three grey lines cannot tell "not yet" from
+	 * "not in this build", and those are different disappointments. The marker and the
+	 * colour stay — this is the third reading, and the only one that survives being
+	 * described out loud.
+	 */
+	FString StateText;
+
+	/**
+	 * Whether this rung could be crafted at all in this build, as opposed to merely not
+	 * yet.
+	 *
+	 * Only the bicycle can: the later tiers' parts (engine_small, wheel_medium,
+	 * turbine…) are deliberately absent from sarko-api's domain.ItemDefs, so no loot
+	 * table can yield them and no craft can ever succeed. Saying so is the honest
+	 * alternative to a rung that looks reachable and is not — and it is why StateText
+	 * distinguishes "ДЕТАЛІ НЕ В ЗОНІ" from "ЗАБЛОКОВАНО".
+	 */
+	bool bCraftable = false;
 };
 
 /**
@@ -232,6 +291,17 @@ struct FSarkoGarageView
 	 * invisible is not felt as a progression.
 	 */
 	TArray<FSarkoVehicleRung> Ladder;
+
+	/**
+	 * Why the rungs above the bicycle are grey, in one sentence — or empty when there
+	 * is nothing to explain.
+	 *
+	 * The ladder shows four vehicles and only one of them can ever be built in this
+	 * build, so without this the screen offers a progression and then silently declines
+	 * to deliver three quarters of it. A greyed rung with no reason is the same failure
+	 * the craft button's "НЕ ВИСТАЧАЄ: ..." label exists to avoid, one screen up.
+	 */
+	FString LadderNote;
 };
 
 struct FSarkoShelterView
@@ -418,15 +488,56 @@ namespace SarkoShelter
 		const FSarkoItemCatalog& Catalog);
 
 	/**
+	 * The character, showing a ВИЛАЗКА's BORROWED kit instead of what the player owns
+	 * (spec §4.5).
+	 *
+	 * The kit arrives as stacks from /v1/raid/start's `granted_kit`, so this is where
+	 * the server's list becomes slots: each item goes to the slot items.json says it
+	 * is worn in (SarkoEquip::SlotFor), and a granted item that is not equipment —
+	 * ammunition, a bandage — occupies no slot at all, because it is what the raid
+	 * gives you to USE and not something worn.
+	 *
+	 * It is a separate function and not a flag on the one above, because the two take
+	 * different inputs: what you own is an FSarkoEquipment the server keeps, and what
+	 * you were lent is a stack list that exists for one raid and is never stored.
+	 * Sharing one entry point would have meant one of the two arriving as an empty
+	 * parameter on every call.
+	 */
+	FSarkoCharacterView BuildBorrowedCharacterView(const TArray<FSarkoItemStack>& GrantedKit,
+		const FSarkoItemCatalog& Catalog);
+
+	/**
+	 * A cooldown in seconds as a button's label: "4:32", or "0:09".
+	 *
+	 * Minutes and seconds rather than "5 хв", because the second button's whole job
+	 * during the cooldown is to answer "how long", and a rounded minute is the one
+	 * answer that is wrong exactly when the player is about to ask again.
+	 *
+	 * Zero and below format as "0:00" and never as an empty string: a caller that
+	 * asked for a countdown must get characters, or the button silently loses its
+	 * label. Deciding whether to CALL it is BuildRaidButton's business.
+	 */
+	FString FormatSortieCooldown(int32 Seconds);
+
+	/**
 	 * The raid button. **Never disabled for want of a weapon** — this is spec §4's
 	 * dead-end guard, and it is the whole reason this is a function with a test
 	 * rather than two lines in the widget.
 	 */
 	FSarkoRaidButtonView BuildRaidButton(const FSarkoEquipment& Equipment,
-		bool bProfileLoaded, const FString& Error);
+		bool bProfileLoaded, const FString& Error, int32 SortieCooldownSeconds);
 
-	/** Assembles the whole screen. Pure. */
+	/**
+	 * Assembles the whole screen. Pure.
+	 *
+	 * BorrowedKit is a ВИЛАЗКА's granted kit while one is starting, and empty
+	 * otherwise. When it is non-empty the character panel draws IT rather than the
+	 * player's own equipment — which is the reveal spec §4.5 is built on ("the
+	 * variance is the appeal"): the player sees what the server lent them before the
+	 * travel, on the panel that already exists for showing what goes into a raid.
+	 */
 	FSarkoShelterView BuildView(const FSarkoLastRaid& LastRaid, const FSarkoProfile& Profile,
 		bool bProfileLoaded, const FString& Error, const FString& CraftLine,
-		const FSarkoItemCatalog& Catalog, ESarkoShelterScreen Screen);
+		const FSarkoItemCatalog& Catalog, ESarkoShelterScreen Screen,
+		const TArray<FSarkoItemStack>& BorrowedKit = TArray<FSarkoItemStack>());
 }

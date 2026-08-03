@@ -49,7 +49,7 @@ func TestSweepExpiredClosesActiveRaidAsDied(t *testing.T) {
 		t.Fatalf("StartRaid: %v", err)
 	}
 	// Confirm with a deadline already in the past: the player entered and vanished.
-	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, -time.Second); err != nil {
+	if _, err := s.ConfirmRaid(ctx, playerID, started.SessionID, started.SessionToken, -time.Second, 0); err != nil {
 		t.Fatalf("ConfirmRaid: %v", err)
 	}
 

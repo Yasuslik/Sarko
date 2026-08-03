@@ -4,6 +4,7 @@
 #include "Algo/Reverse.h"
 
 #include "Loot/SarkoBackpack.h"
+#include "Loot/SarkoEquipment.h"
 #include "Loot/SarkoItemCatalog.h"
 #include "Loot/SarkoItemGrid.h"
 #include "Loot/SarkoLootContainer.h"
@@ -547,6 +548,89 @@ bool FSarkoRealLootTablesObeyTheDesignRules::RunTest(const FString& Parameters)
 				Part.Value < 1.f);
 		}
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoEveryEquipmentSlotCanBeFilledByPlaying,
+	"Sarko.Loot.EveryEquipmentSlotCanBeFilledByPlaying",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoEveryEquipmentSlotCanBeFilledByPlaying::RunTest(const FString& Parameters)
+{
+	// THE BUG THIS EXISTS TO PREVENT, once, in full: `jacket` was added to
+	// items.json with `slot: clothing` and put in no loot table at all, so the
+	// clothing slot could be filled only by a debug exec. A slot that cannot be
+	// filled by playing is not a hook for a future system — it is a hole in the
+	// character panel that every player sees and no player can close.
+	//
+	// The rule is therefore about SLOTS and not about that one item: for every
+	// equipment slot the game draws, at least one item worn in it must be reachable
+	// from the shipped loot tables. Written that way so the next slot added — armour,
+	// a helmet — fails here on the day it is authored rather than after a frame comes
+	// back with an empty rectangle in it.
+	//
+	// The ВИЛАЗКА kits (sarko-api domain.SortieKits) are a SECOND way in and are
+	// deliberately not counted: they live server-side, this test cannot read them, and
+	// a slot whose only source is a rate-limited free run is a slot behind a cooldown.
+	// Loot is the floor; the sortie is the ladder.
+	FSarkoItemCatalog Catalog;
+	FString Error;
+	if (!SarkoLoot::LoadItemCatalogFromDisk(Catalog, Error))
+	{
+		AddError(FString::Printf(TEXT("items.json failed to load: %s"), *Error));
+		return false;
+	}
+	FSarkoLootTables Tables;
+	if (!SarkoLoot::LoadLootTablesFromDisk(Catalog, Tables, Error))
+	{
+		AddError(FString::Printf(TEXT("loot-tables.json failed to load: %s"), *Error));
+		return false;
+	}
+
+	// Every id any tier can yield.
+	TSet<FName> Droppable;
+	for (const FSarkoLootTable& Table : Tables.Tables)
+	{
+		for (const FSarkoLootEntry& Entry : Table.Entries)
+		{
+			Droppable.Add(Entry.Item);
+		}
+	}
+
+	for (ESarkoEquipSlot Slot : SarkoEquip::Slots())
+	{
+		TArray<FName> Wearable;
+		TArray<FName> Findable;
+		for (const FSarkoItemDef& Def : Catalog.Items)
+		{
+			if (Def.EquipSlot != Slot)
+			{
+				continue;
+			}
+			Wearable.Add(Def.Id);
+			if (Droppable.Contains(Def.Id))
+			{
+				Findable.Add(Def.Id);
+			}
+		}
+
+		// A slot with nothing authored for it at all is a different fault and one the
+		// slot table's own test would catch; this one is about reachability.
+		if (!TestTrue(*FString::Printf(TEXT("the %s slot has something to put in it"),
+			*SarkoEquip::SlotCaption(Slot)), Wearable.Num() > 0))
+		{
+			continue;
+		}
+		TestTrue(*FString::Printf(
+				TEXT("the %s slot can be filled by playing — %d item(s) are worn there and %d of them drop"),
+				*SarkoEquip::SlotCaption(Slot), Wearable.Num(), Findable.Num()),
+			Findable.Num() > 0);
+	}
+
+	// And the coat by name, because it is the one that was wrong and a regression
+	// would be a whole slot going quietly unfillable again.
+	TestTrue(TEXT("the jacket is findable in a raid"), Droppable.Contains(FName(TEXT("jacket"))));
 	return true;
 }
 

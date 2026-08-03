@@ -29,6 +29,8 @@ themselves when `TEST_DATABASE_URL` is unset.
 | `RAID_TTL` | `12m` | how long a confirmed raid may run |
 | `PENDING_TTL` | `60s` | how long an unconfirmed raid holds its loadout |
 | `GRACE_BUFFER` | `2m` | added to `RAID_TTL` at confirm time |
+| `SORTIE_TTL` | `6m` | `RAID_TTL` for a ВИЛАЗКА — **must stay shorter than `RAID_TTL`** |
+| `SORTIE_COOLDOWN` | `15m` | how long after a sortie *ends* before another may start |
 
 `JWT_SECRET` must be at least 32 bytes or the process refuses to start. It signs
 30-day HS256 player tokens, so a short secret can be brute-forced offline from any
@@ -53,6 +55,31 @@ carried and looted is lost, so the timing rule is not cosmetic:
   client should align its countdown to that value rather than to its own copy of
   `RAID_TTL`, which may be stale after a config change.
 
+### ВИЛАЗКА, the free run (`mode: "sortie"`)
+
+`POST /v1/raid/start` takes an optional `"mode"`: `raid` (the default, and what an
+omitted field means) or `sortie`. That one string is the **only** thing a client says
+about a free run. Everything it implies is decided here:
+
+- **Free.** The request's `loadout` is discarded unread; nothing is debited.
+- **The server grants the kit**, rolled from `domain.SortieKits` with the service's
+  own generator, and returned as `granted_kit` so the client can show what it was
+  lent. There is no field a client could use to ask for a better one.
+- **Extraction credits the kit and the haul; death credits neither.** The kit is
+  written to `raid_sessions.loadout`, so the existing extraction path returns it —
+  "what you extract is yours" is the same code that returns a paid raid's loadout.
+- **A shorter clock**, `SORTIE_TTL` instead of `RAID_TTL`, picked at confirm time from
+  the session's own stored mode. A sortie is *worse*, never safer.
+- **A cooldown**, `SORTIE_COOLDOWN` from the moment the last sortie ended, checked
+  inside the transaction that holds the player's row lock. Too early is
+  `409 sortie_cooldown` with the remaining seconds in the message. `GET /v1/profile`
+  reports `sortie_cooldown_seconds` so a button can draw a countdown; that number
+  decides nothing.
+- **It does not latch `tutorial_completed`.** Only an ordinary raid's extraction does.
+
+A sortie death does *not* clear `player_equipment`: nothing of the player's was
+debited, so their own gear is still in their stash and still theirs.
+
 ## Endpoints
 
 | Method | Path | Auth | Purpose |
@@ -60,7 +87,7 @@ carried and looted is lost, so the timing rule is not cosmetic:
 | GET | `/healthz` | — | liveness |
 | POST | `/v1/auth/anonymous` | — | device id → JWT |
 | GET | `/v1/profile` | Bearer | stash, garage tier, unlocked maps |
-| POST | `/v1/raid/start` | Bearer | debit loadout, open session, return one-time token + seed |
+| POST | `/v1/raid/start` | Bearer | debit loadout, open session, return one-time token + seed. `mode: "sortie"` makes it free and server-kitted (see above) |
 | POST | `/v1/raid/confirm` | Bearer | mark the raid actually entered; returns `expires_at` |
 | POST | `/v1/raid/result` | Bearer | close the raid, credit survivors (idempotent) |
 | POST | `/v1/garage/craft` | Bearer | spend parts, advance one vehicle tier |

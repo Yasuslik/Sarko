@@ -73,11 +73,16 @@ var ItemDefs = map[string]ItemDef{
 	// rejected at result time — which is how the client's catalog and this map
 	// are kept honest by loot_test.go's drift alarm.
 	"backpack": {StackSize: 1, Width: 2, Height: 2, Slot: SlotBackpack},
-	// The clothing slot's only occupant. It is in the catalog and in NO loot
-	// table: spec §5 calls the clothing slot "a hook, not a system", so the item
-	// exists so the slot has something it can legally hold and so the equip rules
-	// have a second `gear` id to tell a bag apart from — it is not yet findable in
-	// a raid, and making it so is the armour system's business, not this one's.
+	// The clothing slot's only occupant, and OBTAINABLE since 2026-08-03.
+	//
+	// It used to be in the catalog and in no loot table at all, which made the
+	// clothing slot fillable only by a debug exec — a slot that cannot be filled by
+	// playing is a slot that does not exist. It now has two honest ways in: the
+	// `good` loot tier at weight 3 (SarkoGame/Data/Loot/loot-tables.json), and two
+	// of the ВИЛАЗКА kits in sortie.go. Spec §5 still keeps clothing a hook rather
+	// than a system — a coat does nothing yet — but a hook you can reach is the
+	// difference between a future feature and a dead slot.
+	//
 	// It has to be here regardless: loot_test.go's drift alarm runs in both
 	// directions, so a client catalog row without a mirror fails HERE, which is
 	// the whole point of that alarm.
