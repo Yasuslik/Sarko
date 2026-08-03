@@ -11,6 +11,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Loot/SarkoBackpack.h"
 #include "Loot/SarkoExtractionZone.h"
+#include "Loot/SarkoItemCatalog.h"
 #include "Loot/SarkoLootTable.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -389,24 +390,38 @@ void ASarkoRaidGameMode::BeginRaidSession()
 	// dropped reply instead of a write into a torn-down world.
 	TWeakObjectPtr<ASarkoRaidGameMode> WeakThis(this);
 
-	// The loadout goes out **empty**, and it must stay empty until in-raid
-	// weapons and ammo are real items.
+	// THE LOADOUT IS REAL NOW (spec §4), and it is the equipped items.
 	//
-	// /v1/raid/start debits the loadout from the stash; nothing credits it back
-	// except the raid result, and the result submits the backpack alone. So the
-	// pistol and 60 rounds this used to send were a one-way withdrawal: the first
-	// raid spent the starter kit and every raid after it got 409
-	// insufficient_items, which fell through to the offline path permanently —
-	// the online loop worked exactly once per install. Nothing in the raid even
-	// reads the loadout: the weapon is abstract with infinite reloads, so the
-	// debit was risk with no matching stake, which is dishonest rather than hard.
+	// It went out empty until 2026-08-03 because the debit had no matching credit:
+	// /v1/raid/start took the items and only the raid result gave anything back,
+	// and the result carries the backpack alone — so the starter kit walked out on
+	// raid 1 and raid 2 answered 409 insufficient_items forever after. The missing
+	// half is built: an extraction credits the SESSION's recorded loadout back
+	// server-side, a death does not, and a raid that is never entered is refunded
+	// by the sweeper. So the withdrawal is now reversible and losing it is the
+	// stake.
 	//
-	// An empty loadout means a PvE raid risks only the loot it finds, which is
-	// the intended economy for the tutorial sector. Restore the debit — together
-	// with crediting a survivor's kit back in the result — when losing a weapon
-	// on death is a real consequence.
+	// It comes from the CACHED profile, which is the one the shelter just drew and
+	// the one the server most recently confirmed. A raid entered straight from the
+	// command line with no shelter visit has no cached profile, so its equipment is
+	// empty and the loadout is empty — which is exactly the unarmed case, allowed on
+	// purpose, and the safe direction for a path that has not spoken to the server.
+	//
+	// Nothing in this loop is trusted to be right on its own: whatever goes out
+	// here, /v1/raid/start still debits it from the real stash and refuses what is
+	// not there, so the worst a stale cached profile can do is fail the start and
+	// fall through to the offline raid.
 	const FString MapId = GetDefault<USarkoRaidSettings>()->BackendMapId;
-	Backend->StartRaid(MapId, SarkoBackend::WireLoadout(),
+	FSarkoEquipment Equipped;
+	if (const USarkoGameInstance* Instance = GetGameInstance<USarkoGameInstance>())
+	{
+		Equipped = Instance->CachedProfile.Equipment;
+	}
+	const TArray<FSarkoItemStack> Loadout =
+		SarkoBackend::WireLoadout(Equipped, SarkoLoot::GetItemCatalog());
+	UE_LOG(LogTemp, Display, TEXT("SarkoRaidGameMode: the raid takes in %d equipped stack(s)%s"),
+		Loadout.Num(), Loadout.Num() == 0 ? TEXT(" — unarmed, which is allowed") : TEXT(""));
+	Backend->StartRaid(MapId, Loadout,
 		[WeakThis](bool bStarted, const FSarkoRaidSession& NewSession, const FString& StartError)
 		{
 			ASarkoRaidGameMode* Inner = WeakThis.Get();

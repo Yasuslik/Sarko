@@ -266,40 +266,76 @@ bool FSarkoOutcomeMapsToTheWireStrings::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FSarkoWireLoadoutIsEmptyAndUnpaid,
-	"Sarko.Backend.WireLoadoutIsEmptyAndUnpaid",
+	FSarkoWireLoadoutIsWhatIsEquipped,
+	"Sarko.Backend.WireLoadoutIsWhatIsEquipped",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FSarkoWireLoadoutIsEmptyAndUnpaid::RunTest(const FString& Parameters)
+bool FSarkoWireLoadoutIsWhatIsEquipped::RunTest(const FString& Parameters)
 {
-	// The loadout must be empty, and this is the test that says why rather than a
-	// test that merely records the current value.
+	// This test was "the loadout is always empty, and here is why", and the why has
+	// been answered rather than abandoned. /v1/raid/start debits the loadout and, for
+	// a long time, only the raid RESULT credited anything back — and the result
+	// submits the backpack alone, so a non-empty loadout was a withdrawal with no
+	// matching deposit: raid 1 spent the starter kit and raid 2 answered 409
+	// insufficient_items for the rest of the install's life. store.SubmitResult now
+	// credits the SESSION's recorded loadout back on extraction, so the deposit
+	// exists and the debit is a stake instead of a leak.
 	//
-	// /v1/raid/start debits the loadout from the stash and only the raid result
-	// credits anything back — and the result submits the backpack alone. So any
-	// non-empty loadout here is a withdrawal with no matching deposit: raid 1 spends
-	// the starter kit, raid 2 is 409 insufficient_items, and the client degrades
-	// offline for the rest of the install's life. The online loop working exactly
-	// once is what this guards against.
-	const TArray<FSarkoItemStack> Loadout = SarkoBackend::WireLoadout();
-	TestEqual(TEXT("the raid takes nothing in until the result can credit it back"), Loadout.Num(), 0);
-
-	// And it must serialise as an empty array rather than a null: domain.
-	// ValidateStacks accepts an empty list, but a `"loadout":null` would be a 400.
-	const FString Start = SarkoBackend::MakeRaidStartBody(TEXT("bridge"), Loadout);
-	TestTrue(TEXT("an empty loadout is an empty JSON array"), Start.Contains(TEXT("\"loadout\":[]")));
-
-	// When it is refilled — once weapons and ammo are real in-raid items — every
-	// entry still has to be a catalog item with a positive quantity, or /v1/raid/
-	// start answers 400 implausible_items and no raid ever begins. Kept live so the
-	// rule is already enforced on the day somebody adds the first stack back.
+	// What is pinned now is the mapping and, above all, the floor.
 	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
-	for (const FSarkoItemStack& Stack : Loadout)
+
+	// THE FLOOR, and it is spec §4's dead-end guard on the wire: a player with
+	// nothing equipped sends an empty loadout, and an empty loadout has to be a legal
+	// request. domain.ValidateStacks accepts an empty list; a `"loadout":null` would
+	// be a 400 and would make an unarmed raid impossible, which is the one outcome
+	// that can strand a player forever.
+	const FSarkoEquipment Unarmed;
+	const TArray<FSarkoItemStack> Nothing = SarkoBackend::WireLoadout(Unarmed, Catalog);
+	TestEqual(TEXT("an unequipped player takes nothing in"), Nothing.Num(), 0);
+	const FString UnarmedBody = SarkoBackend::MakeRaidStartBody(TEXT("bridge"), Nothing);
+	TestTrue(TEXT("an empty loadout is an empty JSON array, never a null"),
+		UnarmedBody.Contains(TEXT("\"loadout\":[]")));
+
+	// A full kit: one stack of one per occupied slot, sorted by id so the body matches
+	// what domain.MergeStacks produces on the far side.
+	FSarkoEquipment Kitted;
+	Kitted.Weapon = FName(TEXT("pistol"));
+	Kitted.Backpack = FName(TEXT("backpack"));
+	Kitted.Clothing = FName(TEXT("jacket"));
+	const TArray<FSarkoItemStack> Kit = SarkoBackend::WireLoadout(Kitted, Catalog);
+	if (TestEqual(TEXT("a full kit is three stacks"), Kit.Num(), 3))
+	{
+		TestEqual(TEXT("sorted by id, as the server merges them"), Kit[0].Item, FName(TEXT("backpack")));
+		TestEqual(TEXT("sorted by id, as the server merges them"), Kit[1].Item, FName(TEXT("jacket")));
+		TestEqual(TEXT("sorted by id, as the server merges them"), Kit[2].Item, FName(TEXT("pistol")));
+	}
+
+	// Every entry has to be a catalog item with a positive quantity, or
+	// /v1/raid/start answers 400 implausible_items and no raid begins at all.
+	for (const FSarkoItemStack& Stack : Kit)
 	{
 		TestNotNull(*FString::Printf(TEXT("loadout item '%s' is in the catalog"), *Stack.Item.ToString()),
 			Catalog.Find(Stack.Item));
 		TestTrue(TEXT("quantities are positive"), Stack.Quantity > 0);
 	}
+
+	// An id the catalog does not know is LEFT OUT rather than sent: the backend
+	// rejects the whole body for one unknown id, and losing the raid to catalogue
+	// drift would be worse than entering it one item short.
+	FSarkoEquipment Drifted;
+	Drifted.Weapon = FName(TEXT("plasma_rifle"));
+	TestEqual(TEXT("an unknown equipped id is left out of the loadout"),
+		SarkoBackend::WireLoadout(Drifted, Catalog).Num(), 0);
+
+	// And the equip body itself. An empty item id is the UNEQUIP and is sent
+	// explicitly — the server distinguishes "clear this slot" from a malformed body,
+	// and an omitted field would be the second.
+	TestEqual(TEXT("equipping names the slot and the item"),
+		SarkoBackend::MakeSetEquipmentBody(ESarkoEquipSlot::Weapon, FName(TEXT("pistol"))),
+		FString(TEXT("{\"slot\":\"weapon\",\"item_id\":\"pistol\"}")));
+	TestEqual(TEXT("unequipping sends an explicit empty item id"),
+		SarkoBackend::MakeSetEquipmentBody(ESarkoEquipSlot::Clothing, NAME_None),
+		FString(TEXT("{\"slot\":\"clothing\",\"item_id\":\"\"}")));
 	return true;
 }
 

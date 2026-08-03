@@ -126,7 +126,7 @@ bool FSarkoStashStacksSurviveTheCatalog::RunTest(const FString& Parameters)
 	// ...and the view says so in words, over a grid that is still drawn — that is
 	// the difference between "you own nothing" and "this screen failed to load".
 	const FSarkoShelterView Loaded = SarkoShelter::BuildView(FSarkoLastRaid(), Empty,
-		/*bProfileLoaded*/ true, FString(), FString(), Catalog);
+		/*bProfileLoaded*/ true, FString(), FString(), Catalog, ESarkoShelterScreen::Inventory);
 	TestEqual(TEXT("a fetched empty stash says so in Ukrainian"), Loaded.StashNote,
 		FString(TEXT("СХОВОК ПОРОЖНІЙ")));
 	return true;
@@ -278,7 +278,7 @@ bool FSarkoShelterViewSeparatesUnknownFromEmpty::RunTest(const FString& Paramete
 	// Not fetched yet: the stash is unknown, not empty. Drawing "СХОВОК
 	// ПОРОЖНІЙ" here would tell a player their raid credited nothing.
 	const FSarkoShelterView Loading = SarkoShelter::BuildView(NoRaidYet, Profile, /*bProfileLoaded*/ false,
-		FString(), FString(), Catalog);
+		FString(), FString(), Catalog, ESarkoShelterScreen::Inventory);
 	TestEqual(TEXT("the title is the shelter's name"), Loading.Title, FString(TEXT("УКРИТТЯ")));
 	TestEqual(TEXT("an unfetched profile draws no stash cells at all"), Loading.StashStacks.Num(), 0);
 	TestEqual(TEXT("and does not claim it is empty, either"), Loading.StashNote, FString());
@@ -292,7 +292,7 @@ bool FSarkoShelterViewSeparatesUnknownFromEmpty::RunTest(const FString& Paramete
 
 	// Fetched and genuinely empty.
 	const FSarkoShelterView Loaded = SarkoShelter::BuildView(NoRaidYet, Profile, /*bProfileLoaded*/ true,
-		FString(), FString(), Catalog);
+		FString(), FString(), Catalog, ESarkoShelterScreen::Inventory);
 	TestEqual(TEXT("a fetched empty stash says so"), Loaded.StashNote, FString(TEXT("СХОВОК ПОРОЖНІЙ")));
 	TestEqual(TEXT("no status line once the profile is in"), Loaded.StatusLine, FString());
 	TestTrue(TEXT("the raid button is live once the profile is in"), Loaded.bRaidEnabled);
@@ -302,7 +302,7 @@ bool FSarkoShelterViewSeparatesUnknownFromEmpty::RunTest(const FString& Paramete
 	// spec §4.6's offline degradation says the game never hard-locks on network —
 	// an offline raid plays and persists nothing.
 	const FSarkoShelterView Failed = SarkoShelter::BuildView(NoRaidYet, Profile, /*bProfileLoaded*/ false,
-		TEXT("/v1/profile: HTTP 401 unauthorized"), FString(), Catalog);
+		TEXT("/v1/profile: HTTP 401 unauthorized"), FString(), Catalog, ESarkoShelterScreen::Inventory);
 	TestEqual(TEXT("the error is shown, not swallowed"), Failed.StatusLine,
 		FString(TEXT("ОФЛАЙН: /v1/profile: HTTP 401 unauthorized")));
 	TestTrue(TEXT("an offline shelter can still start a raid"), Failed.bRaidEnabled);
@@ -329,7 +329,7 @@ bool FSarkoShelterViewSeparatesUnknownFromEmpty::RunTest(const FString& Paramete
 	JustExtracted.Haul = { FSarkoItemStack{ FName(TEXT("chain")), 1 } };
 
 	const FSarkoShelterView AfterRaid = SarkoShelter::BuildView(JustExtracted, Yesterday,
-		/*bProfileLoaded*/ false, FString(), FString(), Catalog);
+		/*bProfileLoaded*/ false, FString(), FString(), Catalog, ESarkoShelterScreen::Inventory);
 	TestEqual(TEXT("a stale profile draws no garage count after a raid"), AfterRaid.Garage.Title,
 		FString(TEXT("ГАРАЖ: ВЕЛОСИПЕД —/3")));
 	TestEqual(TEXT("nor a stale stash"), AfterRaid.StashStacks.Num(), 0);
@@ -342,7 +342,7 @@ bool FSarkoShelterViewSeparatesUnknownFromEmpty::RunTest(const FString& Paramete
 	// And a failed re-fetch keeps withholding it rather than falling back to the
 	// stale number, which is the case that used to be wrong for the whole visit.
 	const FSarkoShelterView AfterRaidOffline = SarkoShelter::BuildView(JustExtracted, Yesterday,
-		/*bProfileLoaded*/ false, TEXT("/v1/profile: HTTP 500"), FString(), Catalog);
+		/*bProfileLoaded*/ false, TEXT("/v1/profile: HTTP 500"), FString(), Catalog, ESarkoShelterScreen::Inventory);
 	TestEqual(TEXT("a failed re-fetch still withholds the count"), AfterRaidOffline.Garage.Title,
 		FString(TEXT("ГАРАЖ: ВЕЛОСИПЕД —/3")));
 	return true;
@@ -429,7 +429,7 @@ bool FSarkoHaulLinesOnlySurviveAnExtraction::RunTest(const FString& Parameters)
 	FSarkoProfile Profile;
 	Profile.PlayerId = TEXT("p");
 	Profile.VehicleTier = TEXT("none");
-	const FSarkoShelterView View = SarkoShelter::BuildView(Won, Profile, true, FString(), FString(), Catalog);
+	const FSarkoShelterView View = SarkoShelter::BuildView(Won, Profile, true, FString(), FString(), Catalog, ESarkoShelterScreen::Inventory);
 	TestEqual(TEXT("BuildView carries the outcome title"), View.OutcomeTitle, FString(TEXT("ВИНЕСЕНО")));
 	TestEqual(TEXT("BuildView carries the haul"), View.HaulLines.Num(), 2);
 	return true;
