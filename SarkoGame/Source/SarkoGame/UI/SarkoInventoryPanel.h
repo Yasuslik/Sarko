@@ -75,6 +75,17 @@ namespace SarkoUI
 	constexpr float CellLabelPt = 7.5f;
 
 	/**
+	 * The ceiling SarkoUI::CellLabelPtFor scales a multi-cell label up to.
+	 *
+	 * 15 and not the 19 a 3x2's geometry would ask for: the shelter's own title is
+	 * 26 pt and the stash's section label is 11, so a cell label past ~15 stops
+	 * reading as a tag on an object and starts competing with the screen's
+	 * headings. It is also comfortably inside a 36 pt cell interior, so the type
+	 * cannot collide with the rim it is centred in.
+	 */
+	constexpr float CellLabelMaxPt = 15.f;
+
+	/**
 	 * The crate's tier is the header's headline and "ОБШУК" is its dim label
 	 * above it, stacked rather than run together on one line: at 190 pt of inner
 	 * width,

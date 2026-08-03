@@ -7,6 +7,7 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SConstraintCanvas.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -39,12 +40,92 @@ FVector2D SarkoUI::CellOriginPt(const FSarkoGridSlot& Slot)
 	return FVector2D(Slot.X * Pitch, Slot.Y * Pitch);
 }
 
-TSharedRef<SWidget> SarkoUI::BuildCellContent(const FSarkoItemStack& Stack)
+float SarkoUI::CellLabelPtFor(FIntPoint Size)
+{
+	const FVector2D Extent = CellExtentPt(Size);
+	// The geometric mean of the two sides. See the header for why 0.17 and why the
+	// 1x1 answer has to come out at exactly CellLabelPt.
+	const float Mean = FMath::Sqrt(static_cast<float>(Extent.X * Extent.Y));
+	return FMath::Clamp(Mean * 0.17f, CellLabelPt, CellLabelMaxPt);
+}
+
+float SarkoUI::CellCountPtFor(FIntPoint Size)
+{
+	// 10 : 7.5 on a 1x1, held at every footprint rather than re-tuned per size.
+	return CellLabelPtFor(Size) * (CellCountPt / CellLabelPt);
+}
+
+TSharedRef<SWidget> SarkoUI::BuildCellContent(const FSarkoItemStack& Stack, FIntPoint Size)
 {
 	const FSarkoItemDef* Def = SarkoLoot::GetItemCatalog().Find(Stack.Item);
-	const FString Label = CellLabel(Def ? Def->Name : Stack.Item.ToString());
+	// The AUTHORED short name where there is one (items.json's `short`), the old
+	// derived cut where there is not. This is the fix for a stash that read
+	// ПАТР… АПТЕ… ОБЕЗ… АРМО… МЕТА… МІДН…: no derivation gets "Обезболювальне"
+	// into the five Cyrillic capitals a 44 pt cell holds, and two junk greys that
+	// both read ЛОМ… tell the player nothing the hue had not already said.
+	const FString Label = CellLabelFor(Def, Stack.Item);
 
 	TSharedRef<SOverlay> Content = SNew(SOverlay).Visibility(EVisibility::SelfHitTestInvisible);
+
+	if (IsMultiCell(Size))
+	{
+		// A PLATE, not a cell: the label and the count as ONE centred group.
+		// Diagonally opposite corners of a 140x92 pt rectangle are 150 pt apart,
+		// which is far enough that the eye reads two unrelated marks on an empty
+		// panel instead of one labelled object.
+		const float LabelPt = CellLabelPtFor(Size);
+		const float CountPt = CellCountPtFor(Size);
+		const FVector2D Extent = CellExtentPt(Size);
+
+		// STACKED and not side by side, and the reason is a frame: side by side, a
+		// six-character label at the cap plus a count was wider than a 2x2's 84 pt
+		// interior, and since both were auto-sized inside a centred slot the count
+		// was pushed clean outside the cell's rim — an overflowing number on a
+		// neighbouring cell, which is worse than the flaw being fixed. Stacked, the
+		// width to satisfy is max(label, count) rather than their sum, so the only
+		// thing that can be too wide is the label, and one SBox bounds it.
+		TSharedRef<SVerticalBox> Group = SNew(SVerticalBox)
+			.Visibility(EVisibility::SelfHitTestInvisible);
+
+		Group->AddSlot().AutoHeight().HAlign(HAlign_Center)
+			[
+				SNew(SBox)
+				.Visibility(EVisibility::SelfHitTestInvisible)
+				// The cell's interior, exactly. An authored short name fits inside it
+				// by construction (Sarko.UI.ShortNamesAreAuthoredAndDistinct), but the
+				// FALLBACK label on an id the catalog does not know has no such
+				// guarantee — and a word running out of its cell reads as a rendering
+				// fault. Bounding the box is what turns that into an ellipsis.
+				.MaxDesiredWidth(Extent.X - 2.f * CellPadPt)
+				[
+					SNew(STextBlock)
+					.Visibility(EVisibility::SelfHitTestInvisible)
+					.Font(SarkoCellFont(LabelPt))
+					.ColorAndOpacity(FSlateColor(CellLabelColour))
+					.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+					.Text(FText::FromString(Label))
+				]
+			];
+
+		if (Stack.Quantity > 1)
+		{
+			Group->AddSlot().AutoHeight().HAlign(HAlign_Center)
+				[
+					SNew(STextBlock)
+					.Visibility(EVisibility::SelfHitTestInvisible)
+					.Font(SarkoCellFont(CountPt))
+					.ColorAndOpacity(FSlateColor(CellCountColour))
+					.Text(FText::AsNumber(Stack.Quantity))
+				];
+		}
+
+		Content->AddSlot()
+			.HAlign(HAlign_Center).VAlign(VAlign_Center)
+			[
+				Group
+			];
+		return Content;
+	}
 
 	Content->AddSlot()
 		.HAlign(HAlign_Left).VAlign(VAlign_Top)
@@ -92,7 +173,7 @@ TSharedRef<SWidget> SarkoUI::BuildStackCell(const FSarkoItemStack& Stack,
 			.BorderImage(&Styles.CellByCategory[static_cast<int32>(SarkoCellCategoryOf(Stack.Item))].Normal)
 			.Padding(FMargin(CellPadPt))
 			[
-				BuildCellContent(Stack)
+				BuildCellContent(Stack, Size)
 			]
 		];
 }
