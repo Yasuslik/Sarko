@@ -103,6 +103,17 @@ func closeExpiredSessionTx(ctx context.Context, tx pgx.Tx, e expiredSession) err
 		return nil
 	}
 
+	// An active session that ran out of time is a death (§11), so it loses the
+	// equipment exactly as a death does — the loadout was debited at start and
+	// nothing here credits it back, so the rows have to go or the shelter would
+	// show gear the stash no longer holds. This is the MIA case the client calls
+	// "ЗНИК БЕЗВІСТИ", and the whole reason it lives in this shared function is
+	// that a raid must not lose its equipment only when the client remembered to
+	// submit a result.
+	if err := clearEquipmentTx(ctx, tx, e.playerID); err != nil {
+		return err
+	}
+
 	if _, err := tx.Exec(ctx,
 		`UPDATE raid_sessions
 		 SET state = 'closed', outcome = 'died', closed_at = now(), result_items = '[]'::jsonb

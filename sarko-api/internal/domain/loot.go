@@ -14,6 +14,15 @@ type ItemDef struct {
 	StackSize int
 	Width     int
 	Height    int
+	// Slot is the equipment slot this item is worn in, or "" for cargo. It
+	// mirrors items.json's authored `slot` (equipment spec §2), and it is what
+	// makes SetEquipment refusable server-side: without it the API would have to
+	// take the client's word for what a slot accepts, and the client is the party
+	// whose loadout this decides.
+	//
+	// Authored rather than derived from a category for the reason items.json
+	// records: `backpack` and `jacket` are both gear and a bag is not a coat.
+	Slot EquipSlot
 }
 
 // ItemDefs is every item id the game can legitimately produce, mapped to its
@@ -32,7 +41,7 @@ type ItemDef struct {
 // nor with how much room they take.
 var ItemDefs = map[string]ItemDef{
 	// Weapons and ammo.
-	"pistol":   {StackSize: 1, Width: 2, Height: 1},
+	"pistol":   {StackSize: 1, Width: 2, Height: 1, Slot: SlotWeapon},
 	"ammo_9mm": {StackSize: 60, Width: 1, Height: 1},
 	// Medical.
 	"medkit":      {StackSize: 3, Width: 1, Height: 1},
@@ -63,7 +72,16 @@ var ItemDefs = map[string]ItemDef{
 	// extracts wearing it, so the id has to exist here or the whole haul is
 	// rejected at result time — which is how the client's catalog and this map
 	// are kept honest by loot_test.go's drift alarm.
-	"backpack": {StackSize: 1, Width: 2, Height: 2},
+	"backpack": {StackSize: 1, Width: 2, Height: 2, Slot: SlotBackpack},
+	// The clothing slot's only occupant. It is in the catalog and in NO loot
+	// table: spec §5 calls the clothing slot "a hook, not a system", so the item
+	// exists so the slot has something it can legally hold and so the equip rules
+	// have a second `gear` id to tell a bag apart from — it is not yet findable in
+	// a raid, and making it so is the armour system's business, not this one's.
+	// It has to be here regardless: loot_test.go's drift alarm runs in both
+	// directions, so a client catalog row without a mirror fails HERE, which is
+	// the whole point of that alarm.
+	"jacket": {StackSize: 1, Width: 2, Height: 2, Slot: SlotClothing},
 }
 
 // KnownItemIDs is the set of legitimate item ids. It is derived from ItemDefs

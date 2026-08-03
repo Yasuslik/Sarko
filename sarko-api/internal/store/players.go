@@ -23,6 +23,15 @@ type Profile struct {
 	// every container of the next raid — which is why it is set inside
 	// SubmitResult's transaction and never anywhere else.
 	TutorialCompleted bool `json:"tutorial_completed"`
+	// Equipment is slot -> item id for every slot that has something in it
+	// (equipment spec §2). Never nil, so the client can read a slot without
+	// checking; an empty object is a player wearing nothing, which is both the
+	// starting state and the state after every death.
+	//
+	// It rides on the profile rather than on an endpoint of its own because the
+	// shelter draws the character and the stash from one fetch, and two fetches
+	// would let the two halves of that screen disagree.
+	Equipment map[string]string `json:"equipment"`
 }
 
 // UpsertPlayer returns the player id for a device, creating the player and its
@@ -94,7 +103,7 @@ func (s *Store) GrantStarterKit(ctx context.Context, playerID string) (bool, err
 
 // Profile reads stash, garage tier and derived map access.
 func (s *Store) Profile(ctx context.Context, playerID string) (Profile, error) {
-	p := Profile{PlayerID: playerID, Stash: []domain.ItemStack{}}
+	p := Profile{PlayerID: playerID, Stash: []domain.ItemStack{}, Equipment: map[string]string{}}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   pgx.RepeatableRead,
@@ -134,6 +143,19 @@ func (s *Store) Profile(ctx context.Context, playerID string) (Profile, error) {
 	if err := rows.Err(); err != nil {
 		return Profile{}, fmt.Errorf("iterate stash: %w", err)
 	}
+	rows.Close()
+
+	// Inside the SAME repeatable-read transaction as the stash, deliberately. The
+	// shelter draws the character and the stash side by side and equipping moves
+	// nothing between them, but a raid start debits the stash while the equipment
+	// still names what it debited — so two snapshots could show an equipped pistol
+	// beside a stash that no longer has one, or the reverse, and the player would
+	// be looking at a screen that contradicts itself.
+	equipment, err := equipmentTx(ctx, tx, playerID)
+	if err != nil {
+		return Profile{}, err
+	}
+	p.Equipment = equipment
 
 	if err := tx.Commit(ctx); err != nil {
 		return Profile{}, fmt.Errorf("commit: %w", err)

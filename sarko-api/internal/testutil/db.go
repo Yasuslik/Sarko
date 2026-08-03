@@ -33,7 +33,11 @@ func Pool(t *testing.T) *pgxpool.Pool {
 
 	// Truncate rather than recreate: fast, and RESTART IDENTITY keeps ids predictable.
 	_, err = pool.Exec(context.Background(),
-		`TRUNCATE raid_sessions, garage_progress, stash_items, players RESTART IDENTITY CASCADE`)
+		// player_equipment is named explicitly even though CASCADE would reach it
+		// through its FK to players: a truncate list that spells out every table is
+		// the one place a new table's absence from the reset is visible.
+		`TRUNCATE raid_sessions, garage_progress, stash_items, player_equipment, players
+		 RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
 	}

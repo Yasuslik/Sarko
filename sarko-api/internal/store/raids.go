@@ -210,6 +210,19 @@ type RaidResult struct {
 	SessionID     string             `json:"session_id"`
 	Outcome       domain.RaidOutcome `json:"outcome"`
 	CreditedItems []domain.ItemStack `json:"credited_items"`
+	// ReturnedLoadout is the equipment the raid took in, credited back because
+	// the player walked out with it (spec §4: "lost on death, and returned (with
+	// the haul) on extraction").
+	//
+	// It is the loadout recorded on the SESSION ROW, not the player's current
+	// equipment, and that is the whole safety of it: it is exactly what
+	// /v1/raid/start debited, so extraction is an exact reversal and no amount of
+	// re-equipping mid-raid can turn it into a grant. Empty for every death, and
+	// empty for a raid entered with nothing.
+	//
+	// Separate from CreditedItems rather than merged into it so the client can
+	// still show "what I carried out" as the haul it actually was.
+	ReturnedLoadout []domain.ItemStack `json:"returned_loadout"`
 	// AlreadyClosed is true when this call replayed an earlier result.
 	AlreadyClosed bool `json:"already_closed"`
 }
@@ -383,7 +396,15 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 
 	// Idempotency: a closed session replays its stored answer.
 	if state == domain.StateClosed {
-		out := RaidResult{SessionID: p.SessionID, AlreadyClosed: true, CreditedItems: []domain.ItemStack{}}
+		// ReturnedLoadout is empty on a replay even for an extraction that did
+		// return one: the loadout came back the first time, and a replay must credit
+		// nothing and must not claim it did.
+		out := RaidResult{
+			SessionID:       p.SessionID,
+			AlreadyClosed:   true,
+			CreditedItems:   []domain.ItemStack{},
+			ReturnedLoadout: []domain.ItemStack{},
+		}
 		if outcomeText != nil {
 			out.Outcome = domain.RaidOutcome(*outcomeText)
 		}
@@ -440,10 +461,11 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 		// replay a caller gets when the sweeper closed the session first, so
 		// the outcome does not depend on which side won the race.
 		return RaidResult{
-			SessionID:     p.SessionID,
-			Outcome:       domain.OutcomeDied,
-			CreditedItems: []domain.ItemStack{},
-			AlreadyClosed: true,
+			SessionID:       p.SessionID,
+			Outcome:         domain.OutcomeDied,
+			CreditedItems:   []domain.ItemStack{},
+			ReturnedLoadout: []domain.ItemStack{},
+			AlreadyClosed:   true,
 		}, nil
 	}
 
@@ -510,6 +532,40 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 		return RaidResult{}, err
 	}
 
+	// The loadout, and this is the riskiest arithmetic in the service: it is the
+	// first thing that can destroy the contents of a shelter, so its reversal has
+	// to be exact.
+	//
+	// EXTRACTED gives it back. The stacks come from the session row — what
+	// /v1/raid/start actually debited — and not from the player's current
+	// equipment, so a client that re-equipped during the raid cannot be credited
+	// something that was never taken. It goes through addItemsTx, which is the
+	// same merge-and-credit path the haul uses, so an ammo stack that was both
+	// carried out and taken in lands as one row.
+	//
+	// DIED gives nothing back and clears the equipment. Nothing has to be
+	// subtracted to make that true — the debit already happened at start — but the
+	// rows naming the lost gear have to go, or the shelter shows a pistol the
+	// stash does not contain and the next raid is refused for insufficient_items
+	// with the reason invisible. The safe-pocket allowance above is unaffected: it
+	// bounds what the HAUL may preserve, and equipment is not haul.
+	returned := []domain.ItemStack{}
+	if p.Outcome == domain.OutcomeExtracted {
+		if len(loadoutRaw) > 0 {
+			if err := json.Unmarshal(loadoutRaw, &returned); err != nil {
+				return RaidResult{}, fmt.Errorf("unmarshal loadout: %w", err)
+			}
+		}
+		if returned == nil {
+			returned = []domain.ItemStack{}
+		}
+		if err := addItemsTx(ctx, tx, playerID, returned); err != nil {
+			return RaidResult{}, err
+		}
+	} else if err := clearEquipmentTx(ctx, tx, playerID); err != nil {
+		return RaidResult{}, err
+	}
+
 	itemsJSON, err := json.Marshal(items)
 	if err != nil {
 		return RaidResult{}, fmt.Errorf("marshal result items: %w", err)
@@ -525,5 +581,10 @@ func (s *Store) SubmitResult(ctx context.Context, p SubmitResultParams) (RaidRes
 	if err := tx.Commit(ctx); err != nil {
 		return RaidResult{}, fmt.Errorf("commit: %w", err)
 	}
-	return RaidResult{SessionID: p.SessionID, Outcome: p.Outcome, CreditedItems: items}, nil
+	return RaidResult{
+		SessionID:       p.SessionID,
+		Outcome:         p.Outcome,
+		CreditedItems:   items,
+		ReturnedLoadout: returned,
+	}, nil
 }
