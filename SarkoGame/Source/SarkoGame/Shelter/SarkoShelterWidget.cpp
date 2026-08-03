@@ -50,14 +50,22 @@ namespace
 	 * The destination column, and the whole of spec §1's navigation.
 	 *
 	 * LEFT-EDGE, because a phone held in landscape rests both thumbs on the edges
-	 * and neither of them anywhere near the middle-top. 96 pt is what the widest
-	 * label needs: "ІНВЕНТАР" at 12 pt is ~60 pt of Cyrillic capitals plus 2×8 of
-	 * button padding, and "БЕЗ ЗБРОЇ" at 10 pt on the raid button's second line is
-	 * ~57. It is deliberately NOT wider — every point here is a point the stash grid
-	 * does not get, and the stash is the thing on this screen a player actually
-	 * reads.
+	 * and neither of them anywhere near the middle-top.
+	 *
+	 * 126 pt, and it took two frames to get there. At 96, with 12 pt labels and a
+	 * "• " marker glued to the front of the current one, "ІНВЕНТАР" and "МАГАЗИН"
+	 * were clipped AT BOTH ENDS — centred text in a box too narrow for it — so the
+	 * column read "НВЕНТА" and "ІАГАЗИ", and "В РЕЙД" read "З РЕЙД". At 112, with the
+	 * marker moved into a slot of its own and the label at 11 pt, they still lost
+	 * their last letter. 126 leaves the longest label ~25 pt of slack, and the label
+	 * is LEFT-justified now so that if a longer word ever appears it loses one end
+	 * rather than both.
+	 *
+	 * It is deliberately not wider than that: every point here is a point the stash
+	 * grid does not get, and SarkoUI::StashColumns is already down to seven paying
+	 * for this column and the character panel.
 	 */
-	constexpr float NavColumnPt = 96.f;
+	constexpr float NavColumnPt = 126.f;
 	constexpr float NavGapPt = 14.f;
 
 	/** Each destination is 46 pt tall, past the 44 pt tap-target minimum. Three of
@@ -67,27 +75,44 @@ namespace
 	constexpr float NavButtonGapPt = 6.f;
 
 	/**
-	 * The character panel's width, and it is derived rather than chosen: the two
-	 * 2×2 slots sit SIDE BY SIDE and a 2×2 is 92 pt (SarkoUI::CellExtentPt), so
-	 * 92 + 6 + 92 = 190 is the narrowest this can be without stacking them — and
-	 * stacking them does not fit the height. See the height arithmetic in
-	 * BuildCharacterPanel.
+	 * The character panel's width, and it is derived rather than chosen.
+	 *
+	 * The two 2×2 slots sit SIDE BY SIDE — the height arithmetic in
+	 * BuildCharacterPanel is why — and a 2×2 is 92 pt (SarkoUI::CellExtentPt), so
+	 * the CONTENT is 92 + 6 + 92 = 190. Around it: 2×5 of plate padding. 204 leaves
+	 * 4 pt of slack, and the plate carries NO scroll box — see BuildCharacterPanel,
+	 * which fits the body inside the plate's height rather than letting it scroll.
+	 *
+	 * Both numbers were settled by frames, and both failures looked like clipping:
+	 * at 190 (the content width with nothing allowed for the plate) the backpack cell
+	 * read "РЮК…" and the pockets page was cut down its right edge; at 206 WITH a
+	 * scroll box the bar took ~16 pt off the inside and the backpack cell read
+	 * "РЮКЗ…" — the second slot was being squeezed by exactly the width of the bar.
 	 */
-	constexpr float CharacterPanelPt = 190.f;
+	constexpr float CharacterPanelPt = 204.f;
 	constexpr float CharacterGapPt = 14.f;
 
 	/**
-	 * What is left for the stash: 844 − 2×60 − 96 − 14 − 190 − 14 = 410 pt, against
-	 * eight columns at 8×44 + 7×4 = 380 — so 30 pt for the scroll bar, which is the
-	 * same margin the column had before the character panel existed (the old sum was
-	 * 405.9 pt for the same 380). SarkoUI::StashColumns stays EIGHT; the panel was
-	 * sized to what was spare, not the other way round.
+	 * What is left for the stash: 844 − 2×60 − 126 − 14 − 204 − 14 = 366 pt, against
+	 * SEVEN columns at 7×44 + 6×4 = 332 — so 32 pt for the scroll bar.
+	 *
+	 * The column count came DOWN from eight for this, and SarkoUI::StashColumns
+	 * carries the whole history of that number and why this is not a return to the
+	 * old workaround. The short version: the screen gained a destination column and a
+	 * character panel, both out of the same 724 pt, and eight columns need 380.
+	 *
+	 * The static_assert is the point of writing it this way — it pins the grid and
+	 * the column it lives in together, so widening the character panel or adding a
+	 * fourth destination fails the BUILD instead of clipping the eighth column behind
+	 * a scroll bar on a device.
 	 */
 	constexpr float StashColumnPt = DesignWidth - 2.f * SideInset
 		- NavColumnPt - NavGapPt - CharacterPanelPt - CharacterGapPt;
-	static_assert(StashColumnPt >= 8.f * 44.f + 7.f * 4.f,
-		"the stash column no longer fits SarkoUI::StashColumns columns — widen it or "
-		"narrow the character panel, but do not let the grid clip behind the scroll bar");
+	static_assert(StashColumnPt >= SarkoUI::StashColumns * SarkoUI::CellSizePt
+		+ (SarkoUI::StashColumns - 1) * SarkoUI::CellGutterPt + 24.f,
+		"the stash column no longer fits SarkoUI::StashColumns columns plus a scroll "
+		"bar — narrow the character panel or the destination column, or take a column "
+		"off the grid, but do not let the grid clip behind the bar");
 
 	/** The garage screen's content width, and therefore how wide its labels wrap. */
 	constexpr float GarageColumnPt = DesignWidth - 2.f * SideInset - NavColumnPt - NavGapPt;
@@ -459,7 +484,7 @@ TSharedRef<SWidget> SSarkoShelterWidget::BuildInventoryScreen()
 				+ SOverlay::Slot()
 				[
 					SNew(SScrollBox)
-					+ SScrollBox::Slot()
+					+ SScrollBox::Slot().Padding(0.f, 0.f, 0.f, 6.f)
 					[
 						SAssignNew(StashBox, SBox)
 					]
@@ -539,13 +564,32 @@ TSharedRef<SWidget> SSarkoShelterWidget::BuildCharacterPanel()
 	// top, then the coat on the chest and the bag on the back, side by side.
 	TSharedRef<SVerticalBox> Body = SNew(SVerticalBox);
 
-	// ---- the weapon, in the hands, with the head beside it ---------------------
+	// The heading is INSIDE the plate rather than above it, and it SHARES its row with
+	// the weapon slot's caption. Both are height, and height is what the plate has
+	// none of: a separate heading with a rule under it cost ~23 pt and a caption row of
+	// its own another 14, against a body that overran the plate by 13. "ЗБРОЯ" is
+	// still directly above the weapon slot, because this row is.
 	Body->AddSlot().AutoHeight().Padding(0.f, 0.f, 0.f, 2.f)
 	[
-		SAssignNew(SlotCaptions[0], STextBlock)
-		.Font(ShelterFont(10.f))
-		.ColorAndOpacity(LabelColour)
+		SNew(SHorizontalBox)
+
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom)
+		[
+			SAssignNew(CharacterTitle, STextBlock)
+			.Font(ShelterFont(11.f))
+			.ColorAndOpacity(LabelColour)
+		]
+
+		+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Bottom)
+			.HAlign(HAlign_Right)
+		[
+			SAssignNew(SlotCaptions[0], STextBlock)
+			.Font(ShelterFont(9.5f))
+			.ColorAndOpacity(LabelColour)
+		]
 	];
+
+	// ---- the weapon, in the hands, with the head beside it ---------------------
 	Body->AddSlot().AutoHeight()
 	[
 		SNew(SHorizontalBox)
@@ -567,9 +611,13 @@ TSharedRef<SWidget> SSarkoShelterWidget::BuildCharacterPanel()
 	];
 
 	// ---- the shoulders, joining the two 2x2 slots into a torso -----------------
-	Body->AddSlot().AutoHeight().HAlign(HAlign_Center).Padding(0.f, 4.f, 0.f, 2.f)
+	// 6 pt and almost no padding. It is the only thing on this panel that is purely
+	// decorative, so it is the first thing that gave when the pockets page needed
+	// height: what makes the two 2x2 cells read as a chest and a back is that they
+	// are captioned and joined, and a 6 pt bar joins them as well as a 8 pt one.
+	Body->AddSlot().AutoHeight().HAlign(HAlign_Center).Padding(0.f, 3.f, 0.f, 1.f)
 	[
-		BodyPart(120.f, 8.f)
+		BodyPart(120.f, 6.f)
 	];
 
 	// ---- the coat and the bag, side by side ------------------------------------
@@ -581,10 +629,10 @@ TSharedRef<SWidget> SSarkoShelterWidget::BuildCharacterPanel()
 		[
 			SNew(SVerticalBox)
 
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 2.f)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 1.f)
 			[
 				SAssignNew(SlotCaptions[1], STextBlock)
-				.Font(ShelterFont(10.f))
+				.Font(ShelterFont(9.5f))
 				.ColorAndOpacity(LabelColour)
 			]
 
@@ -598,10 +646,10 @@ TSharedRef<SWidget> SSarkoShelterWidget::BuildCharacterPanel()
 		[
 			SNew(SVerticalBox)
 
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 2.f)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 1.f)
 			[
 				SAssignNew(SlotCaptions[2], STextBlock)
-				.Font(ShelterFont(10.f))
+				.Font(ShelterFont(9.5f))
 				.ColorAndOpacity(LabelColour)
 			]
 
@@ -613,11 +661,28 @@ TSharedRef<SWidget> SSarkoShelterWidget::BuildCharacterPanel()
 	];
 
 	// ---- the pockets, between the legs -----------------------------------------
-	Body->AddSlot().AutoHeight().Padding(0.f, 6.f, 0.f, 2.f)
+	// The caption and the note share ONE line, and that is a height decision a frame
+	// forced: on its own row the note pushed the pockets page below the fold of the
+	// plate's scroll box, so the 2×2 the spec asks to be "always present" was the one
+	// thing you had to scroll to see.
+	Body->AddSlot().AutoHeight().Padding(0.f, 1.f, 0.f, 0.f)
 	[
-		SAssignNew(PocketsCaption, STextBlock)
-		.Font(ShelterFont(10.f))
-		.ColorAndOpacity(LabelColour)
+		SNew(SHorizontalBox)
+
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom)
+			.Padding(0.f, 0.f, 6.f, 0.f)
+		[
+			SAssignNew(PocketsCaption, STextBlock)
+			.Font(ShelterFont(9.5f))
+			.ColorAndOpacity(LabelColour)
+		]
+
+		+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Bottom)
+		[
+			SAssignNew(PocketsNote, STextBlock)
+			.Font(ShelterFont(8.5f))
+			.ColorAndOpacity(LabelColour)
+		]
 	];
 	Body->AddSlot().AutoHeight().HAlign(HAlign_Center)
 	[
@@ -638,53 +703,51 @@ TSharedRef<SWidget> SSarkoShelterWidget::BuildCharacterPanel()
 			BodyPart(14.f, 92.f)
 		]
 	];
-	Body->AddSlot().AutoHeight().Padding(0.f, 3.f, 0.f, 0.f)
-	[
-		SAssignNew(PocketsNote, STextBlock)
-		.Font(ShelterFont(9.f))
-		.ColorAndOpacity(LabelColour)
-		.AutoWrapText(true)
-	];
 
-	// The refusal's third signal: the reason, in words, under the figure — where the
-	// item the player just tapped was headed. Amber, and it is the only thing on this
-	// panel that is.
-	Body->AddSlot().AutoHeight().Padding(0.f, 4.f, 0.f, 0.f)
-	[
-		SAssignNew(RefusalNote, STextBlock)
-		.Font(ShelterFont(9.5f))
-		.ColorAndOpacity(WarnColour)
-		.AutoWrapText(true)
-	];
-
+	// NO SCROLL BOX, and that is a decision two frames forced rather than a
+	// simplification. A scroll box reserved ~16 pt of the plate's inside width for its
+	// bar, which squeezed the second 2x2 slot and ellipsised the backpack cell to
+	// "РЮКЗ…"; and it put the pockets page — the one thing spec §2 calls "always
+	// present" — below the fold, so the player had to scroll to find it. The body is
+	// made to FIT instead: ~276 pt against the ~303 the plate gets, which is why the
+	// heading is inside the plate and the decorations are as thin as they are.
 	return SNew(SVerticalBox)
-
-		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 5.f)
-		[
-			SAssignNew(CharacterTitle, STextBlock)
-			.Font(ShelterFont(11.f))
-			.ColorAndOpacity(LabelColour)
-		]
-
-		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
-		[
-			HorizontalRule()
-		]
 
 		+ SVerticalBox::Slot().FillHeight(1.f)
 		[
-			// The plate is what the amber refusal rim is drawn on, which is why the
-			// panel has one at all: it is the surface the refused item was aimed at.
-			SAssignNew(CharacterPlate, SBorder)
-			.BorderImage(TAttribute<const FSlateBrush*>::CreateSP(
-				this, &SSarkoShelterWidget::CharacterPlateBrush))
-			.Padding(FMargin(6.f, 6.f))
+			SNew(SOverlay)
+
+			+ SOverlay::Slot()
 			[
-				SNew(SScrollBox)
-				+ SScrollBox::Slot()
+				// The plate is what the amber refusal rim is drawn on, which is why the
+				// panel has one at all: it is the surface the refused item was aimed at.
+				SAssignNew(CharacterPlate, SBorder)
+				.BorderImage(TAttribute<const FSlateBrush*>::CreateSP(
+					this, &SSarkoShelterWidget::CharacterPlateBrush))
+				.Padding(FMargin(5.f, 5.f))
+				.VAlign(VAlign_Top)
 				[
 					Body
 				]
+			]
+
+			// The refusal's third signal: the reason, in words, at the foot of the
+			// figure — where the item the player just tapped was headed.
+			//
+			// OVER the plate rather than a row inside it, exactly as the container
+			// panel's own refusal note is drawn over its grid, and for the same reason
+			// a frame made obvious: as a row it added ~15 pt to a body that already
+			// filled the plate, so the note appeared BELOW the plate's border, floating
+			// in the background. Over it, it costs no layout at all and nothing reflows
+			// when a tap is refused.
+			+ SOverlay::Slot()
+			.HAlign(HAlign_Left).VAlign(VAlign_Bottom)
+			.Padding(FMargin(8.f, 0.f, 8.f, 6.f))
+			[
+				SAssignNew(RefusalNote, STextBlock)
+				.Font(ShelterFont(9.5f))
+				.ColorAndOpacity(WarnColour)
+				.WrapTextAt(CharacterPanelPt - 20.f)
 			]
 		];
 }
@@ -883,16 +946,43 @@ void SSarkoShelterWidget::SetView(const FSarkoShelterView& View)
 					return FReply::Handled();
 				})
 				[
-					SNew(STextBlock)
-					.Font(ShelterFont(12.f))
-					.Justification(ETextJustify::Center)
-					// The current destination is BRIGHT and the others are body grey.
-					// It is a marker and not a highlight box, because a button that
-					// changes shape when selected changes the column's layout.
-					.ColorAndOpacity(Destination.bCurrent ? BrightColour : BodyColour)
-					.Text(FText::FromString(Destination.bCurrent
-						? FString::Printf(TEXT("• %s"), *Destination.Label)
-						: Destination.Label))
+					SNew(SHorizontalBox)
+
+					// The marker gets a slot of ITS OWN rather than being glued to the
+					// front of the label. Glued, it counted towards the label's desired
+					// width, and a centred label wider than its button clips at BOTH
+					// ends — which is how a frame came back reading "НВЕНТА".
+					//
+					// It is redundant with the colour on purpose: "which destination am
+					// I on" must not be carried by hue alone.
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+						.Padding(0.f, 0.f, 4.f, 0.f)
+					[
+						SNew(SBox)
+						.WidthOverride(8.f)
+						[
+							SNew(STextBlock)
+							.Font(ShelterFont(11.f))
+							.ColorAndOpacity(BrightColour)
+							.Text(FText::FromString(Destination.bCurrent ? TEXT("•") : TEXT(" ")))
+						]
+					]
+
+					+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Font(ShelterFont(11.f))
+						// LEFT, not centred, and that is what a frame settled: a centred
+						// label wider than its box loses a letter off BOTH ends, so
+						// "ІНВЕНТАР" came back as "НВЕНТА" and the column was unreadable.
+						// Left-justified, an overflow costs the last letter only.
+						.Justification(ETextJustify::Left)
+						// The current destination is BRIGHT and the others are body
+						// grey. A marker and a colour, not a highlight box: a button
+						// that changes shape when selected changes the column's layout.
+						.ColorAndOpacity(Destination.bCurrent ? BrightColour : BodyColour)
+						.Text(FText::FromString(Destination.Label))
+					]
 				]
 			]
 		];

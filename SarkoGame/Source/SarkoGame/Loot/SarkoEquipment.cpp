@@ -96,9 +96,9 @@ bool SarkoEquip::Accepts(ESarkoEquipSlot Slot, const FSarkoItemDef* Def, bool bS
 {
 	OutReason.Reset();
 
-	if (Slot == ESarkoEquipSlot::None)
+	if (!Def)
 	{
-		OutReason = TEXT("НЕМА ТАКОГО СЛОТА");
+		OutReason = TEXT("НЕВІДОМИЙ ПРЕДМЕТ");
 		return false;
 	}
 
@@ -106,16 +106,14 @@ bool SarkoEquip::Accepts(ESarkoEquipSlot Slot, const FSarkoItemDef* Def, bool bS
 	// sentence and the cell the player just tapped say the same word. A display
 	// name of five Cyrillic syllables in a refusal note beside a cell that reads
 	// ЛАНЦ is two names for one thing.
-	const FString ItemLabel = Def
-		? SarkoUI::CellLabelFor(Def, Def->Id)
-		: FString(TEXT("?"));
+	const FString ItemLabel = SarkoUI::CellLabelFor(Def, Def->Id);
 
-	if (!Def)
-	{
-		OutReason = TEXT("НЕВІДОМИЙ ПРЕДМЕТ");
-		return false;
-	}
-
+	// THE ITEM IS ASKED ABOUT BEFORE THE SLOT IS, and that order is what a frame
+	// corrected. Tapping a stash cell routes by the item's own slot, so a medkit
+	// arrives here with Slot == None — and answering "НЕМА ТАКОГО СЛОТА" told the
+	// player about the *screen* when the fact they needed was about the *item*. What
+	// is wrong with tapping a medkit is that a medkit is not equipment; that it
+	// therefore has no slot is a consequence, not the reason.
 	const ESarkoEquipSlot Home = SlotFor(Def);
 	if (Home == ESarkoEquipSlot::None)
 	{
@@ -123,6 +121,15 @@ bool SarkoEquip::Accepts(ESarkoEquipSlot Slot, const FSarkoItemDef* Def, bool bS
 		OutReason = FString::Printf(TEXT("%s — НЕ СНАРЯЖЕННЯ"), *ItemLabel);
 		return false;
 	}
+
+	// Only reachable for an item that IS equipment named against no slot at all,
+	// which is a caller bug rather than a player action. It still says something.
+	if (Slot == ESarkoEquipSlot::None)
+	{
+		OutReason = TEXT("НЕМА ТАКОГО СЛОТА");
+		return false;
+	}
+
 	if (Home != Slot)
 	{
 		// Named both ways round, because "not here" alone leaves the player

@@ -22,26 +22,38 @@ struct FSarkoInventoryStyles;
 namespace SarkoUI
 {
 	/**
-	 * The stash's grid, in the shelter's right column.
+	 * The stash's grid, in the shelter's ІНВЕНТАР screen.
 	 *
-	 * EIGHT, which is what the layout table computes: the right column is
-	 * 724 * 0.58 - 14 = 405.9 pt wide and eight columns are 8*44 + 7*4 = 380,
-	 * leaving 25.9 pt for the scroll bar.
+	 * SEVEN since 2026-08-03, and this is the third value it has had, so the whole
+	 * history is worth having in one place:
 	 *
-	 * It was SEVEN, as a workaround for the shelter's ~9% scale deviation — the
-	 * widget scaled itself by PointScaleForViewport while SGameLayerManager was
-	 * already scaling the overlay by ~1.092, so 405.9 pt on paper was 371.7 pt on
-	 * the glass and the eighth column came out sliced in half behind the scroll
-	 * bar. That debt is PAID: SSarkoShelterWidget::UiScaleForViewport is
-	 * SarkoUI::OverlayPointScale now, the layer manager's factor divides out, and a
-	 * point on this screen is a point. Do not put this back to seven without
-	 * putting that back too — seven columns against a 405.9 pt column leaves a
-	 * 74 pt strip of nothing down the right of the grid.
+	 *  - it was 7 as a WORKAROUND for the shelter's ~9% scale deviation (the widget
+	 *    scaled itself by PointScaleForViewport while SGameLayerManager was already
+	 *    scaling the overlay), which sliced the eighth column in half behind the
+	 *    scroll bar;
+	 *  - it became 8 when that debt was PAID — UiScaleForViewport is
+	 *    SarkoUI::OverlayPointScale, the layer manager's factor divides out, and a
+	 *    point on this screen is a point;
+	 *  - it is 7 again now for a completely different reason, and NOT a return to
+	 *    the workaround. The screen gained a left-edge destination column and a
+	 *    character panel with equipment slots on it, and both take width from the
+	 *    same 724 pt: 112 of navigation + 220 of character + two 14 pt gutters
+	 *    leaves 364, against 7*44 + 6*4 = 332 and ~26 pt of scroll bar. Eight
+	 *    columns need 380 and would clip.
 	 *
-	 * Five rows is what ~271 pt of viewport shows, with a sixth peeking so the
-	 * grid visibly scrolls.
+	 * The old warning against 7 was that it "leaves a 74 pt strip of nothing down
+	 * the right of the grid" — that was true when the column stayed 406 pt wide
+	 * whatever the grid did. It does not apply here: the COLUMN was narrowed with
+	 * the grid, and SSarkoShelterWidget's static_assert pins the two together, so
+	 * neither a wider panel nor a wider grid can silently reintroduce the clip.
+	 *
+	 * A 3x2 bike frame still fits: seven columns is four more than the widest item
+	 * in the game.
+	 *
+	 * Five rows is what the visible height shows, with a sixth peeking so the grid
+	 * visibly scrolls.
 	 */
-	constexpr int32 StashColumns = 8;
+	constexpr int32 StashColumns = 7;
 	constexpr int32 StashMinRows = 5;
 
 	/** A w x h item is ONE rounded box spanning its cells and the gutters between
