@@ -132,6 +132,23 @@ struct FSarkoRaidButtonView
 
 	/** Nothing in the weapon slot. Colours the label; decides nothing else. */
 	bool bUnarmed = false;
+
+	/**
+	 * THE SEAM FOR ВИЛАЗКА (spec §4.5), which is the next task and is deliberately
+	 * not built here.
+	 *
+	 * The sortie is a SECOND button beside В РЕЙД, showing either "ВИЛАЗКА" or the
+	 * cooldown remaining — so it belongs in this struct, as a second label and a
+	 * second enabled flag, and the destination column already has the room for it
+	 * (the raid button sits alone at the foot of a column with slack above it).
+	 *
+	 * Everything it implies is the SERVER's: free entry, the granted kit, and the
+	 * cooldown are decided and enforced by sarko-api, and the client only displays
+	 * the remaining time. So the shape this will take is a mode parameter on
+	 * /v1/raid/start plus two more strings here — and NOT a client-side timer, and
+	 * not a client-chosen kit. Nothing in this file should acquire the ability to
+	 * decide either.
+	 */
 };
 
 /** One rung of the garage's vehicle ladder (spec §3). */

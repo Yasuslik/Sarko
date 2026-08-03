@@ -15,8 +15,23 @@ import (
 const maxSafePocketItems = 2
 
 type startRaidRequest struct {
-	MapID   string             `json:"map_id"`
+	MapID string `json:"map_id"`
+	// Loadout is what the player is wearing (equipment spec §4). It was
+	// deliberately empty until 2026-08-03 because the debit had no matching
+	// credit; store.SubmitResult now returns the session's recorded loadout on
+	// extraction, so the withdrawal is reversible and this is a real stake.
+	//
+	// An EMPTY list stays valid and must stay valid: it is what a player with
+	// nothing equipped sends, and refusing it would strand anyone who died with
+	// their only weapon on (domain.ValidateStacks says so out loud).
 	Loadout []domain.ItemStack `json:"loadout"`
+
+	// THE SEAM FOR ВИЛАЗКА (spec §4.5), not built here. The sortie is a MODE on
+	// this request — a free run with a server-granted kit and a server-timed
+	// cooldown — so it will arrive as one more field on this struct. What must not
+	// happen when it does: the client naming the kit, or the client deciding
+	// whether the cooldown has elapsed. Both are the server's, and a client that
+	// asks for a sortie during the cooldown is refused by name.
 }
 
 type sessionRequest struct {
