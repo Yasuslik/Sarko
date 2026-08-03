@@ -5,6 +5,10 @@
 #include "Styling/SlateTypes.h"
 
 enum class ESarkoItemCategory : uint8;
+// By pointer in CellLabelFor. Declared at GLOBAL scope on purpose: an elaborated
+// `struct FSarkoItemDef*` inside namespace SarkoUI would declare a *second*,
+// SarkoUI-scoped type that the definition in the .cpp does not match.
+struct FSarkoItemDef;
 
 /**
  * Every colour, brush and derived string the container panel draws with.
@@ -114,13 +118,32 @@ namespace SarkoUI
 	 * An item's display name, shortened to fit a cell: first word, uppercased,
 	 * truncated to 9 characters with an ellipsis.
 	 *
-	 * Derived rather than authored. A 44-point cell with 4 points of padding is
-	 * about seven Cyrillic glyphs wide at 8.5 pt, and items.json carries no short
-	 * name; adding one would be a schema field that has to be kept in step with
-	 * every name forever. This cannot drift, because there is nothing to drift
-	 * from.
+	 * **The FALLBACK path since 2026-08-03, not the main one.** It was derived
+	 * rather than authored to avoid a schema field that has to be kept in step with
+	 * every name forever — and the frame settled the argument the other way: a
+	 * 44 pt cell holds about five Cyrillic capitals, so the derivation produced
+	 * ПАТР…, АПТЕ…, ОБЕЗ…, АРМО…, МЕТА…, МІДН…, ЦИГА…, ЛАНЦ…, ГОРІЛ… on one
+	 * screen. FSarkoItemDef::ShortName is authored and is what a cell draws now;
+	 * this is what an item WITHOUT one falls back to, which is exactly the two
+	 * cases that have no authored label: an id the catalog does not know (drift
+	 * with the backend, and it must stay visible) and a test fixture.
 	 */
 	FString CellLabel(const FString& Name);
+
+	/**
+	 * What a grid cell writes on ONE item: the authored short name, or the derived
+	 * cut of the display name when there is none.
+	 *
+	 * Takes the definition and the id rather than a string, because the fallback
+	 * chain is the whole point: authored short name, else derived from the display
+	 * name, else the raw id — an unknown id on screen is the visible symptom of
+	 * items.json drifting from the backend and must not be hidden.
+	 *
+	 * Uppercased on the way out even though the file authors it uppercase already:
+	 * UpperChar is idempotent, and the alternative is one lowercase label reaching
+	 * a device because a hand-edited line was typed in the wrong case.
+	 */
+	FString CellLabelFor(const FSarkoItemDef* Def, FName Item);
 
 	/**
 	 * What the reload button is saying (spec §4.3: "the magazine count lives on

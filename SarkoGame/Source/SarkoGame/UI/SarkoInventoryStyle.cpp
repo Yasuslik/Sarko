@@ -93,6 +93,23 @@ FString SarkoUI::CellLabel(const FString& Name)
 	return First;
 }
 
+FString SarkoUI::CellLabelFor(const FSarkoItemDef* Def, FName Item)
+{
+	if (Def && !Def->ShortName.IsEmpty())
+	{
+		FString Short = Def->ShortName;
+		for (int32 Index = 0; Index < Short.Len(); ++Index)
+		{
+			Short[Index] = UpperChar(Short[Index]);
+		}
+		return Short;
+	}
+	// No authored label: the derived cut of the display name, or of the id itself
+	// when the catalog does not know the item at all. An id on a cell is ugly and
+	// is meant to be — it is what items.json drifting from the backend looks like.
+	return CellLabel(Def ? Def->Name : Item.ToString());
+}
+
 SarkoUI::ESarkoReloadState SarkoUI::ReloadStateFor(int32 AmmoInMagazine, int32 MagazineSize, bool bReloading,
 	int32 ReserveRounds)
 {

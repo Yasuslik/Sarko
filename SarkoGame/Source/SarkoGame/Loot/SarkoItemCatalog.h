@@ -75,6 +75,30 @@ struct FSarkoItemDef
 	UPROPERTY()
 	FString Name;
 
+	/**
+	 * The label a GRID CELL draws: two to six uppercase characters, authored in
+	 * items.json per item.
+	 *
+	 * AUTHORED and not derived, which reverses the decision SarkoUI::CellLabel was
+	 * written under. Deriving one from Name cannot work: a 44 pt cell holds about
+	 * five Cyrillic capitals, and cutting names down to that produced ПАТР…,
+	 * АПТЕ…, ОБЕЗ…, АРМО…, МЕТА…, МІДН… — and two junk greys that both read ЛОМ…
+	 * are indistinguishable from each other, which is the one job a label has that
+	 * the category hue does not already do. No amount of cleverness turns
+	 * "Обезболювальне" into five characters; a human picking ОБЕЗБ does.
+	 *
+	 * Optional in the PARSER and required in the shipped file. The parser's
+	 * contract is ids, stack sizes and footprints — the things a wrong value gets
+	 * a raid's haul rejected over — and refusing to load the whole catalog over a
+	 * missing label would trade nine ellipses for no loot at all. An empty one
+	 * falls back to SarkoUI::CellLabel(Name), the old derivation.
+	 * Sarko.UI.ShortNamesAreAuthoredAndDistinct is what makes it mandatory for the
+	 * file that actually ships: present, unique, 2..6, no spaces, and at most five
+	 * for an item whose footprint is a single cell.
+	 */
+	UPROPERTY()
+	FString ShortName;
+
 	/** How many of this item share one backpack slot. Always >= 1. */
 	UPROPERTY()
 	int32 StackSize = 1;

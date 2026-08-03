@@ -91,6 +91,12 @@ bool SarkoLoot::ParseItemCatalog(const FString& Json, FSarkoItemCatalog& OutCata
 			return false;
 		}
 
+		// Optional here on purpose (FSarkoItemDef::ShortName says why): a missing
+		// label degrades to the derived one, where a missing size or id makes the
+		// whole catalog unusable. TryGetStringField leaves it empty when absent.
+		(*Object)->TryGetStringField(TEXT("short"), Def.ShortName);
+		Def.ShortName.TrimStartAndEndInline();
+
 		double StackSize = 0.0;
 		if (!(*Object)->TryGetNumberField(TEXT("stackSize"), StackSize) || StackSize < 1.0)
 		{
