@@ -310,6 +310,44 @@ bool SarkoBackend::ParseProfileResponse(const FString& Json, FSarkoProfile& OutP
 	// The one field whose absence is meaningful rather than merely tolerated:
 	// absent == false == tutorial mode (spec §6.5).
 	Root->TryGetBoolField(TEXT("tutorial_completed"), OutProfile.bTutorialCompleted);
+
+	// `equipment` is slot -> item id, and an ABSENT object is "wearing nothing"
+	// rather than an error — the same direction tutorial_completed takes, so a
+	// backend older than this field degrades to an unarmed player instead of
+	// failing the parse and leaving the whole shelter offline. Present-but-not-an-
+	// object is still a fault, because it must not read as "empty".
+	//
+	// An unknown slot name is SKIPPED and not an error: the server is allowed to
+	// grow a fourth slot before this client knows about it, and refusing the whole
+	// profile over one would take the stash down with it. An unknown ITEM id is
+	// kept — it is drift with the backend, and it stays visible on screen rather
+	// than being quietly unequipped behind the player's back.
+	if (Root->HasField(TEXT("equipment")))
+	{
+		const TSharedPtr<FJsonObject>* Equipment = nullptr;
+		if (!Root->TryGetObjectField(TEXT("equipment"), Equipment) || !Equipment)
+		{
+			OutError = TEXT("profile response has an 'equipment' that is not an object");
+			OutProfile = FSarkoProfile();
+			return false;
+		}
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*Equipment)->Values)
+		{
+			ESarkoEquipSlot Slot = ESarkoEquipSlot::None;
+			FString ItemId;
+			if (!SarkoEquip::ParseWireName(Pair.Key, Slot))
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("SarkoBackend: profile carries equipment slot '%s', which this build has no slot for — ignored"),
+					*Pair.Key);
+				continue;
+			}
+			if (Pair.Value.IsValid() && Pair.Value->TryGetString(ItemId) && !ItemId.IsEmpty())
+			{
+				SarkoEquip::Set(OutProfile.Equipment, Slot, FName(*ItemId));
+			}
+		}
+	}
 	return true;
 }
 
@@ -449,18 +487,75 @@ const TCHAR* SarkoBackend::OutcomeToWire(ESarkoRaidOutcome Outcome)
 	return Outcome == ESarkoRaidOutcome::Extracted ? TEXT("extracted") : TEXT("died");
 }
 
-TArray<FSarkoItemStack> SarkoBackend::WireLoadout()
+TArray<FSarkoItemStack> SarkoBackend::WireLoadout(const FSarkoEquipment& Equipment,
+	const FSarkoItemCatalog& Catalog)
 {
-	// Empty, and that is the fix rather than an omission. /v1/raid/start debits
-	// whatever is listed here, and the only credit back is the raid *result*, which
-	// carries the backpack alone — so a pistol and 60 rounds walked out of the
-	// stash on raid 1 and never returned, and raid 2 answered 409
-	// insufficient_items forever after. domain.ValidateStacks accepts an empty
-	// list, so this is a legal request and not a loophole.
+	// The equipped items, computed by the same pure rule the ІНВЕНТАР screen draws
+	// from and the same one sarko-api's domain.EquipmentLoadout applies — so the
+	// client's idea of what "equipped" costs and the server's cannot disagree, which
+	// is what would otherwise refuse a legitimate raid for insufficient_items.
 	//
-	// Refill this — and start crediting survivors' equipment back in the result —
-	// when weapons and ammo are real in-raid items that can actually be lost.
-	return TArray<FSarkoItemStack>();
+	// Empty when nothing is equipped, and that stays legal on purpose: it is what a
+	// player who just died sends, and refusing it would strand them (spec §4).
+	return SarkoEquip::Loadout(Equipment, Catalog);
+}
+
+FString SarkoBackend::MakeSetEquipmentBody(ESarkoEquipSlot Slot, FName Item)
+{
+	// An empty item id is the unequip and is sent EXPLICITLY rather than by
+	// omitting the field: the server distinguishes "clear this slot" from a
+	// malformed body, and an omitted field would be the second.
+	return FString::Printf(TEXT("{\"slot\":\"%s\",\"item_id\":\"%s\"}"),
+		*EscapeJson(SarkoEquip::WireName(Slot)),
+		*EscapeJson(Item.IsNone() ? FString() : Item.ToString()));
+}
+
+bool SarkoBackend::ParseEquipmentResponse(const FString& Json, FSarkoEquipment& OutEquipment,
+	FString& OutError)
+{
+	OutEquipment = FSarkoEquipment();
+	OutError.Reset();
+
+	TSharedPtr<FJsonObject> Root;
+	if (!ReadRoot(Json, Root, OutError))
+	{
+		return false;
+	}
+
+	FSarkoBackendError Envelope;
+	if (ParseErrorResponse(Json, Envelope))
+	{
+		OutError = FString::Printf(TEXT("equip refused: %s — %s"), *Envelope.Code, *Envelope.Message);
+		return false;
+	}
+
+	// REQUIRED, unlike the profile's copy of the same object. There, an absent
+	// `equipment` means an older backend and degrades to "wearing nothing"; here it
+	// is the entire answer to "what am I wearing now", and an empty struct shown to
+	// the player as the result of equipping something would read as the tap having
+	// silently unequipped everything.
+	const TSharedPtr<FJsonObject>* Equipment = nullptr;
+	if (!Root->TryGetObjectField(TEXT("equipment"), Equipment) || !Equipment)
+	{
+		OutError = TEXT("equip response has no 'equipment' object");
+		return false;
+	}
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*Equipment)->Values)
+	{
+		ESarkoEquipSlot Slot = ESarkoEquipSlot::None;
+		FString ItemId;
+		// An unknown slot is skipped, not an error: the server may grow a fourth
+		// slot before this build knows about it.
+		if (!SarkoEquip::ParseWireName(Pair.Key, Slot))
+		{
+			continue;
+		}
+		if (Pair.Value.IsValid() && Pair.Value->TryGetString(ItemId) && !ItemId.IsEmpty())
+		{
+			SarkoEquip::Set(OutEquipment, Slot, FName(*ItemId));
+		}
+	}
+	return true;
 }
 
 void FSarkoBackendClient::Send(const TCHAR* Verb, const FString& Path, const FString& Body, bool bAuthenticated,
@@ -594,6 +689,33 @@ void FSarkoBackendClient::Authenticate(FOnDone OnDone)
 			// way to find this player's rows in the database from a log line.
 			UE_LOG(LogTemp, Display, TEXT("SarkoBackend: authenticated as player %s"), *Self->PlayerId);
 			OnDone(true, FString());
+		});
+}
+
+void FSarkoBackendClient::SetEquipment(ESarkoEquipSlot Slot, FName Item, FOnEquipment OnDone)
+{
+	Send(TEXT("POST"), TEXT("/v1/profile/equipment"),
+		SarkoBackend::MakeSetEquipmentBody(Slot, Item), /*bAuthenticated*/ true,
+		[OnDone](bool bSuccess, const FString& Body, const FString& Error)
+		{
+			if (!bSuccess)
+			{
+				// 409 not_equippable and 409 insufficient_items land here with the
+				// envelope's message already in Error. Passed through untouched: the
+				// shelter shows it verbatim, because a refused equip with no reason
+				// is the one thing worse than a refused equip.
+				OnDone(false, FSarkoEquipment(), Error);
+				return;
+			}
+			FSarkoEquipment Equipment;
+			FString ParseError;
+			if (!SarkoBackend::ParseEquipmentResponse(Body, Equipment, ParseError))
+			{
+				UE_LOG(LogTemp, Error, TEXT("SarkoBackend: %s"), *ParseError);
+				OnDone(false, FSarkoEquipment(), ParseError);
+				return;
+			}
+			OnDone(true, Equipment, FString());
 		});
 }
 

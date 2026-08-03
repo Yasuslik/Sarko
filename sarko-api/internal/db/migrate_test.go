@@ -11,7 +11,13 @@ func TestMigrationsCreateTables(t *testing.T) {
 	pool := testutil.Pool(t)
 	ctx := context.Background()
 
-	for _, table := range []string{"players", "stash_items", "garage_progress", "raid_sessions"} {
+	for _, table := range []string{
+		"players", "stash_items", "garage_progress", "raid_sessions",
+		// What the player is wearing (equipment spec §6). It is server state
+		// because /v1/raid/start debits it, so its absence is not a cosmetic
+		// failure — the loadout would silently become empty for everyone.
+		"player_equipment",
+	} {
 		var exists bool
 		err := pool.QueryRow(ctx,
 			`SELECT EXISTS (SELECT 1 FROM information_schema.tables

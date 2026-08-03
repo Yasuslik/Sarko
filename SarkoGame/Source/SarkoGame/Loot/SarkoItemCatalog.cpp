@@ -33,6 +33,27 @@ namespace
 		}
 		return false;
 	}
+
+	/**
+	 * Slot names as they appear in items.json's optional `slot`. An ABSENT field
+	 * is None and is handled by the caller; an unknown string is an error, because
+	 * a typo'd slot would make an item quietly unequippable and surface as "the
+	 * inventory screen refuses my coat" rather than as a bad line in a file.
+	 */
+	bool ParseEquipSlot(const FString& Text, ESarkoEquipSlot& Out)
+	{
+		static const TMap<FString, ESarkoEquipSlot> Names = {
+			{ TEXT("weapon"),   ESarkoEquipSlot::Weapon },
+			{ TEXT("backpack"), ESarkoEquipSlot::Backpack },
+			{ TEXT("clothing"), ESarkoEquipSlot::Clothing },
+		};
+		if (const ESarkoEquipSlot* Found = Names.Find(Text))
+		{
+			Out = *Found;
+			return true;
+		}
+		return false;
+	}
 }
 
 bool SarkoLoot::ParseItemCatalog(const FString& Json, FSarkoItemCatalog& OutCatalog, FString& OutError)
@@ -128,6 +149,18 @@ bool SarkoLoot::ParseItemCatalog(const FString& Json, FSarkoItemCatalog& OutCata
 		{
 			OutError = FString::Printf(
 				TEXT("item '%s': 'category' must be weapon, ammo, med, junk, valuable, vehicle_part, gear or consumable"), *Id);
+			return false;
+		}
+
+		// Optional, and its absence means "cargo, not equipment" — which is true of
+		// every row but three. A PRESENT but unknown value is still an error: the
+		// two cases are different facts and must not share an answer.
+		FString SlotText;
+		if ((*Object)->TryGetStringField(TEXT("slot"), SlotText) && !SlotText.IsEmpty()
+			&& !ParseEquipSlot(SlotText, Def.EquipSlot))
+		{
+			OutError = FString::Printf(
+				TEXT("item '%s': 'slot' must be weapon, backpack or clothing"), *Id);
 			return false;
 		}
 

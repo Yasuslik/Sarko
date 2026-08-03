@@ -2,6 +2,9 @@
 
 #include "CoreMinimal.h"
 
+// Included, not forward-declared: FSarkoEquipment is a USTRUCT held by value on
+// FSarkoProfile below.
+#include "Loot/SarkoEquipment.h"
 #include "Loot/SarkoItemCatalog.h"
 
 #include "SarkoBackendClient.generated.h"
@@ -79,6 +82,23 @@ struct FSarkoProfile
 	 */
 	UPROPERTY()
 	bool bTutorialCompleted = false;
+
+	/**
+	 * What the player is wearing — the `equipment` object, `{"weapon":"pistol"}`.
+	 *
+	 * It rides on the profile because it is player state that outlives every raid,
+	 * and because the ІНВЕНТАР screen draws the character and the stash from ONE
+	 * fetch: two fetches would let the two halves of that screen disagree, which
+	 * for a stash that has just been debited by a raid start is a screen showing an
+	 * equipped pistol beside a stash that no longer has one.
+	 *
+	 * Optional on the wire, and an absent object parses as "wearing nothing" —
+	 * the same direction bTutorialCompleted takes, so a backend older than the
+	 * field degrades to an unarmed player rather than failing the parse and
+	 * leaving the shelter offline.
+	 */
+	UPROPERTY()
+	FSarkoEquipment Equipment;
 };
 
 /**
@@ -252,21 +272,37 @@ namespace SarkoBackend
 	const TCHAR* OutcomeToWire(ESarkoRaidOutcome Outcome);
 
 	/**
-	 * What the raid takes in on the wire. **Empty, on purpose** — see the comment
-	 * at the /v1/raid/start call site in SarkoRaidGameMode::BeginBackendSession.
+	 * What the raid takes in on the wire: **the equipped items** (spec §4).
 	 *
-	 * /v1/raid/start debits the loadout from the stash and only the raid *result*
-	 * credits anything back, and the result carries the backpack alone. So any
-	 * non-empty loadout here is a one-way withdrawal: raid 1 spends the starter
-	 * kit, raid 2 gets 409 insufficient_items, and the client falls offline
-	 * permanently. Nothing in the raid reads the loadout anyway — the weapon is
-	 * abstract with infinite reloads — so debiting for it was risk without stakes.
+	 * It was deliberately EMPTY until 2026-08-03, and the reason it could not stay
+	 * empty is the reason it was empty: /v1/raid/start debits the loadout and only
+	 * the raid result credited anything back, and the result carries the backpack
+	 * alone — so a non-empty loadout used to be a one-way withdrawal that spent the
+	 * starter kit on raid 1 and answered 409 insufficient_items forever after. The
+	 * missing half is now built: an EXTRACTION credits the session's recorded
+	 * loadout back server-side, so the debit is reversible and the withdrawal has a
+	 * matching deposit.
 	 *
-	 * domain.ValidateStacks explicitly allows an empty list. This function stays
-	 * as the named seam to fill in when weapons and ammo become real in-raid
-	 * items and losing them on death is the actual stake.
+	 * A raid still begins with an empty BAG. Equipment is worn, not packed — the
+	 * server returns it on extraction rather than the client submitting it as haul
+	 * — so the carry grid, the magazine fold-back and domain.FitsCarryGrid are all
+	 * untouched by this.
+	 *
+	 * An empty result is still perfectly legal, and that is load-bearing:
+	 * domain.ValidateStacks accepts an empty list, and a player with nothing
+	 * equipped must be able to raid (spec §4's dead-end guard).
 	 */
-	TArray<FSarkoItemStack> WireLoadout();
+	TArray<FSarkoItemStack> WireLoadout(const FSarkoEquipment& Equipment,
+		const FSarkoItemCatalog& Catalog);
+
+	/** POST /v1/profile/equipment's body. An empty item id is the unequip, not an
+	 *  omission: "put nothing in this slot". */
+	FString MakeSetEquipmentBody(ESarkoEquipSlot Slot, FName Item);
+
+	/** Reads `{"equipment":{"weapon":"pistol"}}` — the equip response, which is the
+	 *  equipment as it stands after the write, so an optimistic client-side update
+	 *  is corrected by the answer rather than by the next profile fetch. */
+	bool ParseEquipmentResponse(const FString& Json, FSarkoEquipment& OutEquipment, FString& OutError);
 }
 
 /**
@@ -293,6 +329,8 @@ public:
 	using FOnProfile = TFunction<void(bool bSuccess, const FSarkoProfile& Profile, const FString& Error)>;
 	using FOnCraft = TFunction<void(bool bSuccess, const FString& Tier,
 		const TArray<FString>& UnlockedMaps, const FString& Error)>;
+	using FOnEquipment = TFunction<void(bool bSuccess, const FSarkoEquipment& Equipment,
+		const FString& Error)>;
 
 	bool IsAuthenticated() const { return !Jwt.IsEmpty(); }
 
@@ -312,6 +350,18 @@ public:
 	 * only thing worse than a refused craft is a refused craft with no reason.
 	 */
 	void CraftVehicle(FOnCraft OnDone);
+
+	/**
+	 * POST /v1/profile/equipment. One slot per call, because the tap this serves is
+	 * always about exactly one slot — a whole-set write would let a client with a
+	 * stale idea of one slot silently clear another.
+	 *
+	 * 409 not_equippable and 409 insufficient_items arrive here as ordinary
+	 * failures with the envelope's message in Error, which the shelter shows: a
+	 * refused equip with no reason is the failure the refusal discipline exists to
+	 * prevent.
+	 */
+	void SetEquipment(ESarkoEquipSlot Slot, FName Item, FOnEquipment OnDone);
 
 	/** POST /v1/raid/start. Debits the loadout. */
 	void StartRaid(const FString& MapId, const TArray<FSarkoItemStack>& Loadout, FOnSession OnDone);

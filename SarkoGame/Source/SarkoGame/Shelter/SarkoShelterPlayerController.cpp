@@ -4,6 +4,7 @@
 #include "Core/SarkoTravel.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
+#include "Loot/SarkoEquipment.h"
 #include "Loot/SarkoItemCatalog.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
@@ -62,7 +63,13 @@ void ASarkoShelterPlayerController::BeginPlay()
 
 	Widget = SNew(SSarkoShelterWidget)
 		.OnEnterRaid(FSimpleDelegate::CreateUObject(this, &ASarkoShelterPlayerController::EnterRaid))
-		.OnCraft(FSimpleDelegate::CreateUObject(this, &ASarkoShelterPlayerController::Craft));
+		.OnCraft(FSimpleDelegate::CreateUObject(this, &ASarkoShelterPlayerController::Craft))
+		.OnSelectScreen(FSarkoOnSelectScreen::CreateUObject(
+			this, &ASarkoShelterPlayerController::SelectScreen))
+		.OnEquipStack(FSarkoOnEquipStack::CreateUObject(
+			this, &ASarkoShelterPlayerController::EquipStack))
+		.OnUnequipSlot(FSarkoOnUnequipSlot::CreateUObject(
+			this, &ASarkoShelterPlayerController::UnequipSlot));
 
 	Viewport->AddViewportWidgetContent(Widget.ToSharedRef());
 
@@ -149,7 +156,135 @@ void ASarkoShelterPlayerController::RefreshWidget()
 	}
 	Widget->SetView(SarkoShelter::BuildView(
 		GameInstance->LastRaid, GameInstance->CachedProfile, GameInstance->bProfileLoaded,
-		LastError, LastCraftLine, SarkoLoot::GetItemCatalog()));
+		LastError, LastCraftLine, SarkoLoot::GetItemCatalog(), CurrentScreen));
+}
+
+void ASarkoShelterPlayerController::SelectScreen(ESarkoShelterScreen Screen)
+{
+	if (Screen == CurrentScreen)
+	{
+		return;
+	}
+	CurrentScreen = Screen;
+	// No fetch and no modal: switching is instant (spec §1), and it is a redraw of
+	// state this controller already holds.
+	RefreshWidget();
+}
+
+void ASarkoShelterPlayerController::EquipStack(int32 StackIndex)
+{
+	USarkoGameInstance* GameInstance = GetGameInstance<USarkoGameInstance>();
+	if (!GameInstance || !Widget.IsValid())
+	{
+		return;
+	}
+
+	// The view's own sorted array, rebuilt the same way the widget drew it — the tap
+	// carries an index into what is ON SCREEN, and the profile's stash is in the
+	// server's order. Rebuilding it here rather than caching it keeps the index and
+	// the cells provably the same list.
+	const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+	const TArray<FSarkoItemStack> Stacks =
+		SarkoShelter::BuildStashStacks(GameInstance->CachedProfile, Catalog);
+	if (!Stacks.IsValidIndex(StackIndex))
+	{
+		return;
+	}
+
+	const FName Item = Stacks[StackIndex].Item;
+	const FSarkoItemDef* Def = Catalog.Find(Item);
+	const ESarkoEquipSlot Slot = SarkoEquip::SlotFor(Def);
+
+	// A non-equipment item has no home slot, and its refusal is stated against the
+	// slot it would have wanted — which is None, i.e. "this is not equipment". That
+	// is the reachable wrong-category case: most of what is in a stash is cargo.
+	FString Reason;
+	const bool bOccupied = Slot != ESarkoEquipSlot::None
+		&& !SarkoEquip::Get(GameInstance->CachedProfile.Equipment, Slot).IsNone();
+	if (!SarkoEquip::Accepts(Slot, Def, bOccupied, Reason))
+	{
+		// The refusal is the RULE's, not this function's: shake the tapped cell, pulse
+		// the character plate amber, and say the reason in words.
+		Widget->PlayRefusal(StackIndex, Reason);
+		return;
+	}
+
+	// Applied locally first so the tap is instant, then sent. The server's answer
+	// replaces this: it is the authority on what this player owns, and a refusal
+	// arrives as a status line and a refetch.
+	SarkoEquip::Set(GameInstance->CachedProfile.Equipment, Slot, Item);
+	Widget->PlayRefusal(INDEX_NONE, FString());
+	RefreshWidget();
+	SendEquipment(Slot, Item);
+}
+
+void ASarkoShelterPlayerController::UnequipSlot(ESarkoEquipSlot Slot)
+{
+	USarkoGameInstance* GameInstance = GetGameInstance<USarkoGameInstance>();
+	if (!GameInstance || Slot == ESarkoEquipSlot::None)
+	{
+		return;
+	}
+	// Always allowed, for every slot including the weapon. An empty weapon slot is a
+	// legal state the raid button names rather than blocks (spec §4).
+	SarkoEquip::Set(GameInstance->CachedProfile.Equipment, Slot, NAME_None);
+	if (Widget.IsValid())
+	{
+		Widget->PlayRefusal(INDEX_NONE, FString());
+	}
+	RefreshWidget();
+	SendEquipment(Slot, NAME_None);
+}
+
+void ASarkoShelterPlayerController::SendEquipment(ESarkoEquipSlot Slot, FName Item)
+{
+	if (bDebugSuppressEquipSend)
+	{
+		// A screenshot run against a FAKED cached stash. See the flag's comment: the
+		// rule, the refusal and the view are all real; only the round trip is skipped,
+		// because a refusal would refetch and replace the faked stash mid-shot.
+		return;
+	}
+
+	USarkoGameInstance* GameInstance = GetGameInstance<USarkoGameInstance>();
+	const TSharedPtr<FSarkoBackendClient> Backend = GameInstance ? GameInstance->EnsureBackend() : nullptr;
+	if (!Backend.IsValid())
+	{
+		LastError = TEXT("no backend client");
+		RefreshWidget();
+		return;
+	}
+
+	// Weak: this completion routinely lands after the player has pressed В РЕЙД and
+	// this controller has been destroyed by the travel.
+	TWeakObjectPtr<ASarkoShelterPlayerController> WeakThis(this);
+	Backend->SetEquipment(Slot, Item,
+		[WeakThis](bool bSuccess, const FSarkoEquipment& Equipment, const FString& Error)
+		{
+			ASarkoShelterPlayerController* Self = WeakThis.Get();
+			USarkoGameInstance* Instance = Self ? Self->GetGameInstance<USarkoGameInstance>() : nullptr;
+			if (!Self || !Instance)
+			{
+				return;
+			}
+			if (!bSuccess)
+			{
+				// not_equippable and insufficient_items arrive here. Shown verbatim,
+				// and then the OPTIMISTIC change is thrown away by a refetch: a
+				// screen that keeps showing gear the server refused is a screen that
+				// will send that gear as a loadout and be refused again.
+				Self->LastError = Error;
+				Self->FetchProfile();
+				Self->RefreshWidget();
+				return;
+			}
+			Self->LastError.Reset();
+			// The server's copy, wholesale. It is the answer to "what am I wearing
+			// now", and taking it entire is what makes a slot this client got wrong
+			// self-correcting.
+			Instance->CachedProfile.Equipment = Equipment;
+			Self->RefreshWidget();
+		});
 }
 
 void ASarkoShelterPlayerController::SarkoDebugParts(float DelaySeconds)
@@ -203,13 +338,19 @@ void ASarkoShelterPlayerController::SarkoDebugStash(float DelaySeconds, bool bSh
 		// Deliberately UNSORTED and spanning every category, with a 2x1, a 2x2 and
 		// a 3x2 in it: the sort is what the frame is checking, and a multi-cell item
 		// is what proves the cell draws one box rather than w boxes with seams.
+		//
+		// It carries one of each EQUIPPABLE item too — a pistol, a bag and a jacket —
+		// because "something in every slot" is a state the character panel has to be
+		// photographed in, and the jacket is in no loot table yet (spec §5 calls the
+		// clothing slot a hook, not a system).
 		static const FName Mixed[] = {
 			TEXT("scrap_metal"), TEXT("pistol"),      TEXT("bandage"),    TEXT("ammo_9mm"),
 			TEXT("medkit"),      TEXT("toolbox"),     TEXT("bike_frame"), TEXT("wheel_small"),
 			TEXT("chain"),       TEXT("copper_wire"), TEXT("vodka"),      TEXT("cigarettes"),
 			TEXT("duct_tape"),   TEXT("canned_food"), TEXT("painkillers"), TEXT("backpack"),
+			TEXT("jacket"),
 		};
-		static const int32 Amounts[] = { 14, 1, 5, 60, 2, 1, 1, 2, 3, 9, 2, 7, 4, 6, 5, 1 };
+		static const int32 Amounts[] = { 14, 1, 5, 60, 2, 1, 1, 2, 3, 9, 2, 7, 4, 6, 5, 1, 1 };
 
 		GameInstance->CachedProfile.Stash.Reset();
 		for (int32 Index = 0; Index < UE_ARRAY_COUNT(Mixed); ++Index)
@@ -233,6 +374,96 @@ void ASarkoShelterPlayerController::SarkoDebugStash(float DelaySeconds, bool bSh
 			GameInstance->CachedProfile.Stash.Num(),
 			bShortAPart ? TEXT(", one wheel short of a bicycle") : TEXT(""));
 		Self->RefreshWidget();
+	}), FMath::Max(0.01f, DelaySeconds), false);
+#endif
+}
+
+void ASarkoShelterPlayerController::SarkoDebugScreen(int32 ScreenIndex, float DelaySeconds)
+{
+#if !UE_BUILD_SHIPPING
+	TWeakObjectPtr<ASarkoShelterPlayerController> WeakThis(this);
+	FTimerHandle Handle;
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda([WeakThis, ScreenIndex]()
+	{
+		ASarkoShelterPlayerController* Self = WeakThis.Get();
+		if (!Self)
+		{
+			return;
+		}
+		// Clamped rather than trusted: this is a console argument, and an out-of-range
+		// index would put the switcher on a child that does not exist.
+		const int32 Clamped = FMath::Clamp(ScreenIndex, 0, 2);
+		Self->SelectScreen(static_cast<ESarkoShelterScreen>(Clamped));
+		UE_LOG(LogTemp, Warning, TEXT("SarkoDebugScreen: the hub is on screen %d."), Clamped);
+	}), FMath::Max(0.01f, DelaySeconds), false);
+#endif
+}
+
+void ASarkoShelterPlayerController::SarkoDebugEquip(float DelaySeconds, bool bRefuse)
+{
+#if !UE_BUILD_SHIPPING
+	TWeakObjectPtr<ASarkoShelterPlayerController> WeakThis(this);
+	FTimerHandle Handle;
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda([WeakThis, bRefuse]()
+	{
+		ASarkoShelterPlayerController* Self = WeakThis.Get();
+		USarkoGameInstance* GameInstance = Self ? Self->GetGameInstance<USarkoGameInstance>() : nullptr;
+		if (!GameInstance || !Self->Widget.IsValid())
+		{
+			return;
+		}
+		const FSarkoItemCatalog& Catalog = SarkoLoot::GetItemCatalog();
+
+		// The stash as the SCREEN has it, which is what a tap indexes into. Both
+		// branches below then go through the real tap handlers, so what is
+		// photographed is what a finger would have produced.
+		const TArray<FSarkoItemStack> Stacks =
+			SarkoShelter::BuildStashStacks(GameInstance->CachedProfile, Catalog);
+
+		// The one thing this run skips. See the flag's comment on the header.
+		Self->bDebugSuppressEquipSend = true;
+
+		if (bRefuse)
+		{
+			// The FIRST cargo item in the grid — something with no equipment slot at
+			// all, which is the wrong-category refusal a player reaches by tapping a
+			// medkit. The rule and the wording are the shipped ones; only the finger
+			// is faked.
+			for (int32 Index = 0; Index < Stacks.Num(); ++Index)
+			{
+				if (SarkoEquip::SlotFor(Catalog.Find(Stacks[Index].Item)) == ESarkoEquipSlot::None)
+				{
+					Self->EquipStack(Index);
+					UE_LOG(LogTemp, Warning,
+						TEXT("SarkoDebugEquip: tapped cargo '%s' at cell %d — the refusal on screen is the real rule's."),
+						*Stacks[Index].Item.ToString(), Index);
+					return;
+				}
+			}
+			UE_LOG(LogTemp, Error,
+				TEXT("SarkoDebugEquip: no cargo item in the stash to be refused — run SarkoDebugStash first."));
+			return;
+		}
+
+		// One tap per slot, first match wins, and every one of them goes through
+		// EquipStack — so nothing here can equip something SarkoEquip::Accepts would
+		// have refused.
+		int32 Equipped = 0;
+		for (ESarkoEquipSlot Slot : SarkoEquip::Slots())
+		{
+			for (int32 Index = 0; Index < Stacks.Num(); ++Index)
+			{
+				if (SarkoEquip::SlotFor(Catalog.Find(Stacks[Index].Item)) == Slot)
+				{
+					Self->EquipStack(Index);
+					++Equipped;
+					break;
+				}
+			}
+		}
+		UE_LOG(LogTemp, Warning,
+			TEXT("SarkoDebugEquip: filled %d of %d slot(s) from the CACHED stash. Nothing was entitled; /v1/raid/start still debits the real one."),
+			Equipped, SarkoEquip::Slots().Num());
 	}), FMath::Max(0.01f, DelaySeconds), false);
 #endif
 }

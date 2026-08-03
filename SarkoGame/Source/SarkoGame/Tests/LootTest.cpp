@@ -1081,6 +1081,11 @@ bool FSarkoItemSizesMatchTheDesignTable::RunTest(const FString& Parameters)
 		{ TEXT("cigarettes"),   1, 1 },
 		{ TEXT("toolbox"),      2, 1 },
 		{ TEXT("backpack"),     2, 2 },
+		// The clothing slot's only occupant (equipment spec §2). 2x2, the same
+		// footprint as the bag: they are the two worn `gear` items and the reason
+		// items.json authors a `slot` per item rather than deriving one from the
+		// category — the sizes and the colour cannot tell a coat from a bag.
+		{ TEXT("jacket"),       2, 2 },
 		{ TEXT("bike_frame"),   3, 2 },
 		{ TEXT("wheel_small"),  2, 2 },
 		{ TEXT("chain"),        1, 1 },

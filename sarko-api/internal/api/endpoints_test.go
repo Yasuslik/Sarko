@@ -730,3 +730,154 @@ func TestProfileExposesTutorialCompletedOverTheWire(t *testing.T) {
 		t.Errorf("tutorial_completed = %v after a successful raid, want true", raw["tutorial_completed"])
 	}
 }
+
+// TestEquipmentOverHTTPDrivesTheLoadout is spec §4 end to end over the wire:
+// the starter kit's pistol is equipped, /v1/raid/start is given the equipment as
+// its loadout, the stash is debited, and extraction returns it.
+//
+// The starter kit is what makes this reachable at all — a new device is granted a
+// pistol, ammo and a medkit at /v1/auth/anonymous — and it is the reason the
+// no-weapon case is a floor and not the normal case.
+func TestEquipmentOverHTTPDrivesTheLoadout(t *testing.T) {
+	c := newTestServer(t)
+	c.login("device-equip")
+
+	var profile store.Profile
+	if code := c.do(http.MethodGet, "/v1/profile", nil, &profile); code != http.StatusOK {
+		t.Fatalf("profile status = %d, want 200", code)
+	}
+	if profile.Equipment == nil {
+		t.Fatal("the profile must always carry an equipment object, even empty")
+	}
+	if len(profile.Equipment) != 0 {
+		t.Fatalf("a new player wears nothing, got %v", profile.Equipment)
+	}
+
+	var equipped struct {
+		Equipment map[string]string `json:"equipment"`
+	}
+	code := c.do(http.MethodPost, "/v1/profile/equipment",
+		map[string]string{"slot": "weapon", "item_id": "pistol"}, &equipped)
+	if code != http.StatusOK {
+		t.Fatalf("equip status = %d, want 200", code)
+	}
+	if equipped.Equipment["weapon"] != "pistol" {
+		t.Fatalf("equipment = %v, want the pistol in the weapon slot", equipped.Equipment)
+	}
+
+	// A refusal names its reason. Both codes are 409 rather than 400: the request
+	// is well-formed and the game's rules are what say no.
+	var refusal struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	code = c.do(http.MethodPost, "/v1/profile/equipment",
+		map[string]string{"slot": "clothing", "item_id": "pistol"}, &refusal)
+	if code != http.StatusConflict || refusal.Error.Code != "not_equippable" {
+		t.Fatalf("wrong-slot equip: status %d code %q, want 409 not_equippable", code, refusal.Error.Code)
+	}
+	if refusal.Error.Message == "" {
+		t.Error("a refused equip must carry a reason")
+	}
+	// The jacket is in the catalog and in no loot table, so a new player does not
+	// own one — which is exactly the "equip what you do not own" case.
+	code = c.do(http.MethodPost, "/v1/profile/equipment",
+		map[string]string{"slot": "clothing", "item_id": "jacket"}, &refusal)
+	if code != http.StatusConflict || refusal.Error.Code != "insufficient_items" {
+		t.Fatalf("unowned equip: status %d code %q, want 409 insufficient_items", code, refusal.Error.Code)
+	}
+	// A slot that does not exist is the caller's mistake, not the game's rule.
+	code = c.do(http.MethodPost, "/v1/profile/equipment",
+		map[string]string{"slot": "hat", "item_id": "pistol"}, &refusal)
+	if code != http.StatusBadRequest || refusal.Error.Code != "bad_request" {
+		t.Fatalf("bad slot: status %d code %q, want 400 bad_request", code, refusal.Error.Code)
+	}
+
+	// The loadout is what the equipment says, computed by the same function the
+	// client uses, and it has to pass the plausibility gate in front of start.
+	loadout := domain.EquipmentLoadout(equipped.Equipment)
+	if len(loadout) != 1 || loadout[0].ItemID != "pistol" {
+		t.Fatalf("loadout = %v, want one pistol", loadout)
+	}
+
+	var started store.StartedRaid
+	code = c.do(http.MethodPost, "/v1/raid/start",
+		map[string]any{"map_id": "bridge", "loadout": loadout}, &started)
+	if code != http.StatusOK {
+		t.Fatalf("raid/start with a real loadout: status = %d, want 200", code)
+	}
+	c.confirm(started)
+
+	if code := c.do(http.MethodGet, "/v1/profile", nil, &profile); code != http.StatusOK {
+		t.Fatalf("profile status = %d, want 200", code)
+	}
+	for _, stack := range profile.Stash {
+		if stack.ItemID == "pistol" {
+			t.Fatalf("the pistol must be debited while the raid runs, stash = %v", profile.Stash)
+		}
+	}
+
+	var result store.RaidResult
+	code = c.do(http.MethodPost, "/v1/raid/result", map[string]any{
+		"session_id":    started.SessionID,
+		"session_token": started.SessionToken,
+		"outcome":       "extracted",
+		"items":         []domain.ItemStack{{ItemID: "scrap_metal", Quantity: 2}},
+	}, &result)
+	if code != http.StatusOK {
+		t.Fatalf("raid/result status = %d, want 200", code)
+	}
+	if len(result.ReturnedLoadout) != 1 || result.ReturnedLoadout[0].ItemID != "pistol" {
+		t.Fatalf("returned_loadout = %v, want the pistol", result.ReturnedLoadout)
+	}
+
+	if code := c.do(http.MethodGet, "/v1/profile", nil, &profile); code != http.StatusOK {
+		t.Fatalf("profile status = %d, want 200", code)
+	}
+	var pistols int
+	for _, stack := range profile.Stash {
+		if stack.ItemID == "pistol" {
+			pistols = stack.Quantity
+		}
+	}
+	if pistols != 1 {
+		t.Errorf("extraction must return the pistol, stash holds %d", pistols)
+	}
+	if profile.Equipment["weapon"] != "pistol" {
+		t.Errorf("extraction must keep the equipment, got %v", profile.Equipment)
+	}
+}
+
+// TestAnUnarmedRaidIsAlwaysAllowed is the dead-end guard's server half. A player
+// with nothing equipped sends an empty loadout, and an empty loadout must never
+// be a refusal — otherwise a death with the only weapon equipped strands the
+// player permanently (spec §4).
+func TestAnUnarmedRaidIsAlwaysAllowed(t *testing.T) {
+	c := newTestServer(t)
+	c.login("device-unarmed")
+
+	// Nothing equipped, which is what a player who just died looks like.
+	var profile store.Profile
+	if code := c.do(http.MethodGet, "/v1/profile", nil, &profile); code != http.StatusOK {
+		t.Fatalf("profile status = %d, want 200", code)
+	}
+	if domain.HasWeapon(profile.Equipment) {
+		t.Fatal("fixture: this player must have nothing equipped")
+	}
+
+	loadout := domain.EquipmentLoadout(profile.Equipment)
+	if len(loadout) != 0 {
+		t.Fatalf("an unequipped player's loadout must be empty, got %v", loadout)
+	}
+
+	var started store.StartedRaid
+	if code := c.do(http.MethodPost, "/v1/raid/start",
+		map[string]any{"map_id": "bridge", "loadout": loadout}, &started); code != http.StatusOK {
+		t.Fatalf("an unarmed raid must be allowed: status = %d, want 200", code)
+	}
+	if started.SessionID == "" {
+		t.Error("an unarmed raid must still open a session")
+	}
+}

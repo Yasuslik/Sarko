@@ -47,6 +47,29 @@ enum class ESarkoItemCategory : uint8
 };
 
 /**
+ * Which slot on the character an item can be worn in, or None for the great
+ * majority of items, which are cargo.
+ *
+ * AUTHORED in items.json's `slot` and never derived from the category, because
+ * the one place it matters is the one place a derivation fails: `backpack` and
+ * `jacket` are both `gear` and a bag is not a coat. The category decides what
+ * colour a cell is; this decides where the cell may go.
+ *
+ * None is FIRST so that it is the zero value: an item without an authored slot
+ * is not equipment, and that has to be the answer a default gives. Anything
+ * appended later goes at the END — this is a uint8 UENUM and inserting in the
+ * middle renumbers every value above it.
+ */
+UENUM()
+enum class ESarkoEquipSlot : uint8
+{
+	None,
+	Weapon,
+	Backpack,
+	Clothing
+};
+
+/**
  * A quantity of one item id. The unit of loot, of the backpack, and of the
  * backend's `{"item_id","quantity"}` wire shape.
  */
@@ -120,6 +143,18 @@ struct FSarkoItemDef
 
 	UPROPERTY()
 	ESarkoItemCategory Category = ESarkoItemCategory::Junk;
+
+	/**
+	 * Which equipment slot this item is worn in, or None when it is cargo.
+	 *
+	 * Optional in items.json and absent from all but three rows — its absence is
+	 * a fact about the item, not a defect in the file, so unlike `size` it is
+	 * never an error to omit. `weapon`, `backpack` and `clothing` are the only
+	 * legal strings; anything else fails the parse, because a typo'd slot would
+	 * silently make an item unequippable and read as a UI bug.
+	 */
+	UPROPERTY()
+	ESarkoEquipSlot EquipSlot = ESarkoEquipSlot::None;
 };
 
 /**

@@ -3,6 +3,9 @@
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
 
+// For ESarkoShelterScreen and ESarkoEquipSlot, both held by value below.
+#include "Shelter/SarkoShelterView.h"
+
 #include "SarkoShelterPlayerController.generated.h"
 
 /**
@@ -89,7 +92,56 @@ public:
 	UFUNCTION(Exec)
 	void SarkoDebugStash(float DelaySeconds = 4.f, bool bShortAPart = false);
 
+	/**
+	 * Debug only: switches the hub to a screen by index (0 ІНВЕНТАР, 1 ГАРАЖ,
+	 * 2 МАГАЗИН), DelaySeconds in, so a headless run can photograph a screen a
+	 * finger would have had to reach.
+	 *
+	 * It goes through the same SelectScreen the nav buttons fire, so what it
+	 * photographs is what a tap produces and not a second code path.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugScreen(int32 ScreenIndex = 0, float DelaySeconds = 4.f);
+
+	/**
+	 * Debug only: fills the **cached** equipment so the character panel can be
+	 * photographed with something in every slot, DelaySeconds in.
+	 *
+	 * Same honesty as SarkoDebugStash and SarkoDebugParts, and the same limit: it
+	 * writes nothing to the backend and entitles nothing. Pressing В РЕЙД afterwards
+	 * sends this as the loadout and /v1/raid/start debits it from the REAL stash,
+	 * refusing what is not there — which is correct, and is why this fakes the
+	 * readout and never the entitlement.
+	 *
+	 * It equips through SarkoEquip::Accepts, not by assignment, so a frame taken
+	 * this way is a frame of the real rules. bRefuse instead taps a deliberately
+	 * WRONG item into a slot, which is the only way a headless run can photograph
+	 * the refusal — the rule and the reason are the shipped ones.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugEquip(float DelaySeconds = 4.f, bool bRefuse = false);
+
 private:
+	/** Switches the hub's screen and redraws. What the nav buttons fire. */
+	void SelectScreen(ESarkoShelterScreen Screen);
+
+	/**
+	 * A tap on a stash cell: equip it, if a slot will take it.
+	 *
+	 * The rule is SarkoEquip::Accepts and the refusal is its reason, drawn by the
+	 * widget's three signals. On success the cached profile is updated immediately
+	 * — so the tap feels instant — and the server is told; a refusal from the server
+	 * replaces the local answer, because the server is the authority on what this
+	 * player owns.
+	 */
+	void EquipStack(int32 StackIndex);
+
+	/** A tap on an equipped slot: take it off. Always legal — an empty slot is legal
+	 *  for every slot, including the weapon (spec §4's dead-end guard). */
+	void UnequipSlot(ESarkoEquipSlot Slot);
+
+	/** POST /v1/profile/equipment, then reconcile. Shared by both taps. */
+	void SendEquipment(ESarkoEquipSlot Slot, FName Item);
 	/** Rebuilds the view from the game instance's state and hands it to the widget. */
 	void RefreshWidget();
 
@@ -131,6 +183,25 @@ private:
 	/** "ЗІБРАНО. ВІДКРИТО: SWAMP", kept for the rest of this shelter visit. */
 	FString LastCraftLine;
 
+	/** Which destination is showing. ІНВЕНТАР by default (spec §1), and it lives
+	 *  here rather than in the widget because the widget decides nothing — it is an
+	 *  input to BuildView like every other piece of state on this screen. */
+	ESarkoShelterScreen CurrentScreen = ESarkoShelterScreen::Inventory;
+
 	/** True between the press and the answer. A second debit is not undoable. */
 	bool bCraftInFlight = false;
+
+	/**
+	 * Debug only, and set by nothing else: SarkoDebugEquip raises it so its taps go
+	 * through the real rule but not through the network.
+	 *
+	 * It exists because the debug stash is a FAKE cached profile, so the server would
+	 * refuse most of what a tap into it equips — and a refusal calls FetchProfile,
+	 * which would replace the faked stash with the real one halfway through the
+	 * shot. Suppressing the send is the only part of the flow this can afford to skip:
+	 * SarkoEquip::Accepts, the refusal, the view and the frame are all the shipped
+	 * ones. Nothing is entitled either way — /v1/raid/start still debits the real
+	 * stash and refuses what is not in it.
+	 */
+	bool bDebugSuppressEquipSend = false;
 };

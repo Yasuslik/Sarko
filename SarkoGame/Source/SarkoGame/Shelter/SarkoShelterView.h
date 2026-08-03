@@ -3,8 +3,167 @@
 #include "CoreMinimal.h"
 
 #include "Core/SarkoGameInstance.h"
+#include "Loot/SarkoEquipment.h"
 #include "Loot/SarkoItemCatalog.h"
 #include "Net/SarkoBackendClient.h"
+
+/**
+ * Which screen of the hub is showing (spec §1).
+ *
+ * The shelter is three destinations plus the raid now, not one panel that grew a
+ * garage block in its corner. They are PEERS: switching is instant, nothing is
+ * modal, and each screen is built by the same BuildView call with a different
+ * value here — so a screen cannot accumulate state the others do not see.
+ */
+enum class ESarkoShelterScreen : uint8
+{
+	Inventory,
+	Garage,
+	Shop
+};
+
+/**
+ * One button in the left-edge destination column.
+ *
+ * Left-EDGE and not middle-top, because a phone held in landscape puts both
+ * thumbs on the edges (spec §1). Each is at least 44 pt tall, which is the
+ * project's touch rule, and the current one is marked — a nav column where you
+ * cannot tell where you are is a nav column that has to be re-read every time.
+ */
+struct FSarkoShelterDestination
+{
+	ESarkoShelterScreen Screen = ESarkoShelterScreen::Inventory;
+
+	/** "ІНВЕНТАР" / "ГАРАЖ" / "МАГАЗИН". */
+	FString Label;
+
+	/** This is the screen currently drawn. */
+	bool bCurrent = false;
+
+	/**
+	 * False for the shop, which is still a stub — and it is a DISABLED PEER rather
+	 * than an absent one, because spec §1 wants the shape of the shelter to be
+	 * right before the shop is: a player who cannot see that a shop is coming
+	 * cannot form the expectation the shop will eventually satisfy.
+	 */
+	bool bEnabled = true;
+};
+
+/**
+ * One equipment slot as the character panel draws it.
+ *
+ * The panel decides NOTHING: the caption, the rectangle and whether there is
+ * anything in it are all settled here, so "does the weapon slot read as the
+ * weapon slot" is a property of a pure function and a frame rather than of Slate
+ * code that cannot be constructed under -nullrhi.
+ */
+struct FSarkoEquipSlotView
+{
+	ESarkoEquipSlot Slot = ESarkoEquipSlot::None;
+
+	/** "ЗБРОЯ" / "ОДЯГ" / "РЮКЗАК". The half of the drawing that makes the crude
+	 *  figure legible, which spec §6 names as the one thing it may not fail at. */
+	FString Caption;
+
+	/** What is in it. Quantity 0 means empty — equipment is never a stack of more
+	 *  than one, so the quantity is a flag as much as a count. */
+	FSarkoItemStack Stack;
+
+	/** The rectangle to draw, in cells: the ITEM's own rect when something is worn
+	 *  (a pistol is 2x1), and the slot's largest acceptable rect when it is empty
+	 *  (the weapon slot is 3x1, a rifle's). The space and the shape are different
+	 *  facts and the panel shows whichever one is true. */
+	FIntPoint Extent = FIntPoint(1, 1);
+
+	bool bOccupied = false;
+};
+
+/**
+ * The character on the left of ІНВЕНТАР (spec §2).
+ *
+ * Pockets is in here as a grid size and a caption rather than as a slot: it is
+ * the 2x2 carry page, shown inline because it is "always present, always yours",
+ * and it is not equipped INTO — pre-loading the carry grid from the shelter is a
+ * feature spec §5 does not add.
+ */
+struct FSarkoCharacterView
+{
+	/** "ХОДОК" — the section heading over the figure. */
+	FString Title;
+
+	/** In SarkoEquip::Slots() order, always all three, occupied or not. An absent
+	 *  slot would make the body change shape as gear came and went. */
+	TArray<FSarkoEquipSlotView> Slots;
+
+	/** "КИШЕНІ", and the 2x2 grid under it. */
+	FString PocketsCaption;
+	FIntPoint PocketsGrid = FIntPoint(2, 2);
+
+	/** "ПОРОЖНІ ДО РЕЙДУ" — why the pockets are empty on this screen. Without it
+	 *  an empty 2x2 beside a full stash reads as a bug rather than as the truth,
+	 *  which is that what you carry is packed in the raid and not here. */
+	FString PocketsNote;
+};
+
+/**
+ * The raid button, as words rather than as a state the widget has to interpret.
+ *
+ * It carries its own LABEL because of spec §4's dead-end guard: a player with no
+ * weapon must still be able to raid, and the button says "БЕЗ ЗБРОЇ" instead of
+ * going grey. That is the difference between a game that is hard and a game that
+ * is over — a new player who dies with their only pistol equipped has nothing to
+ * equip, and a disabled button would be the end of their save.
+ */
+struct FSarkoRaidButtonView
+{
+	/** "В РЕЙД", always and unchanged. The verb must not move or change wording:
+	 *  it is the one control a player looks for without reading. */
+	FString Label;
+
+	/** "БЕЗ ЗБРОЇ" on a second, smaller line when the weapon slot is empty, and
+	 *  empty otherwise. Two fields rather than one string with a newline in it,
+	 *  because the two lines are drawn at different sizes — "БЕЗ ЗБРОЇ" at the
+	 *  verb's own size does not fit the destination column's width. */
+	FString SubLabel;
+
+	/** False ONLY while the very first profile fetch is in flight. Never false for
+	 *  want of a weapon — see the struct comment. */
+	bool bEnabled = false;
+
+	/** Nothing in the weapon slot. Colours the label; decides nothing else. */
+	bool bUnarmed = false;
+
+	/**
+	 * THE SEAM FOR ВИЛАЗКА (spec §4.5), which is the next task and is deliberately
+	 * not built here.
+	 *
+	 * The sortie is a SECOND button beside В РЕЙД, showing either "ВИЛАЗКА" or the
+	 * cooldown remaining — so it belongs in this struct, as a second label and a
+	 * second enabled flag, and the destination column already has the room for it
+	 * (the raid button sits alone at the foot of a column with slack above it).
+	 *
+	 * Everything it implies is the SERVER's: free entry, the granted kit, and the
+	 * cooldown are decided and enforced by sarko-api, and the client only displays
+	 * the remaining time. So the shape this will take is a mode parameter on
+	 * /v1/raid/start plus two more strings here — and NOT a client-side timer, and
+	 * not a client-chosen kit. Nothing in this file should acquire the ability to
+	 * decide either.
+	 */
+};
+
+/** One rung of the garage's vehicle ladder (spec §3). */
+struct FSarkoVehicleRung
+{
+	/** "ВЕЛОСИПЕД — SWAMP": the vehicle and the sector it opens. */
+	FString Text;
+
+	/** At or below the player's tier, i.e. owned. */
+	bool bBuilt = false;
+
+	/** The one the recipe above is for. Exactly one rung has this, unless the
+	 *  ladder is finished. */
+	bool bNext = false;
+};
 
 /**
  * Everything the shelter shows, as plain strings.
@@ -63,12 +222,37 @@ struct FSarkoGarageView
 
 	/** The tier is past none, so there is nothing left to press. */
 	bool bBuilt = false;
+
+	/**
+	 * The whole ladder — what is built and what is next (spec §3).
+	 *
+	 * It exists because the garage has a screen of its own now: the cramped corner
+	 * it used to live in had room for a recipe and one button, so the only thing a
+	 * player could see was the step they were on, and a progression whose shape is
+	 * invisible is not felt as a progression.
+	 */
+	TArray<FSarkoVehicleRung> Ladder;
 };
 
 struct FSarkoShelterView
 {
 	/** "УКРИТТЯ". */
 	FString Title;
+
+	/** Which screen is drawn. The widget shows one of three peers. */
+	ESarkoShelterScreen Screen = ESarkoShelterScreen::Inventory;
+
+	/** The left-edge destination column, always all three in a fixed order: a nav
+	 *  column whose entries move is a nav column you have to read. */
+	TArray<FSarkoShelterDestination> Destinations;
+
+	/** The character and its slots. Drawn on ІНВЕНТАР; built unconditionally,
+	 *  because "what am I wearing" is not a fact about which screen is open. */
+	FSarkoCharacterView Character;
+
+	/** The raid button's label and enabled state. Visible on EVERY screen — it is
+	 *  the verb the whole shelter serves (spec §1). */
+	FSarkoRaidButtonView Raid;
 
 	/** "ВИНЕСЕНО" / "ЗАГИНУВ" / "ЗНИК БЕЗВІСТИ", or empty before the first raid. Task 5. */
 	FString OutcomeTitle;
@@ -108,12 +292,15 @@ struct FSarkoShelterView
 	 *  grid, so an empty stash still shows the grid it will fill. */
 	FString StashNote;
 
-	/** "З'ЄДНАННЯ..." while fetching, "ОФЛАЙН: <reason>" on failure, empty when
-	 *  everything is current. */
+	/** "З'ЄДНАННЯ..." while fetching, "ОФЛАЙН: <reason>" on failure, or a refused
+	 *  equip's reason verbatim — empty when everything is current. */
 	FString StatusLine;
 
 	/** False only while the very first profile fetch is still in flight. An
-	 *  offline shelter still lets the player raid (spec §4.6). */
+	 *  offline shelter still lets the player raid (spec §4.6).
+	 *
+	 *  Kept beside Raid.bEnabled, which is the same fact: this is the one the
+	 *  existing tests read, and Raid carries the label the button needs. */
 	bool bRaidEnabled = false;
 };
 
@@ -192,12 +379,54 @@ namespace SarkoShelter
 	 */
 	FSarkoGarageView BuildGarageView(const FSarkoProfile& Profile, bool bProfileLoaded);
 
+	/**
+	 * The vehicle ladder, mirrored from sarko-api/internal/domain/garage.go's
+	 * unexported `tierOrder` and `mapsByTier`.
+	 *
+	 * Mirrored for the same reason BicycleRecipe is, and the comment there is the
+	 * whole argument: no endpoint exposes the ladder. /v1/profile returns
+	 * `vehicle_tier` and the maps THIS player has unlocked, which is the ladder cut
+	 * off at wherever they are — so the rungs above are unknowable from the wire,
+	 * and the rungs above are exactly what a "what is next" readout is for. Adding
+	 * GET /v1/garage/ladder is the proper fix and is out of this stage's scope.
+	 *
+	 * The tier ids are wire values and the UA names are presentation. Only the
+	 * BICYCLE is craftable from this client today — the later tiers' parts are
+	 * deliberately absent from domain.ItemDefs, so nothing can yield them — and the
+	 * ladder says so by showing the rungs greyed rather than by hiding them.
+	 */
+	TArray<FSarkoVehicleRung> VehicleLadder(const FString& CurrentTier);
+
 	/** Maps in After that were not in Before, in After's order. What the shelter
 	 *  says the craft just opened. */
 	TArray<FString> NewlyUnlockedMaps(const TArray<FString>& Before, const TArray<FString>& After);
 
+	/**
+	 * The three destinations, with Current marked. Pure, and a fixed order.
+	 */
+	TArray<FSarkoShelterDestination> BuildDestinations(ESarkoShelterScreen Current);
+
+	/**
+	 * The character and its slots, from the profile's equipment.
+	 *
+	 * The catalog decides each occupied slot's rectangle, so an equipped pistol
+	 * draws at 2x1 and an equipped rifle would draw at 3x1 without this function
+	 * changing. An id the catalog does not know keeps its slot and draws at 1x1:
+	 * hiding it would silently unequip something the server says is worn.
+	 */
+	FSarkoCharacterView BuildCharacterView(const FSarkoEquipment& Equipment,
+		const FSarkoItemCatalog& Catalog);
+
+	/**
+	 * The raid button. **Never disabled for want of a weapon** — this is spec §4's
+	 * dead-end guard, and it is the whole reason this is a function with a test
+	 * rather than two lines in the widget.
+	 */
+	FSarkoRaidButtonView BuildRaidButton(const FSarkoEquipment& Equipment,
+		bool bProfileLoaded, const FString& Error);
+
 	/** Assembles the whole screen. Pure. */
 	FSarkoShelterView BuildView(const FSarkoLastRaid& LastRaid, const FSarkoProfile& Profile,
 		bool bProfileLoaded, const FString& Error, const FString& CraftLine,
-		const FSarkoItemCatalog& Catalog);
+		const FSarkoItemCatalog& Catalog, ESarkoShelterScreen Screen);
 }

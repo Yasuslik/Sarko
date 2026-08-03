@@ -34,6 +34,7 @@ func NewRouter(deps Deps) http.Handler {
 	// Authenticated endpoints.
 	protected := auth.Middleware(deps.Issuer)
 	mux.Handle("GET /v1/profile", protected(handleProfile(deps)))
+	mux.Handle("POST /v1/profile/equipment", protected(handleSetEquipment(deps)))
 	mux.Handle("POST /v1/raid/start", protected(handleRaidStart(deps)))
 	mux.Handle("POST /v1/raid/confirm", protected(handleRaidConfirm(deps)))
 	mux.Handle("POST /v1/raid/result", protected(handleRaidResult(deps)))
