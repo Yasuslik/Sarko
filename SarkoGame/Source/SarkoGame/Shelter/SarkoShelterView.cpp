@@ -118,8 +118,21 @@ FSarkoGarageView SarkoShelter::BuildGarageView(const FSarkoProfile& Profile, boo
 		// and the backend have drifted, and that should be visible.
 		const FString Name = Def ? Def->Name : Part.Item.ToString();
 
-		View.PartLines.Add(FString::Printf(TEXT("%s  %d/%d"), *Name, Have, Part.Quantity));
-		if (Have >= Part.Quantity)
+		// CLAMPED, and this is the whole of flaw 3: three chains against a recipe
+		// that wants one printed "Ланцюг  3/1", which reads as a bug rather than as
+		// a surplus — have/need is a progress bar in words, and a progress bar past
+		// 100% is a miscount. The requirement is what the line is about, so a met
+		// one says 1/1 and the extra two are simply not this line's business (they
+		// are visible in the stash grid on the right, as two more chain cells).
+		//
+		// The missing case is untouched and still carries both numbers — "Мале
+		// колесо  1/2" is the one fact this block exists to deliver, and colour is
+		// added to it rather than substituted for it.
+		const bool bMet = Have >= Part.Quantity;
+		View.PartLines.Add(FSarkoGaragePart{
+			FString::Printf(TEXT("%s  %d/%d"), *Name, FMath::Min(Have, Part.Quantity), Part.Quantity),
+			bMet });
+		if (bMet)
 		{
 			++Met;
 		}
@@ -161,6 +174,13 @@ FSarkoShelterView SarkoShelter::BuildView(const FSarkoLastRaid& LastRaid, const 
 
 	View.OutcomeTitle = BuildOutcomeTitle(LastRaid.Outcome, LastRaid.bPersisted);
 	View.HaulLines = BuildHaulLines(LastRaid, Catalog);
+	if (LastRaid.Outcome == ESarkoRaidOutcome::InProgress)
+	{
+		// No raid this session. BuildHaulLines deliberately returns NO lines here
+		// (an empty haul line would claim a raid happened and carried nothing), and
+		// this is the note that fills the block it leaves empty.
+		View.HaulNote = TEXT("ЩЕ НЕ БУЛО РЕЙДІВ");
+	}
 
 	// The stash *and* the garage count are drawn only when they are known. An
 	// unfetched profile has an empty Stash array, which is indistinguishable from a

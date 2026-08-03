@@ -92,13 +92,15 @@ namespace SarkoUI
 	 * 8640 -> 8.0), a 2556x1179 landscape phone gets 1.092, so an unadjusted
 	 * widget renders ~9% larger than it claims.
 	 *
-	 * That matters here and not for the shelter because the inventory panel is
-	 * drawn OVER the in-raid HUD and has to agree with it, and the HUD's canvas
-	 * is 1:1 with pixels (see the file header) — it never meets the layer
-	 * manager at all. The shelter keeps PointScaleForViewport and is therefore
-	 * ~9% over its stated size today: a known, separate deviation, validated by
-	 * screenshot at that size, and not something to change without taking
-	 * another one.
+	 * BOTH overlay screens use it as of 2026-08-03: the container panel, because it
+	 * is drawn over the in-raid HUD and has to agree with it (the HUD's canvas is
+	 * 1:1 with pixels — see the file header — and never meets the layer manager at
+	 * all), and the shelter, which used PointScaleForViewport and was therefore
+	 * ~9% over its stated size on a phone and ~33% UNDER it on a 720-tall window.
+	 * The second half of that is the part that did visible damage: the layout was
+	 * being composed on a 1254x579 pt canvas instead of the 844x390 one it is
+	 * written against, which is where the shelter's empty left column and its
+	 * seventh-instead-of-eighth stash column both came from.
 	 */
 	inline float OverlayPointScale(FVector2D ViewportSize)
 	{

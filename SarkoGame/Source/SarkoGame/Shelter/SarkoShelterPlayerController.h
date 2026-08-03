@@ -78,9 +78,16 @@ public:
 	 * question only a frame someone reads can settle. Deliberately spans every
 	 * category the palette has a hue for and includes 2x1, 2x2 and 3x2 items, so
 	 * the frame also answers whether a multi-cell item draws as ONE box.
+	 *
+	 * bShortAPart leaves ONE wheel where the recipe wants two, which is the only
+	 * way to photograph the garage block's other state: a mixed stash otherwise
+	 * satisfies the whole bicycle, so `SarkoDebugStash 1` can only ever show every
+	 * part met and the "НЕ ВИСТАЧАЄ: <part>" half of spec §3 goes unphotographed.
+	 * It changes a quantity and not the item list, so the grid in the frame is the
+	 * same grid either way and the two shots are comparable.
 	 */
 	UFUNCTION(Exec)
-	void SarkoDebugStash(float DelaySeconds = 4.f);
+	void SarkoDebugStash(float DelaySeconds = 4.f, bool bShortAPart = false);
 
 private:
 	/** Rebuilds the view from the game instance's state and hands it to the widget. */

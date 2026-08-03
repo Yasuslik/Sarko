@@ -187,12 +187,12 @@ void ASarkoShelterPlayerController::SarkoDebugParts(float DelaySeconds)
 #endif
 }
 
-void ASarkoShelterPlayerController::SarkoDebugStash(float DelaySeconds)
+void ASarkoShelterPlayerController::SarkoDebugStash(float DelaySeconds, bool bShortAPart)
 {
 #if !UE_BUILD_SHIPPING
 	TWeakObjectPtr<ASarkoShelterPlayerController> WeakThis(this);
 	FTimerHandle Handle;
-	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda([WeakThis]()
+	GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda([WeakThis, bShortAPart]()
 	{
 		ASarkoShelterPlayerController* Self = WeakThis.Get();
 		USarkoGameInstance* GameInstance = Self ? Self->GetGameInstance<USarkoGameInstance>() : nullptr;
@@ -216,10 +216,22 @@ void ASarkoShelterPlayerController::SarkoDebugStash(float DelaySeconds)
 		{
 			GameInstance->CachedProfile.Stash.Add(FSarkoItemStack{ Mixed[Index], Amounts[Index] });
 		}
+		if (bShortAPart)
+		{
+			// One wheel where the recipe wants two: the garage block's OTHER state,
+			// which a full mixed stash can never show. The 2x2 cell stays in the
+			// grid, so the two frames differ in the garage line and nowhere else.
+			if (FSarkoItemStack* Wheels = GameInstance->CachedProfile.Stash.FindByPredicate(
+				[](const FSarkoItemStack& Stack) { return Stack.Item == FName(TEXT("wheel_small")); }))
+			{
+				Wheels->Quantity = 1;
+			}
+		}
 		GameInstance->bProfileLoaded = true;
 		UE_LOG(LogTemp, Warning,
-			TEXT("SarkoDebugStash: the CACHED profile now holds %d mixed stacks. Nothing was sent to the backend."),
-			GameInstance->CachedProfile.Stash.Num());
+			TEXT("SarkoDebugStash: the CACHED profile now holds %d mixed stacks%s. Nothing was sent to the backend."),
+			GameInstance->CachedProfile.Stash.Num(),
+			bShortAPart ? TEXT(", one wheel short of a bicycle") : TEXT(""));
 		Self->RefreshWidget();
 	}), FMath::Max(0.01f, DelaySeconds), false);
 #endif
