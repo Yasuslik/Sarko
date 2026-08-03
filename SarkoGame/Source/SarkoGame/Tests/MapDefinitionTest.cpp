@@ -254,6 +254,7 @@ bool FSarkoDefinitionConvertsToLayout::RunTest(const FString& Parameters)
 
 #endif // WITH_AUTOMATION_TESTS
 
+#include "Core/SarkoRaidSettings.h"
 #include "Map/SarkoMapKinds.h"
 
 #if WITH_AUTOMATION_TESTS
@@ -426,8 +427,14 @@ bool FSarkoPropInstanceCountIsWithinTheMobileBudget::RunTest(const FString& Para
 	const int32 PropParts = SarkoMap::CountPropParts(Map);
 	TestTrue(TEXT("every prop resolves, so the count is not silently short"),
 		PropParts >= Map.Props.Num());
-	// 1200, against roughly 880 with the forest in — 401 parts before it, plus
-	// two per tree. The old ceiling here was 420 and it was a hard ACTOR limit;
+	// 1200, against 1087 after the procedural prop pass — roughly 880 with the
+	// forest in, 401 before it, and the difference is mostly the two stack kinds,
+	// which buy a silhouette with three or four instances of a mesh the map was
+	// already drawing. 113 of headroom left is the tightest this has been, and
+	// the ceiling is deliberately NOT being raised with it: unlike the component
+	// count, this number really is about triangles, memory and physics bodies,
+	// and the next person to want a hundred more instances should have to argue
+	// for them. The old ceiling here was 420 and it was a hard ACTOR limit;
 	// this one is soft and about triangles, memory and physics bodies rather than
 	// draw calls, which is why it is generous. An instance costs a transform and
 	// a static body; it does not cost a UObject, a tick registration or a draw
@@ -832,7 +839,7 @@ bool FSarkoNewPropKindsExist::RunTest(const FString& Parameters)
 			// /Game/ThirdParty. A path to neither is a prop that silently does not
 			// appear (SpawnProps logs and skips), which is exactly the failure
 			// this line was added to catch.
-			// Sarko.Config.ThirdPartyMeshBoundsAreNormalised is the other half —
+			// Sarko.Config.PropMeshBoundsAreNormalised is the other half —
 			// it loads the /Game ones and checks they are the shape the extents
 			// below assume.
 			const FString MeshPath = Piece.Mesh.ToString();
@@ -940,7 +947,12 @@ bool FSarkoPropKindScaleMatchesThePawn::RunTest(const FString& Parameters)
 	// Cover you shoot over: below the pawn's full height, above its knees.
 	float ShortestCoverUU = TNumericLimits<float>::Max();
 	for (const FName& Name : { FName(TEXT("car_wreck")), FName(TEXT("sandbag")),
-		FName(TEXT("concrete_barrier")), FName(TEXT("log")), FName(TEXT("rock")) })
+		FName(TEXT("concrete_barrier")), FName(TEXT("log")), FName(TEXT("rock")),
+		// The yard's two waist-high kinds. A drum is 114 uu and a run of pipe is
+		// 100 — both inside the shoot-over band, which is the claim that stops
+		// someone "improving" a barrel to a realistic 90 cm and quietly turning
+		// the only cover on a forecourt into an ankle-high trip hazard.
+		FName(TEXT("barrel")), FName(TEXT("pipe_run")) })
 	{
 		float Top = 0.f;
 		if (TopOf(Name, Top))
@@ -962,7 +974,13 @@ bool FSarkoPropKindScaleMatchesThePawn::RunTest(const FString& Parameters)
 	for (const FName& Name : { FName(TEXT("house")), FName(TEXT("wall")),
 		FName(TEXT("treeline")), FName(TEXT("fence_section")),
 		FName(TEXT("tree")), FName(TEXT("tree_tall")), FName(TEXT("tree_small")),
-		FName(TEXT("tree_dead")) })
+		FName(TEXT("tree_dead")),
+		// The yard's three tall ones. tank_wagon and crate_stack are here for the
+		// obvious reason; spool is here because 2.2 m is a decision — a cable drum
+		// could as easily have been modelled at 1.2 m, and at 1.2 m it would be a
+		// thing you shoot over rather than the sight blocker the scrap yard's
+		// approach was authored around.
+		FName(TEXT("tank_wagon")), FName(TEXT("crate_stack")), FName(TEXT("spool")) })
 	{
 		float Top = 0.f;
 		if (TopOf(Name, Top))
@@ -1024,6 +1042,53 @@ bool FSarkoPropKindScaleMatchesThePawn::RunTest(const FString& Parameters)
 	}
 	TestTrue(TEXT("the canopy flag is actually set somewhere"), CanopiesSeen >= 3);
 
+	// THE АЗС ROOF: the second fading part in the table and the first that is not
+	// a tree. It gets its own block rather than joining the loop above because
+	// two of the three claims are the same and the third is its opposite — a
+	// canopy that is not Vegetation would be a bug on a tree and is the whole
+	// point here — and because the roof reaches the headroom rule by a different
+	// route: a tree's canopy hangs where the tree grew, and this one is held up
+	// by pillars whose height is a number somebody can change.
+	FSarkoPropKind GasCanopy;
+	if (SarkoMap::FindPropKind(TEXT("gas_canopy"), GasCanopy))
+	{
+		bool bHasRoof = false;
+		bool bHasPillar = false;
+		for (const FSarkoPropPart& Piece : GasCanopy.Parts)
+		{
+			if (!Piece.bCanopy)
+			{
+				bHasPillar |= Piece.bBlocksMovement;
+				continue;
+			}
+			bHasRoof = true;
+			TestFalse(TEXT("the АЗС roof never blocks movement"), Piece.bBlocksMovement);
+			TestNotEqual(TEXT("the АЗС roof is not foliage"),
+				static_cast<uint8>(Piece.Surface), static_cast<uint8>(ESarkoSurface::Vegetation));
+			TestTrue(FString::Printf(TEXT("the АЗС roof clears the pawn's head (%.0f uu vs %.0f uu)"),
+				BottomOfPartUU(GasCanopy, Piece), CanopyHeadroomUU),
+				BottomOfPartUU(GasCanopy, Piece) >= CanopyHeadroomUU);
+
+			// THE ONE NUMBER THAT MAKES THE ROOF LEGAL. The fade is measured from
+			// the part's own centre, so every corner of the roof has to be inside
+			// the fade radius or there are places a player can stand UNDER a roof
+			// that is still being drawn — which is precisely the failure ТЗ §13
+			// names and precisely why this file's own note said a canopy roof
+			// could not exist. It is why the roof is 1400 uu square and not the
+			// 1800 of the pad beneath it, and enlarging it silently breaks the
+			// only argument that let it be built.
+			const float HalfDiagonalUU = FMath::Sqrt(
+				FMath::Square(static_cast<float>(Piece.Extent.X)) +
+				FMath::Square(static_cast<float>(Piece.Extent.Y)));
+			const float FadeRadiusUU = GetDefault<USarkoRaidSettings>()->CanopyFadeRadiusUU;
+			TestTrue(FString::Printf(
+				TEXT("the whole АЗС roof fits inside the fade radius (half-diagonal %.0f uu vs %.0f uu)"),
+				HalfDiagonalUU, FadeRadiusUU), HalfDiagonalUU <= FadeRadiusUU);
+		}
+		TestTrue(TEXT("the АЗС canopy has a roof"), bHasRoof);
+		TestTrue(TEXT("the АЗС canopy stands on something solid"), bHasPillar);
+	}
+
 	// The dead tree is the exception that keeps the fade honest: no canopy at all,
 	// so it is the one tree that is still standing when a stand opens up overhead.
 	FSarkoPropKind DeadTree;
@@ -1055,7 +1120,14 @@ bool FSarkoPropKindScaleMatchesThePawn::RunTest(const FString& Parameters)
 		TEXT("bridge_deck"), TEXT("bridge_rail"), TEXT("house_timber"), TEXT("house_industrial"),
 		TEXT("rock"), TEXT("bush"), TEXT("log"), TEXT("fence_section"),
 		TEXT("road_sign"), TEXT("concrete_barrier"), TEXT("trailer"), TEXT("pylon"), TEXT("treeline"),
-		TEXT("tree"), TEXT("tree_tall"), TEXT("tree_small"), TEXT("tree_dead")
+		TEXT("tree"), TEXT("tree_tall"), TEXT("tree_small"), TEXT("tree_dead"),
+		// The procedural pass's ten. Listed rather than enumerated from
+		// AllPropKindNames on purpose — this list is the record of which kinds
+		// somebody has actually thought about, and a kind that appears in the
+		// table without appearing here is a kind nobody has judged.
+		TEXT("gas_canopy"), TEXT("station_sign"), TEXT("tank_wagon"), TEXT("barrel"),
+		TEXT("barrel_fallen"), TEXT("pallet"), TEXT("pallet_stack"), TEXT("pipe_run"),
+		TEXT("spool"), TEXT("crate_stack")
 	};
 	for (const FName& Name : AllKinds)
 	{

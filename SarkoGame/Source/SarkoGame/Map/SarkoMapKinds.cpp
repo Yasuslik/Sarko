@@ -20,7 +20,7 @@ namespace
 	 * equal to it — tighter, never larger, which is the right way round: an
 	 * extent is an upper bound on the prop, so the spawn-clearance and
 	 * wall-clearance assertions that reason in extents stay true.
-	 * Sarko.Config.ThirdPartyMeshBoundsAreNormalised asserts it rather
+	 * Sarko.Config.PropMeshBoundsAreNormalised asserts it rather
 	 * than trusting it, because a re-import that lost the normalisation would
 	 * change the size of every prop in the sector and break no compile.
 	 *
@@ -45,6 +45,39 @@ namespace
 	const FString MeshLog = TEXT("/Game/ThirdParty/UltimateNature/WoodLog.WoodLog");
 	const FString MeshCar = TEXT("/Game/ThirdParty/Cars/NormalCar1.NormalCar1");
 	const FString MeshWaterTower = TEXT("/Game/ThirdParty/ZombieApocalypse/WaterTower.WaterTower");
+	// Three of the five meshes the asset pass imported and never placed. They were
+	// staged for exactly this: yard clutter with no kind to belong to.
+	const FString MeshBarrel = TEXT("/Game/ThirdParty/ZombieApocalypse/Barrel.Barrel");
+	const FString MeshPallet = TEXT("/Game/ThirdParty/ZombieApocalypse/Pallet.Pallet");
+	const FString MeshPipes = TEXT("/Game/ThirdParty/ZombieApocalypse/Pipes.Pipes");
+
+	/**
+	 * The meshes this project builds itself, by Scripts/generate-props.sh.
+	 *
+	 * They go through the SAME Blender normaliser the downloaded packs do, so
+	 * everything the block above says about the -50..50 box is true of these too
+	 * — and Sarko.Config.PropMeshBoundsAreNormalised asserts it over both roots
+	 * rather than over one.
+	 *
+	 * The difference is what they cost to author. A downloaded mesh's proportions
+	 * are a fact you work around; these were chosen against the extent they were
+	 * always going to be given, so ELEVEN OF THE THIRTEEN EXTENTS BELOW ARE
+	 * EXACT — the mesh is 14.00 x 3.00 x 4.00 m and the extent is 700 x 150 x 200
+	 * uu, and nothing is stretched by so much as a percent. That is the real
+	 * argument for generating props rather than only finding them: not that the
+	 * shapes are better, but that "distorted prop" stops being a category.
+	 */
+	const FString MeshCanopyRoof = TEXT("/Game/Generated/Props/GasCanopyRoof.GasCanopyRoof");
+	const FString MeshCanopyPillar = TEXT("/Game/Generated/Props/GasCanopyPillar.GasCanopyPillar");
+	const FString MeshFuelPump = TEXT("/Game/Generated/Props/FuelPump.FuelPump");
+	const FString MeshFreightWagon = TEXT("/Game/Generated/Props/FreightWagon.FreightWagon");
+	const FString MeshTankWagon = TEXT("/Game/Generated/Props/TankWagon.TankWagon");
+	const FString MeshJerseyBarrier = TEXT("/Game/Generated/Props/JerseyBarrier.JerseyBarrier");
+	const FString MeshCrate = TEXT("/Game/Generated/Props/Crate.Crate");
+	const FString MeshFenceBroken = TEXT("/Game/Generated/Props/FenceBroken.FenceBroken");
+	const FString MeshSandbagStack = TEXT("/Game/Generated/Props/SandbagStack.SandbagStack");
+	const FString MeshBarrelFallen = TEXT("/Game/Generated/Props/BarrelFallen.BarrelFallen");
+	const FString MeshSpool = TEXT("/Game/Generated/Props/CableSpool.CableSpool");
 
 	/** One box, centred on the prop's origin. The shape of every legacy kind. */
 	FSarkoPropKind Box(const FString& Mesh, const FVector& Extent, bool bBlocks, ESarkoSurface Surface)
@@ -78,8 +111,9 @@ namespace
 	}
 
 	/**
-	 * The leafy part of a tree. The only place FSarkoPropPart::bCanopy is set,
-	 * and it hard-wires the two properties a canopy must have alongside it:
+	 * The leafy part of a tree. One of the two places FSarkoPropPart::bCanopy is
+	 * set (see Fading below for the other, which is the АЗС roof and is not
+	 * foliage), and it hard-wires the two properties a canopy must have:
 	 * NEVER colliding (the fade changes visibility only, so collision must not
 	 * depend on it — see the field's own comment) and always Vegetation, because
 	 * a canopy that is not green is not a canopy.
@@ -92,6 +126,34 @@ namespace
 		Result.Offset = Offset;
 		Result.bBlocksMovement = false;
 		Result.Surface = ESarkoSurface::Vegetation;
+		Result.bCanopy = true;
+		return Result;
+	}
+
+	/**
+	 * A part that fades over the player's head but is NOT foliage.
+	 *
+	 * The АЗС canopy roof is the only user, and it is the reason this exists
+	 * beside Canopy() rather than inside it. Both hard-wire the half of the
+	 * canopy contract that is a safety property — a fading part never collides,
+	 * because the fade changes visibility and NOTHING else — and they differ on
+	 * the half that is a fiction: Canopy() forces Vegetation because a canopy
+	 * that is not green is not a canopy, and a filling-station roof that IS green
+	 * is not a roof.
+	 *
+	 * Splitting them rather than adding a surface parameter to Canopy() keeps
+	 * that guarantee where it was: there is still exactly one way to make a tree
+	 * canopy and it still cannot be the wrong colour.
+	 */
+	FSarkoPropPart Fading(const FString& Mesh, const FVector& Extent, const FVector& Offset,
+		ESarkoSurface Surface)
+	{
+		FSarkoPropPart Result;
+		Result.Mesh = FSoftObjectPath(Mesh);
+		Result.Extent = Extent;
+		Result.Offset = Offset;
+		Result.bBlocksMovement = false;
+		Result.Surface = Surface;
 		Result.bCanopy = true;
 		return Result;
 	}
@@ -143,16 +205,51 @@ namespace
 			{ TEXT("car_wreck"),   Box(MeshCar,  FVector(230.f, 95.f, 75.f),   true, ESarkoSurface::Structure) },
 			{ TEXT("bus"),         Box(Cube,     FVector(600.f, 130.f, 160.f), true, ESarkoSurface::Structure) },
 			{ TEXT("house"),       Box(Cube,     FVector(500.f, 400.f, 300.f), true, ESarkoSurface::Structure) },
-			{ TEXT("fuel_pump"),   Box(Cube,     FVector(60.f, 40.f, 110.f),   true, ESarkoSurface::Structure) },
-			{ TEXT("freight_car"), Box(Cube,     FVector(700.f, 150.f, 200.f), true, ESarkoSurface::Structure) },
+			// A dispenser with a boom arm. 220 uu tall (1.25x the pawn) exactly as
+			// before, so the three pumps on the forecourt keep their pos.z of 110
+			// and do not move; the footprint went from 120 x 80 to 130 x 68,
+			// because the mesh's own proportions put the extra length in the arm
+			// that hangs out over where the car stands. That arm is the whole
+			// reason this is a mesh: from 1400 uu up a pump body is a rectangle
+			// and so is a bin.
+			{ TEXT("fuel_pump"),   Box(MeshFuelPump, FVector(65.f, 34.f, 110.f), true, ESarkoSurface::Structure) },
+			// The tutorial's climax was parked on twelve grey boxes. It is now an
+			// open gondola — the Soviet полувагон, and open because an open wagon
+			// gives this camera a rim, ribs and a dark interior where a boxcar
+			// gives it a roof. Extent UNCHANGED to the unit (the mesh is 14.00 x
+			// 3.00 x 4.00 m against 1400 x 300 x 400 uu, undistorted), so not one
+			// of the twelve moved. Rust rather than Structure: rolling stock
+			// belongs to the industrial vocabulary, and the siding read as twelve
+			// concrete blocks in a field.
+			{ TEXT("freight_car"), Box(MeshFreightWagon, FVector(700.f, 150.f, 200.f), true, ESarkoSurface::Rust) },
+			// Its opposite number, and the reason the depot now reads as rolling
+			// stock rather than as repeated cover: a barrel on saddles with a
+			// walkway and a manway dome, 1300 x 280 x 400 uu, undistorted. Three
+			// gondolas in a row are one object seen three times; a cylinder parked
+			// among them is a train.
+			{ TEXT("tank_wagon"),  Box(MeshTankWagon, FVector(650.f, 140.f, 200.f), true, ESarkoSurface::Rust) },
 			// The sector's one landmark that the brief names by itself, and it was
 			// a grey cylinder. The mesh is a legged tower with a tank on top; the
 			// extent is untouched (the tower is 5.4 x 5.3 x 9.4 m and this is
 			// 4.4 x 4.4 x 14.0, so it is stretched 8% tall against its width) and
 			// the single placed instance did not move.
 			{ TEXT("water_tower"), Box(MeshWaterTower, FVector(220.f, 220.f, 700.f), true, ESarkoSurface::Structure) },
-			{ TEXT("sandbag"),     Box(Cube,     FVector(180.f, 70.f, 55.f),   true, ESarkoSurface::Structure) },
-			{ TEXT("crate"),       Box(Cube,     FVector(70.f, 70.f, 70.f),    true, ESarkoSurface::Structure) },
+			// A solid core with its TOP COURSE modelled as eight separate bags and
+			// three more along the front face. Extents byte-identical (360 x 140 x
+			// 110 uu, and the mesh is 3.80 x 1.48 x 1.16 m, undistorted), so the
+			// twenty-four placed emplacements do not move. Everything below the
+			// top course is a box, because everything below the top course is a
+			// surface this game's camera never sees.
+			{ TEXT("sandbag"),     Box(MeshSandbagStack, FVector(180.f, 70.f, 55.f), true, ESarkoSurface::Structure) },
+			// The single biggest count in the table — forty-three of them — and it
+			// was a cube. It is now a boarded crate with corner battens, a lid
+			// frame and one diagonal brace ACROSS THE LID, which is the only
+			// detail of a crate this camera can resolve. Extent unchanged and the
+			// mesh is a true 1.4 m cube, so nothing moved and nothing is
+			// stretched. Timber rather than Structure: it is made of wood, it
+			// stands beside houses and pallets, and forty-three grey boxes were
+			// the same grey as the walls they leant on.
+			{ TEXT("crate"),       Box(MeshCrate, FVector(70.f, 70.f, 70.f), true, ESarkoSurface::Timber) },
 			{ TEXT("pipe"),        Box(Cylinder, FVector(90.f, 90.f, 600.f),   true, ESarkoSurface::Structure) },
 			// ТЗ §5's «тёмный асфальт»: the ONE legacy kind that is not Structure,
 			// and it is a deliberate exception rather than a drift. The deck and the
@@ -195,12 +292,26 @@ namespace
 			// Fence: 800 uu long, 24 uu thin, 184 uu tall — 1.05x the pawn, so it
 			// is a sight blocker rather than cover. A line of them reads as a
 			// boundary from above and cuts line of sight at ground level.
-			{ TEXT("fence_section"),    Box(Cube,     FVector(400.f, 12.f, 92.f),   true,  ESarkoSurface::Timber) },
+			// Now five posts, a top rail, a bottom rail with a hole in it, six
+			// surviving boards and one hanging off. Extent unchanged (800 x 24 x
+			// 184 uu against a mesh of 8.00 x 0.24 x 1.84 m, undistorted), so the
+			// thirteen sections do not move, and it still BLOCKS completely —
+			// collision is the mesh's hull. The gaps are for the eye and not for
+			// bullets, deliberately: a fence you can shoot through but not walk
+			// through is a rule nobody can see.
+			{ TEXT("fence_section"),    Box(MeshFenceBroken, FVector(400.f, 12.f, 92.f), true, ESarkoSurface::Timber) },
 			// Jersey barrier, 300 uu long and 110 uu tall (0.63x the pawn,
 			// waist-high — the real thing is about a metre). Low, heavy, and the
 			// pale concrete tone, which is what makes a row of them read as a
 			// deliberate closure rather than as scattered junk.
-			{ TEXT("concrete_barrier"), Box(Cube,     FVector(150.f, 45.f, 55.f),   true,  ESarkoSurface::Concrete) },
+			// Modelled as its real extruded section — wide foot, a hard kick at
+			// 34 cm, a gentle taper to a narrow top — plus two lifting lugs. The
+			// half-height and half-length are untouched (110 uu tall, 300 long) so
+			// the eleven placed barriers neither move nor break the butted rows
+			// they were authored into; the half-WIDTH drops 45 -> 28, which is the
+			// real thing's 60 cm instead of a 90 cm block, and narrowing a prop
+			// can only make the clearance assertions easier.
+			{ TEXT("concrete_barrier"), Box(MeshJerseyBarrier, FVector(150.f, 28.f, 55.f), true, ESarkoSurface::Concrete) },
 
 			// Post plus plate: the plate is pale concrete so it catches the eye
 			// from above, which is the entire job of a road sign in this game.
@@ -236,6 +347,122 @@ namespace
 				Part(Cube, FVector(30.f, 30.f, 900.f),  FVector(140.f, 0.f, 900.f),  true,  ESarkoSurface::Rust),
 				Part(Cube, FVector(420.f, 25.f, 20.f),  FVector(0.f, 0.f, 1500.f),   false, ESarkoSurface::Structure),
 				Part(Cube, FVector(300.f, 25.f, 20.f),  FVector(0.f, 0.f, 1780.f),   false, ESarkoSurface::Structure),
+			}) },
+
+			// ---- ТЗ §9's АЗС, as a filling station rather than as a pale pad.
+			//
+			// THE NOTE ON bridge_gas_canopy_pad SAID THIS COULD NOT EXIST: "A
+			// canopy roof cannot exist here: the camera is above and ТЗ §13 says
+			// the roof must not hide the player, so the shelter is expressed as
+			// its own footprint plus the four pillars in props." That was true
+			// when the choices were "solid" and "absent". It stopped being true
+			// when the forest landed — FSarkoPropPart::bCanopy hides a part while
+			// the local pawn is under it, which is precisely and only what a
+			// forecourt roof needs. So the roof is a canopy in the engine's sense
+			// of the word, and ТЗ §13's clause is satisfied by the same machinery
+			// that satisfies it for a tree.
+			//
+			// THE ROOF IS 1400 uu SQUARE FOR ONE REASON, and it is arithmetic
+			// rather than taste: its half-diagonal is 990 uu, just inside
+			// USarkoRaidSettings::CanopyFadeRadiusUU (1000). The fade is measured
+			// from the roof's own centre, so a roof any bigger than this has
+			// CORNERS A PLAYER CAN STAND UNDER WHILE IT IS STILL DRAWN — which is
+			// the one failure mode ТЗ §13 names. The 1800 uu pad it sits on stays
+			// as it is and reads as the apron around the canopy.
+			//
+			// Four pillars carry it from 0 to 500 uu, so there is 2.8x the pawn's
+			// height of headroom to walk and fight in; the pillars collide (you
+			// cannot walk through a stanchion) and are 90 uu square, which is
+			// cover for exactly one shoulder — a filling station is meant to be a
+			// dangerous place to stand still. The island is the pump kerb: 24 uu
+			// of Concrete, non-colliding, because a 24 uu step that stops a pawn
+			// is a snag and not a kerb.
+			{ TEXT("gas_canopy"),       Composite({
+				Part(MeshCanopyPillar, FVector(45.f, 45.f, 250.f), FVector(-600.f, -600.f, 250.f), true, ESarkoSurface::Concrete),
+				Part(MeshCanopyPillar, FVector(45.f, 45.f, 250.f), FVector(600.f, -600.f, 250.f),  true, ESarkoSurface::Concrete),
+				Part(MeshCanopyPillar, FVector(45.f, 45.f, 250.f), FVector(-600.f, 600.f, 250.f),  true, ESarkoSurface::Concrete),
+				Part(MeshCanopyPillar, FVector(45.f, 45.f, 250.f), FVector(600.f, 600.f, 250.f),   true, ESarkoSurface::Concrete),
+				Part(Cube, FVector(75.f, 500.f, 12.f), FVector(0.f, 0.f, 12.f), false, ESarkoSurface::Concrete),
+				Fading(MeshCanopyRoof, FVector(700.f, 700.f, 80.f), FVector(0.f, 0.f, 580.f), ESarkoSurface::Concrete),
+			}) },
+
+			// ТЗ §14's ВЫВЕСКА, which bridge.json has been carrying as a FLAGGED
+			// omission: "a landmark-scale plate needs a composite kind this stage
+			// does not add. Flagged, not silently dropped." This is the kind. A
+			// 700 uu mast with a 280 x 360 uu board on top of it, reading from 680
+			// to 1040 uu — nearly six times the pawn, so it is visible over the
+			// forecourt from the road, which is the entire job of a station sign.
+			//
+			// Built from Cube parts and NOT from a new mesh, on purpose: a flat
+			// board seen from a camera looking down is a flat board, there is no
+			// silhouette to win, and the three parts below reuse (mesh, surface,
+			// collision) combinations the table already draws — so this landmark
+			// costs zero additional draw calls. Only the mast collides; the boards
+			// hang clear of the pawn's head and must never snag anyone.
+			{ TEXT("station_sign"),     Composite({
+				Part(Cube, FVector(18.f, 18.f, 350.f),  FVector(0.f, 0.f, 350.f), true,  ESarkoSurface::Structure),
+				Part(Cube, FVector(110.f, 16.f, 55.f),  FVector(0.f, 0.f, 620.f), false, ESarkoSurface::Structure),
+				Part(Cube, FVector(140.f, 20.f, 180.f), FVector(0.f, 0.f, 860.f), false, ESarkoSurface::Concrete),
+			}) },
+
+			// ---- THE YARD. Clutter that dresses rather than clutters: five kinds
+			// on three meshes, three of which were imported by the asset pass and
+			// have been sitting in Content/ThirdParty unplaced ever since.
+			//
+			// Two of the five staged meshes are NOT here and that is a decision:
+			// Wheels_Stack is 1824 triangles for a 92 uu prop that resolves to a
+			// dark blob from 1400 uu, and CinderBlock is 47 cm long, which is
+			// about two pixels. Neither is worth a draw call. They stay staged.
+
+			// A 200-litre drum, 114 uu tall — 0.65x the pawn, waist-high cover you
+			// shoot over, and the single most legible industrial object there is.
+			{ TEXT("barrel"),           Box(MeshBarrel, FVector(35.f, 35.f, 57.f), true, ESarkoSurface::Rust) },
+			// The same drum on its side, and it is a separate MESH rather than a
+			// rotated part because FSarkoPropPart carries a yaw and nothing else:
+			// a barrel cannot be tipped by authoring, so a fallen one has to be
+			// modelled fallen or not exist. 90 uu — knee-high, so it breaks up a
+			// row of standing drums without pretending to be cover.
+			{ TEXT("barrel_fallen"),    Box(MeshBarrelFallen, FVector(58.f, 47.f, 45.f), true, ESarkoSurface::Rust) },
+			// One pallet, flat on the ground, and the ONE kind here that does not
+			// block: at 14 uu tall a colliding pallet is an invisible trip hazard,
+			// and a pallet you walk over is what a pallet is. Pure texture for the
+			// dock and the warehouse floor.
+			{ TEXT("pallet"),           Box(MeshPallet, FVector(61.f, 45.f, 7.f), false, ESarkoSurface::Timber) },
+			// A run of pipe, scaled 1.5x off the imported mesh to 504 uu long and
+			// 100 uu tall — 0.57x the pawn. Long, low and horizontal, which is the
+			// shape the yard vocabulary was missing: everything else in it is
+			// either a box or a drum.
+			{ TEXT("pipe_run"),         Box(MeshPipes, FVector(250.f, 56.f, 50.f), true, ESarkoSurface::Rust) },
+			// A cable drum standing on its flanges, 220 uu tall (1.25x the pawn —
+			// a sight blocker). The one ROUND thing in a vocabulary of rectangles,
+			// which is exactly what earns it a draw call: in a yard of wagons,
+			// crates and barriers a pair of curved rims is legible at a glance and
+			// at any yaw, and yaw is the one thing scattered clutter varies.
+			{ TEXT("spool"),            Box(MeshSpool, FVector(105.f, 60.f, 110.f), true, ESarkoSurface::Timber) },
+
+			// Two stacks, and both are composites of a mesh the table already
+			// draws — so they add silhouettes without adding a single draw call.
+			// That is the whole reason they are composites rather than meshes: a
+			// stack of crates is not a new SHAPE, it is the same shape three
+			// times, and modelling it again would be paying for repetition.
+
+			// Two crates squared up and a third knocked off to the side. 264 uu at
+			// the top, which is 1.5x the pawn: a stack you cannot see over, unlike
+			// the single crate, which is why one of these does a different job in
+			// a yard than three loose ones.
+			{ TEXT("crate_stack"),      Composite({
+				Part(MeshCrate, FVector(70.f, 70.f, 70.f), FVector(0.f, 0.f, 70.f),      true, ESarkoSurface::Timber),
+				Part(MeshCrate, FVector(62.f, 62.f, 62.f), FVector(12.f, -10.f, 202.f),  true, ESarkoSurface::Timber),
+				Part(MeshCrate, FVector(50.f, 50.f, 50.f), FVector(-125.f, 55.f, 50.f),  true, ESarkoSurface::Timber),
+			}) },
+			// Four pallets, each nudged off the one below, 56 uu at the top. Never
+			// blocks, for the same reason a single pallet never does. ТЗ §9's
+			// «паллеты» at the rail depot are this.
+			{ TEXT("pallet_stack"),     Composite({
+				Part(MeshPallet, FVector(61.f, 45.f, 7.f), FVector(0.f, 0.f, 7.f),     false, ESarkoSurface::Timber),
+				Part(MeshPallet, FVector(61.f, 45.f, 7.f), FVector(-8.f, 6.f, 21.f),   false, ESarkoSurface::Timber),
+				Part(MeshPallet, FVector(61.f, 45.f, 7.f), FVector(5.f, -9.f, 35.f),   false, ESarkoSurface::Timber),
+				Part(MeshPallet, FVector(61.f, 45.f, 7.f), FVector(-3.f, 4.f, 49.f),   false, ESarkoSurface::Timber),
 			}) },
 
 			// ---- THE FOREST. Four kinds, each a trunk the player can hide behind
