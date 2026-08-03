@@ -431,9 +431,29 @@ bool FSarkoSurfacePaletteIsReadable::RunTest(const FString& Parameters)
 	}
 	{
 		const FLinearColor Rust = ColourFor(ESarkoSurface::Rust);
+		const FLinearColor Timber = ColourFor(ESarkoSurface::Timber);
 		TestTrue(TEXT("rust is red-dominant"), Rust.R > Rust.G && Rust.G > Rust.B);
-		TestTrue(TEXT("rust separates from the ground by brightness too"),
-			Lum(Rust) > GroundLum * 1.4f);
+
+		// RUST IS DARK. This clause used to read "rust separates from the ground by
+		// brightness too: Lum(Rust) > GroundLum * 1.4", and that is the clause that
+		// produced a pink sector. It was a PROXY for "a wagon separates from the
+		// field", written before anything measured separation; the pairwise sweep
+		// below now measures exactly that and answers 23.6 dE00, so the proxy has
+		// nothing left to protect and was costing the one thing rust cannot do
+		// without — being dark. Brown is a dark orange. There is no lightness at
+		// which a surface is both 1.4x the ground and made of oxidised iron.
+		//
+		// What replaces it is the pair of bounds the old clause was standing in
+		// front of, both of them things a frame can contradict:
+		TestTrue(TEXT("rust is clearly darker than weathered timber, which is what tells them apart"),
+			Lum(Rust) < Lum(Timber) * 0.45f);
+		// ...and a floor, because a Rust face standing UP catches roughly a quarter
+		// of what a Rust face lying flat does (measured: 49 against 208 on the same
+		// wagon), so a value chosen much below this turns the depot walls and the
+		// industrial houses' sides black. This is the Bark lesson — see the Bark
+		// row in SarkoMapPalette.cpp — applied before it has to be learned twice.
+		TestTrue(TEXT("rust is still lit: a vertical rust face gets a quarter of this and must not be black"),
+			Lum(Rust) > GroundLum * 0.6f);
 	}
 	{
 		const FLinearColor Timber = ColourFor(ESarkoSurface::Timber);
@@ -549,6 +569,25 @@ bool FSarkoSurfacePaletteIsReadable::RunTest(const FString& Parameters)
 		}
 	}
 
+	// ---- AND THE DEPOT'S PAIR IS SEPARATED BY VALUE, NOT BY HUE ----
+	//
+	// The sweep above is satisfied by any 10 units, from any axis, and that is the
+	// hole the pink pass fell through: it bought Rust-vs-Timber almost entirely
+	// with hue, which is both the least honest axis for these two materials (rust
+	// is dark, weathered timber is pale — that is what the difference IS) and the
+	// axis the enemy tint is on. A hue-bought separation reads as two coloured
+	// browns; a value-bought one reads as metal and wood.
+	{
+		const FVector RustLab = ScreenLab(ColourFor(ESarkoSurface::Rust));
+		const FVector TimberLab = ScreenLab(ColourFor(ESarkoSurface::Timber));
+		const float ByValue = FMath::Abs(TimberLab.X - RustLab.X);
+		TestTrue(FString::Printf(
+			TEXT("rust and timber are told apart by lightness (%.1f L*), not by hue"), ByValue),
+			ByValue >= 20.f);
+		TestTrue(TEXT("rust is a low-chroma brown, not a coloured one"),
+			LabChroma(RustLab) <= 24.f);
+	}
+
 	// ---- AND THE CHARACTERS STAY THE LOUDEST THING IN THE FRAME ----
 	//
 	// The palette's whole licence to exist is that it does not compete with
@@ -578,6 +617,19 @@ bool FSarkoSurfacePaletteIsReadable::RunTest(const FString& Parameters)
 				*SurfaceName(Surface), SurfaceSeparation(EnemyLab, Lab)),
 				SurfaceSeparation(EnemyLab, Lab) >= MinSurfaceSeparation);
 		}
+
+		// AND RUST KEEPS TWICE THAT, because rust is not a prop tone: it is the
+		// wagons, the eight industrial houses, the depot walls, the tanks and the
+		// barrels — the largest warm AREA in the sector, and the only world surface
+		// that lives on the enemy's half of the hue wheel. Ten units is the floor
+		// for telling two SURFACES apart; a surface that covers a third of a frame
+		// needs more than the floor before a red silhouette on top of it reads
+		// instantly. At the pink value this measured 13.8 and a lit scav torso
+		// (239,186,175) sat ten units from a lit wagon top (210,166,153) in a real
+		// frame. It is 26.1 now, and the way it got there was making rust dark.
+		TestTrue(FString::Printf(TEXT("a red scav does not blend into the rust (%.2f dE00)"),
+			SurfaceSeparation(EnemyLab, ScreenLab(ColourFor(ESarkoSurface::Rust)))),
+			SurfaceSeparation(EnemyLab, ScreenLab(ColourFor(ESarkoSurface::Rust))) >= 20.f);
 	}
 
 	// The two original constants still mean what the previous palette test says

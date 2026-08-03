@@ -33,16 +33,25 @@ namespace
 	 * Bark, Timber, Dirt — packed into about 30 degrees of hue and 10 units of
 	 * lightness. There is no arrangement of four colours in that box that works,
 	 * so the pass SPREAD them along both axes instead of nudging them along one:
-	 * Rust went down and red, Timber went up and yellow, Bark took the gap
-	 * between them at low chroma, and Dirt left the warm family altogether for
-	 * the olive one it actually belongs to — a track is the sector's own soil,
-	 * walked pale, not a plank. The two greys separated by lightness because
-	 * lightness is the only thing two greys have.
+	 * Rust went DOWN, Timber went up and yellow, Bark took the gap between them
+	 * at low chroma, and Dirt left the warm family altogether for the olive one
+	 * it actually belongs to — a track is the sector's own soil, walked pale, not
+	 * a plank. The two greys separated by lightness because lightness is the only
+	 * thing two greys have.
+	 *
+	 * Rust went down rather than sideways on the SECOND attempt, and the Rust row
+	 * below is where that argument is written out. The first attempt separated it
+	 * from Timber by hue, kept it bright, passed every number here, and rendered
+	 * the whole industrial half of the sector pink. Hue is also the axis the enemy
+	 * tint occupies, which is the second reason not to spend it: the surfaces are
+	 * told apart by how dark they are, and the characters keep the colour.
 	 *
 	 * The world is no louder for it: the loudest world surface is Vegetation at
 	 * chroma 25.6 against the enemy tint's 27.4 (it was 26.2 before), and the
 	 * nearest any surface comes to a character is Bark at 13.3 from the red and
-	 * Concrete at 14.5 from the blue. A scav still pops.
+	 * Concrete at 14.5 from the blue. A scav still pops — and after the Rust fix
+	 * the second-nearest to the red is Structure at 20.9, where it used to be
+	 * Rust itself at 13.8.
 	 */
 	struct FSurfaceStyle
 	{
@@ -77,13 +86,52 @@ namespace
 			// had to be bought mostly at the other end.
 			/* Concrete   */ { FLinearColor(0.276f, 0.281f, 0.246f),    0.78f },
 			/* Structure  */ { SarkoMap::Palette::Structure,            SarkoMap::Palette::StructureRoughness },
-			// DARKER AND REDDER. Iron oxide, not orange-brown: hue 38 rather than
-			// 64, luminance 1.51x the ground rather than 1.66x. It was 5.90 from
-			// Timber, which is what made the depot brown-on-brown; it is 22.6 now,
-			// and the pair that moved furthest in the whole pass. Still the reddest
-			// thing in the world set (chroma 20.1) and still comfortably under the
-			// enemy tint, which is the only red allowed to shout.
-			/* Rust       */ { FLinearColor(0.143f, 0.055f, 0.044f),    0.85f },
+			// OXIDISED IRON: DARK, WARM, LOW CHROMA. Separated from Timber by
+			// VALUE, which is the honest axis — rust is dark and weathered timber
+			// is pale — and not by hue, which is the axis the previous attempt used
+			// and the axis the enemy tint lives on.
+			//
+			// That attempt (0.143/0.055/0.044, hue 38, 1.51x the ground) cleared
+			// every number in the test below and still shipped a PINK sector. Two
+			// separate reasons, both visible in a frame and neither visible in the
+			// table:
+			//
+			//  * A PROP IS LIT BRIGHTER THAN THE MODEL PREDICTS. ScreenLab is
+			//    calibrated against the GROUND, where it is accurate to one 255th.
+			//    A prop is not the ground: in the depot frame a wagon top predicted
+			//    at (172,127,117) measured (208,163,150), about 1.4x in linear
+			//    display terms, because a raised horizontal face is neither
+			//    ambient-occluded by the field around it nor partly shadowed by the
+			//    treeline. Every palette entry therefore reads a stop or so lighter
+			//    on a prop than in the table, and a colour chosen at the edge of
+			//    "warm brown" lands well inside "salmon".
+			//  * AT L* 58 THERE IS NO SUCH THING AS BROWN. Brown is a dark orange;
+			//    at that lightness, hue 38 and chroma 20 is the colour of red-lead
+			//    primer only in the tin. On screen it was the wagons, the eight
+			//    industrial houses and the depot walls in pale warm pink — a
+			//    surface family that does not exist in an east-European wasteland,
+			//    and that shared a hue with the one thing allowed to shout. In a
+			//    frame with three scavs in it a lit scav torso measured (239,186,175)
+			//    against a lit wagon top at (210,166,153): the loudest thing on
+			//    screen and the largest thing on screen, ten units apart.
+			//
+			// So: L* 45 rather than 58, hue 50, chroma 21.8 (DOWN from the 20.1 the
+			// tin said, once the lightness came out of it), rendering to about
+			// (163,116,92) on a lit face. Rust/Timber is 29.4 dE00 — better than the
+			// 22.6 the hue split bought — and 27.8 of that is lightness. Rust is
+			// now 26.1 dE00 from the enemy red instead of 13.8, which is the whole
+			// point: the reddest thing in the sector must be a person.
+			//
+			// THE ONE THING GIVEN UP is §14's "rust is brighter than the ground"
+			// (it was 1.51x, it is 0.72x). That clause was a proxy for "a wagon
+			// separates from the field", and the pairwise sweep now measures that
+			// directly and answers 23.6 dE00 — up from 26.1's worth of a colour
+			// nobody believed. The floor that replaces it is the one the clause was
+			// really protecting: a Rust face standing UP is lit at roughly a
+			// quarter of a face lying flat (49/208 in the same frame), so this may
+			// not be dropped much further without the depot walls going black. See
+			// the Bark comment for the same lesson learned the expensive way.
+			/* Rust       */ { FLinearColor(0.067f, 0.027f, 0.017f),    0.85f },
 			// LIGHTER AND YELLOWER, which is what sawn softwood actually is. It
 			// went the opposite way to Rust on purpose — separating a pair by
 			// moving both is cheaper in aesthetic damage than dragging one of them
