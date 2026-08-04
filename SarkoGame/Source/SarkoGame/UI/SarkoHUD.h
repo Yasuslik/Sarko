@@ -1,6 +1,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
+// The vision fan is a member (see VisionFan), and UHT generates this class's
+// constructors — including the vtable helper — into a file that must be able to
+// destroy every member. A forward declaration is therefore not enough for a
+// TUniquePtr to it, whatever the destructor here says.
+#include "CanvasItem.h"
 #include "Fonts/SlateFontInfo.h"
 #include "GameFramework/HUD.h"
 #include "UI/SarkoCombatFeedback.h"
@@ -231,6 +236,59 @@ private:
 	 * that carries one.
 	 */
 	void DrawInteractIcon(FVector2D Centre, SarkoUI::EInteractAction Action, const FLinearColor& Colour);
+
+	/**
+	 * THE VISION CONE'S DIMMING LAYER (vision spec §1-2) — the fog of war.
+	 *
+	 * A screen-space fan with its apex at the pawn's projected position, dimming
+	 * everything OUTSIDE the wedge the character is facing. The camera is
+	 * world-locked and overhead, so a screen-space fan is geometrically honest
+	 * here: the ground plane maps to the screen plane by a fixed transform, and a
+	 * wedge on the glass is a wedge on the map. That is what buys the whole
+	 * feature with no asset, no render target, no post-process material and
+	 * nothing new on the mobile GPU budget.
+	 *
+	 * **IT DIMS. IT NEVER HIDES.** SarkoVision::MaxDimAlpha is 0.85 and the
+	 * shipped value is 0.55, so the wall, the crate and the extraction pad behind
+	 * the player are all still there to navigate by — there is no map and no
+	 * compass in this game, and a black screen behind the player produces a lost
+	 * player rather than a tense one. Enemies are the exception, and they are not
+	 * hidden here: who is drawn is decided on the SERVER
+	 * (ASarkoRaidGameMode::UpdateEnemyVisibility), because a client that draws an
+	 * enemy it should not see is a cheat surface even in a single-player raid.
+	 *
+	 * DRAWN FIRST in DrawHUD, before every readout, for exactly the reason the
+	 * low-health vignette is: the dimming is a WORLD effect, not a screen effect
+	 * over the interface. The sticks, the readouts, the loot prompt, the round
+	 * buttons and the survival meters are all painted over it, and the container
+	 * panel is Slate and sits above the canvas entirely.
+	 */
+	void DrawVisionDimming();
+
+	/**
+	 * The fan's triangles, and the item that draws them, both kept alive between
+	 * frames.
+	 *
+	 * DrawHUD is a tick path and this project forbids per-frame allocation, which
+	 * is the whole reason DrawDisc is a stack of DrawRects rather than an
+	 * FCanvasNGonItem — an NGon item builds a TArray and heap-allocates every
+	 * time it is CONSTRUCTED. The answer here is not to avoid the item but to
+	 * stop constructing it: it is built once, on the first frame that draws a
+	 * cone, and afterwards its TriangleList is Reset (capacity kept) and refilled
+	 * in place, exactly as AimAssistCandidates is.
+	 *
+	 * Triangles and not rectangles because the boundary is a RAY and rectangles
+	 * are axis-aligned: a wedge edge banded into DrawRects staircases by the
+	 * band's width times the edge's slope, which at the angles this cone actually
+	 * sits at runs to a couple of hundred pixels on a phone. A triangle fan draws
+	 * the edge exactly — and its per-vertex colours carry the alpha ramp for
+	 * free, where a band stack would need a separate full-screen pass per step.
+	 *
+	 * A TUniquePtr because FCanvasTriangleItem has no default constructor: it
+	 * insists on at least one triangle, which there is nothing to supply until
+	 * there is a pawn to draw a cone around.
+	 */
+	TUniquePtr<FCanvasTriangleItem> VisionFan;
 
 	void DrawAimCone();
 

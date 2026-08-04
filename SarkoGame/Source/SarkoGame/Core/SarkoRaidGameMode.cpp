@@ -14,6 +14,7 @@
 #include "Loot/SarkoItemCatalog.h"
 #include "Loot/SarkoLootTable.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/WorldSettings.h"
@@ -22,6 +23,7 @@
 #include "Pawn/SarkoHealthComponent.h"
 #include "TimerManager.h"
 #include "UI/SarkoHUD.h"
+#include "UI/SarkoVision.h"
 
 ASarkoRaidGameMode::ASarkoRaidGameMode()
 {
@@ -693,6 +695,202 @@ APawn* ASarkoRaidGameMode::FindNearestLivingPlayerPawn() const
 	return nullptr;
 }
 
+void ASarkoRaidGameMode::UpdateEnemyVisibility(float DeltaSeconds)
+{
+	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// THE FEATURE OFF MEANS EVERY BODY BACK. Not "stop updating": a bot that was
+	// hidden on the frame the setting flipped would stay hidden for the rest of
+	// the raid, which is the worst possible reading of a switch called "enabled".
+	if (!Settings.bVisionConeEnabled)
+	{
+		for (TActorIterator<ASarkoEnemyCharacter> It(World); It; ++It)
+		{
+			if (It->IsHidden())
+			{
+				It->SetActorHiddenInGame(false);
+			}
+		}
+		return;
+	}
+
+	// Throttled, not per frame. See the header: the answer cannot change
+	// meaningfully in 16 ms, and the traces are the only cost this feature has.
+	VisionUpdateAccumulator += DeltaSeconds;
+	const float Interval = FMath::Max(0.f, Settings.VisionUpdateIntervalSeconds);
+	if (VisionUpdateAccumulator < Interval)
+	{
+		return;
+	}
+	VisionUpdateAccumulator = 0.f;
+
+	// ONE PLAYER, and the refusal is loud. With two players the first one's cone
+	// would decide what the second one is allowed to see, because bHidden is a
+	// property of the ACTOR and not of the viewer. Rather than ship a co-op raid
+	// where one player's turn blinds the other, the feature stands down and says
+	// why — every body visible, exactly as before limited vision.
+	int32 LivingPlayers = 0;
+	ASarkoCharacter* Viewer = nullptr;
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		ASarkoCharacter* Candidate = It->IsValid() ? Cast<ASarkoCharacter>(It->Get()->GetPawn()) : nullptr;
+		if (!Candidate || (Candidate->HealthComponent && Candidate->HealthComponent->IsDead()))
+		{
+			continue;
+		}
+		++LivingPlayers;
+		if (!Viewer)
+		{
+			Viewer = Candidate;
+		}
+	}
+
+	if (LivingPlayers > 1)
+	{
+		if (!bVisionMultiPlayerWarned)
+		{
+			bVisionMultiPlayerWarned = true;
+			UE_LOG(LogTemp, Warning,
+				TEXT("SarkoVision: %d living players in this raid — enemy hiding is per-ACTOR (bHidden) and would ")
+				TEXT("let one player's facing blind another, so it is standing down for this raid. The dimming ")
+				TEXT("still draws on every client. Co-op needs per-connection relevancy, not a drawing change."),
+				LivingPlayers);
+		}
+		for (TActorIterator<ASarkoEnemyCharacter> It(World); It; ++It)
+		{
+			if (It->IsHidden())
+			{
+				It->SetActorHiddenInGame(false);
+			}
+		}
+		return;
+	}
+
+	// A dead player, or none yet: nothing is hidden from somebody who is not
+	// looking, and the summary screen is not a place to keep secrets.
+	if (!Viewer)
+	{
+		for (TActorIterator<ASarkoEnemyCharacter> It(World); It; ++It)
+		{
+			if (It->IsHidden())
+			{
+				It->SetActorHiddenInGame(false);
+			}
+		}
+		return;
+	}
+
+	const FVector ViewerLocation = Viewer->GetActorLocation();
+
+	// The SERVER'S copy of the facing, which in the standalone raid this game
+	// ships is the same object the HUD draws its fan from — ASarkoCharacter::Tick
+	// interpolates the actor's rotation on every machine, so the wedge on the
+	// glass and the wedge the traces are cast in are one rotation.
+	const FVector ViewerForward = Viewer->GetActorForwardVector();
+	const FVector2D Facing(ViewerForward.X, ViewerForward.Y);
+	const float Half = SarkoVision::ConeHalfAngleDegrees(Settings.VisionConeDegrees);
+	const float Now = World->GetTimeSeconds();
+	const float Memory = FMath::Max(0.f, Settings.VisionMemorySeconds);
+
+	// Eye height on both ends and both pawns ignored, exactly as the encounter
+	// system's spawn test does it: a floor-to-floor trace is stopped by the
+	// ground's own slope, and a trace that is allowed to hit either of its two
+	// endpoints reports every enemy as behind cover — itself.
+	const FVector Eye(0.f, 0.f, 80.f);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(SarkoVisionLOS), /*bTraceComplex*/ false);
+	Params.AddIgnoredActor(Viewer);
+
+	const double StartCycles = FPlatformTime::Seconds();
+	int32 Traces = 0;
+	int32 Living = 0;
+	int32 Drawn = 0;
+
+	for (TActorIterator<ASarkoEnemyCharacter> It(World); It; ++It)
+	{
+		ASarkoEnemyCharacter* Enemy = *It;
+		if (!Enemy)
+		{
+			continue;
+		}
+
+		// A CORPSE IS A LANDMARK, not a secret. Bodies stay drawn wherever they
+		// fell: they are the only record the player has of a fight that happened,
+		// they cannot shoot anybody, and a body that winked out as the player
+		// turned away would read as loot despawning.
+		const USarkoHealthComponent* Health = Enemy->FindComponentByClass<USarkoHealthComponent>();
+		if (Health && Health->IsDead())
+		{
+			if (Enemy->IsHidden())
+			{
+				Enemy->SetActorHiddenInGame(false);
+			}
+			continue;
+		}
+
+		++Living;
+		const FVector EnemyLocation = Enemy->GetActorLocation();
+		const FVector Offset = EnemyLocation - ViewerLocation;
+		const FVector2D ToTarget(Offset.X, Offset.Y);
+
+		// THE ANGLE FIRST, because it is arithmetic and the trace is not. Most of
+		// the map is outside a 120 degree cone, so on a typical update this rejects
+		// two enemies in three before anything touches the physics scene.
+		bool bVisible = SarkoVision::IsInsideCone(Facing, ToTarget, Half);
+		if (bVisible && Settings.VisionRangeUU > 0.f)
+		{
+			bVisible = ToTarget.SizeSquared() <= Settings.VisionRangeUU * Settings.VisionRangeUU;
+		}
+		if (bVisible)
+		{
+			FCollisionQueryParams TraceParams = Params;
+			TraceParams.AddIgnoredActor(Enemy);
+			FHitResult Hit;
+			++Traces;
+			const bool bBlocked = World->LineTraceSingleByChannel(
+				Hit, ViewerLocation + Eye, EnemyLocation + Eye, ECC_Visibility, TraceParams);
+			bVisible = SarkoVision::IsVisible(Facing, ToTarget, Half, !bBlocked, Settings.VisionRangeUU);
+		}
+
+		if (bVisible)
+		{
+			Enemy->LastSeenByPlayerSeconds = Now;
+		}
+
+		// The linger is a DEBOUNCE and not a memory layer (out of scope, spec §6):
+		// a bot walking the cone's edge crosses it several times a second and would
+		// otherwise strobe, which reads as a rendering fault rather than as "he is
+		// at the edge of what I can see".
+		const bool bDraw = bVisible || (Now - Enemy->LastSeenByPlayerSeconds) <= Memory;
+		Drawn += bDraw ? 1 : 0;
+		if (Enemy->IsHidden() == bDraw)
+		{
+			Enemy->SetActorHiddenInGame(!bDraw);
+		}
+	}
+
+	// THE COST AND THE DECISION, said out loud rather than assumed. Off with
+	// every other AI diagnostic; on, it is the only honest answer to both "what
+	// did the traces cost" and "why is that bot not on my screen".
+	//
+	// The three counts are the funnel, and reading them apart is the whole
+	// diagnostic: living is everything alive, TRACED is what survived the angle
+	// test (so living minus traced is what the cone rejected for nothing), and
+	// drawn is what survived the trace as well (so traced minus drawn is what
+	// cover took).
+	if (Settings.bLogAIDiagnostics && Living > 0)
+	{
+		const double ElapsedMicros = (FPlatformTime::Seconds() - StartCycles) * 1000000.0;
+		UE_LOG(LogTemp, Display,
+			TEXT("SarkoVision: %d living, %d in the cone, %d drawn — %d trace(s) in %.1f us, interval %.3f s"),
+			Living, Traces, Drawn, Traces, ElapsedMicros, Interval);
+	}
+}
+
 bool ASarkoRaidGameMode::HasLineOfSightBetween(const FVector& From, const FVector& To, const AActor* IgnoreActor) const
 {
 	UWorld* World = GetWorld();
@@ -1006,6 +1204,17 @@ void ASarkoRaidGameMode::Tick(float DeltaSeconds)
 	// authority-side by construction — including every location it measures.
 	ASarkoRaidGameState* RaidState = GetGameState<ASarkoRaidGameState>();
 	UWorld* World = GetWorld();
+
+	// WHO THE PLAYER MAY SEE, decided before every early return below.
+	//
+	// Above the IsLootable gate deliberately: a raid whose session has not
+	// settled yet still has a player walking around with a cone, and a raid that
+	// has FINISHED still needs the bodies put back — which is exactly what this
+	// does when it finds no living viewer. Gating it on "the raid is live" would
+	// leave whoever was hidden on the last live frame hidden under the summary
+	// screen, permanently, for no reason the player could ever see.
+	UpdateEnemyVisibility(DeltaSeconds);
+
 	// IsLootable() is "the raid is live": no outcome yet, and the session has
 	// settled. The second half matters as much as the first — a dwell completing
 	// during the auth→start→confirm round trip would finish the raid before there

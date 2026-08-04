@@ -10,6 +10,7 @@
 #include "EngineFontServices.h"
 #include "EngineUtils.h"
 #include "Fonts/FontMeasure.h"
+#include "GlobalRenderResources.h"
 #include "Loot/SarkoBackpack.h"
 #include "Loot/SarkoExtractionZone.h"
 #include "Loot/SarkoLootContainer.h"
@@ -21,6 +22,7 @@
 #include "UI/SarkoInventoryPanel.h"
 #include "UI/SarkoInventoryStyle.h"
 #include "UI/SarkoUiScale.h"
+#include "UI/SarkoVision.h"
 
 namespace
 {
@@ -331,6 +333,52 @@ namespace
 	constexpr float VignetteBandPt = 9.f;
 	constexpr float VignetteMaxAlpha = 0.42f;
 	const FLinearColor VignetteColour(0.55f, 0.03f, 0.02f);
+
+	/**
+	 * THE DIMMING LAYER'S COLOUR (vision spec §1).
+	 *
+	 * Not black. A NAVY-BLACK, because dusk is blue and soot is not: a pure black
+	 * wash over the map's olive ground and grey concrete kills the hue difference
+	 * between them and leaves the player navigating a greyscale photograph, which
+	 * is precisely the disorientation the spec's second risk names. Pulling the
+	 * blue channel up a little keeps ground, road and building distinguishable at
+	 * the full dim while still reading as "the light is off over there".
+	 *
+	 * The alpha is NOT here: it comes from USarkoRaidSettings::VisionDimAlpha, is
+	 * clamped by SarkoVision::ClampDimAlpha, and varies per vertex across the
+	 * edge ramp and the near halo.
+	 */
+	const FLinearColor VisionDimColour(0.016f, 0.020f, 0.043f);
+
+	/**
+	 * How finely the fan is sampled in ANGLE, in degrees, away from the edges.
+	 *
+	 * The bulk of the dark region is a flat colour, so its only requirement is
+	 * that a straight chord between two samples does not visibly cut a corner off
+	 * the outer radius — and the outer radius is off screen by construction (it
+	 * is the distance to the furthest canvas corner plus a margin), so nothing
+	 * about the chord is ever seen. Twelve degrees is thirty-odd slices for the
+	 * whole sweep, which costs a hundred-odd triangles.
+	 */
+	constexpr float VisionBulkSliceDegrees = 12.f;
+
+	/**
+	 * How many samples the soft edge gets, PER STEP of the ramp.
+	 *
+	 * Two, and two is the minimum that draws a step as a step: one at the
+	 * plateau's start and one at its end, so the interpolation between them is
+	 * flat and the change happens at the boundary. One sample per step would
+	 * interpolate straight through the middle of every plateau and turn the
+	 * stepped ramp SarkoVision::DimAlphaForAngle describes into a plain linear
+	 * gradient — which is not worse to look at, but is not what the pure function
+	 * says, and a drawing that disagrees with its own tested arithmetic is a
+	 * drawing nobody can reason about.
+	 */
+	constexpr int32 VisionEdgeSamplesPerStep = 2;
+
+	/** The fan's outer radius: past the furthest canvas corner, so the dark
+	 *  region always runs off screen rather than ending in an arc. */
+	constexpr float VisionOuterMarginPx = 8.f;
 }
 
 void ASarkoHUD::DrawHUD()
@@ -391,6 +439,15 @@ void ASarkoHUD::DrawHUD()
 
 		MeasuredAtScale = NewScale;
 	}
+
+	// THE VISION CONE'S DIMMING IS THE BOTTOM LAYER OF THE WHOLE HUD, and that
+	// ordering is the answer to "the dimming is a world effect, not a screen
+	// effect over the interface". Everything below this line — the vignette, the
+	// arcs, both sticks and their homes, every readout, the two round buttons,
+	// the loot prompt and the outcome screen — is painted OVER it and keeps its
+	// own contrast. The container panel is Slate and sits above the canvas
+	// entirely, so it never darkens at all.
+	DrawVisionDimming();
 
 	// COMBAT FEEDBACK FIRST, and the order is the answer to spec §4.4's
 	// requirement that the vignette must not fight the survival meters: it is
@@ -923,6 +980,249 @@ void ASarkoHUD::DrawLowHealthVignette()
 	}
 }
 
+void ASarkoHUD::DrawVisionDimming()
+{
+	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+	if (!Settings.bVisionConeEnabled)
+	{
+		return;
+	}
+
+	const float MaxAlpha = SarkoVision::ClampDimAlpha(Settings.VisionDimAlpha);
+	if (MaxAlpha <= KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	if (!Pawn)
+	{
+		return;
+	}
+
+	// A corpse has no facing worth drawing a cone around: ASarkoCharacter::Tick
+	// stops rotating the mesh at death, so the wedge would freeze pointing
+	// wherever the player happened to be looking when they were killed and sit
+	// there under the summary screen. The raid is over; the map is not a secret
+	// any more.
+	if (Pawn->HealthComponent && Pawn->HealthComponent->IsDead())
+	{
+		return;
+	}
+
+	// The apex is the PAWN'S projected position, not the middle of the frame: the
+	// camera trails the pawn, so the two differ by a few dozen pixels and a fan
+	// built on the wrong one lights a wedge that starts beside the player.
+	const FVector PawnLocation = Pawn->GetActorLocation();
+	FVector2D Apex;
+	if (!ProjectToScreen(PawnLocation, Apex))
+	{
+		return;
+	}
+
+	// WORLD FACING TO SCREEN, MEASURED RATHER THAN ASSUMED — the same probe
+	// DrawDamageArcs uses, and for the same reason: the camera is world-locked
+	// but its yaw is not guaranteed to be zero, and a fan drawn on an assumed
+	// mapping points somewhere the character is not.
+	//
+	// GetActorForwardVector and not AimDirection: the character interpolates
+	// toward its aim (or toward its travel when the aim stick is centred), so the
+	// forward vector is the direction the player can SEE the body pointing.
+	// Lighting a wedge the body has not turned into yet is a cone that leads the
+	// character, and the owner's ask was «куда кручусь, туда и видно» — where it
+	// has turned, not where it is turning.
+	constexpr float ProbeUU = 500.f;
+	FVector2D Probe;
+	if (!ProjectToScreen(PawnLocation + Pawn->GetActorForwardVector() * ProbeUU, Probe))
+	{
+		return;
+	}
+	const FVector2D ScreenForward = Probe - Apex;
+	const float ProbePx = ScreenForward.Size();
+	if (ProbePx <= KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	// The same probe gives the world-to-screen scale for free, which is what puts
+	// the near halo at a distance in METRES rather than in pixels — a halo sized
+	// in pixels would be a different amount of ground on every screen.
+	const float PixelsPerUU = ProbePx / ProbeUU;
+	const float HaloPx = FMath::Max(1.f, Settings.VisionNearHaloUU * PixelsPerUU);
+
+	// Screen Y grows DOWNWARD, so a positive angle sweeps clockwise on the glass
+	// and every angle below is in that space. This is the same convention DrawArc
+	// documents and DrawDamageArcs relies on.
+	const float CentreRadians = FMath::Atan2(ScreenForward.Y, ScreenForward.X);
+
+	// Out past the furthest CANVAS corner, not the safe frame's: the world is
+	// drawn under the cutouts too, and a dark region that stopped at the safe
+	// frame would leave a bright band down both edges of a phone.
+	const FVector2D Corners[4] = {
+		FVector2D(0.f, 0.f),
+		FVector2D(Canvas->SizeX, 0.f),
+		FVector2D(0.f, Canvas->SizeY),
+		FVector2D(Canvas->SizeX, Canvas->SizeY) };
+	float OuterPx = 0.f;
+	for (const FVector2D& Corner : Corners)
+	{
+		OuterPx = FMath::Max(OuterPx, (Corner - Apex).Size());
+	}
+	OuterPx += VisionOuterMarginPx;
+	if (OuterPx <= HaloPx)
+	{
+		return;
+	}
+
+	const float Half = SarkoVision::ConeHalfAngleDegrees(Settings.VisionConeDegrees);
+	const float Soft = SarkoVision::ClampSoftEdgeDegrees(Settings.VisionConeSoftEdgeDegrees, Half);
+
+	// THE SWEEP IS THE COMPLEMENT OF THE CONE, walked once in increasing angle
+	// from the cone's near edge round to its far one. Offsets are degrees from
+	// the axis, so the angular distance from the axis at offset O is
+	// min(O, 360 - O) and the ramp at both ends falls out of that one expression
+	// rather than out of two mirrored loops.
+	const float SweepStart = Half;
+	const float SweepEnd = 360.f - Half;
+
+	// Sample boundaries: fine across each ramp, coarse across the bulk between
+	// them. Built into a fixed-size stack array — DrawHUD is a tick path, and the
+	// count is bounded by construction (the bulk is at most 360/12 slices and each
+	// ramp is at most EdgeSteps * VisionEdgeSamplesPerStep).
+	constexpr int32 MaxSamples = 128;
+	float Offsets[MaxSamples];
+	int32 SampleCount = 0;
+	const auto PushSample = [&Offsets, &SampleCount](float Offset)
+	{
+		// Strictly increasing: a duplicate boundary is a zero-area slice, which is
+		// three wasted vertices and a degenerate triangle in the batch.
+		if (SampleCount < MaxSamples &&
+			(SampleCount == 0 || Offset > Offsets[SampleCount - 1] + KINDA_SMALL_NUMBER))
+		{
+			Offsets[SampleCount++] = Offset;
+		}
+	};
+
+	const int32 EdgeSamples = SarkoVision::EdgeSteps * VisionEdgeSamplesPerStep;
+	const float RampEnd = FMath::Min(SweepStart + Soft, SweepEnd);
+	for (int32 Index = 0; Index <= EdgeSamples; ++Index)
+	{
+		PushSample(FMath::Lerp(SweepStart, RampEnd, static_cast<float>(Index) / EdgeSamples));
+	}
+
+	const float MirrorStart = FMath::Max(SweepEnd - Soft, RampEnd);
+	for (float Offset = RampEnd + VisionBulkSliceDegrees; Offset < MirrorStart; Offset += VisionBulkSliceDegrees)
+	{
+		PushSample(Offset);
+	}
+
+	for (int32 Index = 0; Index <= EdgeSamples; ++Index)
+	{
+		PushSample(FMath::Lerp(MirrorStart, SweepEnd, static_cast<float>(Index) / EdgeSamples));
+	}
+
+	if (SampleCount < 2)
+	{
+		return;
+	}
+
+	if (!VisionFan.IsValid())
+	{
+		// Built ONCE, on the first frame there is a cone to draw. The one triangle
+		// it insists on is overwritten immediately below; from here on the list is
+		// Reset and refilled in place and nothing allocates.
+		FCanvasUVTri Seed;
+		Seed.V0_Pos = Seed.V1_Pos = Seed.V2_Pos = Apex;
+		Seed.V0_UV = Seed.V1_UV = Seed.V2_UV = FVector2D::ZeroVector;
+		Seed.V0_Color = Seed.V1_Color = Seed.V2_Color = FLinearColor::Transparent;
+		VisionFan = MakeUnique<FCanvasTriangleItem>(Seed, GWhiteTexture);
+		VisionFan->BlendMode = SE_BLEND_Translucent;
+	}
+	VisionFan->TriangleList.Reset();
+
+	// THE RADIAL HALF OF THE ALPHA, per ring, from the same tested function the
+	// header describes: nothing at the pawn's own feet, everything past the
+	// halo's rim. Three rings, three scales, computed once for the whole fan
+	// because they depend on the radius alone.
+	const float ApexHalo = SarkoVision::NearHaloScale(0.f, Settings.VisionNearHaloUU);
+	const float InnerHalo = SarkoVision::NearHaloScale(HaloPx / PixelsPerUU, Settings.VisionNearHaloUU);
+	const float OuterHalo = SarkoVision::NearHaloScale(OuterPx / PixelsPerUU, Settings.VisionNearHaloUU);
+
+	FVector2D PreviousInner = FVector2D::ZeroVector;
+	FVector2D PreviousOuter = FVector2D::ZeroVector;
+	float PreviousAlpha = 0.f;
+	for (int32 Index = 0; Index < SampleCount; ++Index)
+	{
+		const float Offset = Offsets[Index];
+		const float Radians = CentreRadians + FMath::DegreesToRadians(Offset);
+		const FVector2D Unit(FMath::Cos(Radians), FMath::Sin(Radians));
+		const FVector2D Inner = Apex + Unit * HaloPx;
+		const FVector2D Outer = Apex + Unit * OuterPx;
+
+		// The angular distance from the AXIS, which is what the ramp is a function
+		// of — the sweep runs to 360 - Half, so the far half of it has to be
+		// folded back or the second edge would draw at full dim with no ramp.
+		const float FromAxis = FMath::Min(Offset, 360.f - Offset);
+		const float Alpha = SarkoVision::DimAlphaForAngle(FromAxis, Half, Soft, MaxAlpha);
+
+		if (Index > 0)
+		{
+			FCanvasUVTri Tri;
+			Tri.V0_UV = Tri.V1_UV = Tri.V2_UV = FVector2D::ZeroVector;
+
+			// Each vertex's alpha is the ANGULAR ramp times the RADIAL halo, which
+			// is what makes the wedge's apex soften into the ground under the pawn
+			// instead of ending in a hard point at their feet.
+			FLinearColor ApexColour = VisionDimColour;
+			FLinearColor InnerA = VisionDimColour;
+			FLinearColor InnerB = VisionDimColour;
+			FLinearColor OuterA = VisionDimColour;
+			FLinearColor OuterB = VisionDimColour;
+			ApexColour.A = PreviousAlpha * ApexHalo;
+			InnerA.A = PreviousAlpha * InnerHalo;
+			InnerB.A = Alpha * InnerHalo;
+			OuterA.A = PreviousAlpha * OuterHalo;
+			OuterB.A = Alpha * OuterHalo;
+
+			Tri.V0_Pos = Apex;
+			Tri.V1_Pos = PreviousInner;
+			Tri.V2_Pos = Inner;
+			Tri.V0_Color = ApexColour;
+			Tri.V1_Color = InnerA;
+			Tri.V2_Color = InnerB;
+			VisionFan->TriangleList.Add(Tri);
+
+			// And the body of the slice, from the halo's rim out past the corner of
+			// the screen. Two triangles, because a quad with two different alphas
+			// down one pair of edges cannot be one.
+			Tri.V0_Pos = PreviousInner;
+			Tri.V1_Pos = PreviousOuter;
+			Tri.V2_Pos = Outer;
+			Tri.V0_Color = InnerA;
+			Tri.V1_Color = OuterA;
+			Tri.V2_Color = OuterB;
+			VisionFan->TriangleList.Add(Tri);
+
+			Tri.V0_Pos = PreviousInner;
+			Tri.V1_Pos = Outer;
+			Tri.V2_Pos = Inner;
+			Tri.V0_Color = InnerA;
+			Tri.V1_Color = OuterB;
+			Tri.V2_Color = InnerB;
+			VisionFan->TriangleList.Add(Tri);
+		}
+
+		PreviousInner = Inner;
+		PreviousOuter = Outer;
+		PreviousAlpha = Alpha;
+	}
+
+	if (VisionFan->TriangleList.Num() > 0)
+	{
+		Canvas->DrawItem(*VisionFan);
+	}
+}
+
 void ASarkoHUD::DrawAimCone()
 {
 	const ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetOwningPawn());
@@ -977,6 +1277,18 @@ void ASarkoHUD::DrawSnapTargetBracket(const ASarkoCharacter& Pawn, const FVector
 	{
 		const APawn* Other = *It;
 		if (!Other || Other == &Pawn)
+		{
+			continue;
+		}
+		// A HIDDEN ENEMY GETS NO BRACKET. The server decides who may be drawn
+		// (ASarkoRaidGameMode::UpdateEnemyVisibility) and pushes it out as
+		// bHidden; four corner ticks floating over an invisible body would hand
+		// the player back exactly the position the cone exists to withhold, and
+		// would do it in the one place the eye is already looking. The assist
+		// itself is NOT changed — the server still re-runs its own selection at
+		// fire time over every foe, so what a shot does is unaffected and only
+		// what the player is TOLD about it narrows.
+		if (Other->IsHidden())
 		{
 			continue;
 		}

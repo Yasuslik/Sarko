@@ -12,6 +12,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Pawn/SarkoCharacter.h"
 #include "Pawn/SarkoHealthComponent.h"
+#include "UI/SarkoVision.h"
 
 ESarkoAIState SarkoAI::DecideState(
 	ESarkoAIState Current,
@@ -322,7 +323,39 @@ void ASarkoAIController::Tick(float DeltaSeconds)
 
 	APawn* Target = FindNearestLivingPlayer();
 	const float Distance = Target ? FVector::Dist(Self->GetActorLocation(), Target->GetActorLocation()) : 0.f;
-	const bool bLineOfSight = Target ? LineOfSightTo(Target) : false;
+	// SIGHT IS A TRACE **AND** AN ANGLE NOW (vision spec §5).
+	//
+	// LineOfSightTo is a trace and nothing else, so until limited vision arrived a
+	// bot noticed a player standing directly behind it exactly as fast as one in
+	// front. That was invisible while the player could see the whole screen, and
+	// it stops being invisible the instant the player's own sight is cut to 120
+	// degrees: the bot would then perceive three times the arc the player does,
+	// and losing a fight to something you were never allowed to see does not read
+	// as being flanked, it reads as cheating.
+	//
+	// The bot's arc stays WIDER than the player's (EnemyVisionConeDegrees is 180
+	// against the player's 120) because a bot has no HUD, no damage arc and no
+	// intent — what the change buys is the one move the player must be able to
+	// make and see the result of: approaching from behind.
+	//
+	// The same pure predicate the player's cone uses, so the two can never drift.
+	// The bot's facing is its actor forward, which for these pawns is the
+	// direction they are walking (bOrientRotationToMovement) — i.e. exactly what
+	// the player can see the body doing.
+	//
+	// Everything downstream reads this one bool: the hearing gate below (a bot
+	// that cannot see you hears you instead, which is the whole of spec §4),
+	// DecideState, and the firing gate in the Shoot case. Set
+	// EnemyVisionConeDegrees to 360 to get the old behaviour back exactly.
+	bool bLineOfSight = Target ? LineOfSightTo(Target) : false;
+	if (bLineOfSight)
+	{
+		const FVector Forward = Self->GetActorForwardVector();
+		const FVector Offset = Target->GetActorLocation() - Self->GetActorLocation();
+		bLineOfSight = SarkoVision::IsInsideCone(
+			FVector2D(Forward.X, Forward.Y), FVector2D(Offset.X, Offset.Y),
+			SarkoVision::ConeHalfAngleDegrees(Settings.EnemyVisionConeDegrees));
+	}
 
 	const float HearingSensitivity = HearingSensitivityOverride > 0.f ? HearingSensitivityOverride : Settings.EnemyHearingSensitivity;
 	const float FiringRangeUU = FiringRangeOverrideUU > 0.f ? FiringRangeOverrideUU : Settings.EnemyFiringRangeUU;

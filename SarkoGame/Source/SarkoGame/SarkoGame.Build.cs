@@ -30,7 +30,13 @@ public class SarkoGame : ModuleRules
 			// dependencies; listing them means an Engine change cannot silently
 			// take them away.
 			"Slate",
-			"SlateCore"
+			"SlateCore",
+			// GWhiteTexture, which is the untextured white the vision cone's
+			// triangle fan is tinted from — the same global AHUD::DrawRect uses
+			// for its own tiles, and the reason the fan needs no asset. Declared
+			// in RenderCore/Public/GlobalRenderResources.h; the engine's own
+			// gameplay debugger reaches for it exactly this way.
+			"RenderCore"
 		});
 	}
 }

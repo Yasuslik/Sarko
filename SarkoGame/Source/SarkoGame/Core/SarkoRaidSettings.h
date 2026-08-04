@@ -474,6 +474,35 @@ public:
 	float EnemySightRangeUU = 1600.f;
 
 	/**
+	 * THE BOT'S OWN FULL VIEW ANGLE — the fairness half of the vision cone
+	 * (vision spec §5, "bots must not gain an advantage the player cannot
+	 * answer").
+	 *
+	 * Before limited vision this was 360 by omission: AController::LineOfSightTo
+	 * is a trace and nothing else, so a bot noticed a player standing directly
+	 * behind it exactly as fast as one in front. That was invisible while the
+	 * player could see the whole screen. It stops being invisible the moment the
+	 * player's own sight is cut to 120 degrees: the bot then perceives three
+	 * times the arc the player does, and losing a fight to something you were
+	 * never allowed to see does not read as "I was flanked", it reads as
+	 * cheating.
+	 *
+	 * 180 AND NOT 120. It is deliberately WIDER than the player's cone, because a
+	 * bot that could be walked up to from 40 degrees off its shoulder would make
+	 * the map trivial, and because the bot has no HUD, no damage arc and no
+	 * intent. What 180 buys is the one thing the player needs to be able to
+	 * answer: approaching a bot FROM BEHIND now works, and works for a reason the
+	 * player can see on their own screen.
+	 *
+	 * Hearing is untouched and is the other half of this (spec §4): a bot that
+	 * cannot see you still hears the shot, still hears the run, and still walks
+	 * to where the noise was. Set this to 360 to restore the old behaviour
+	 * exactly.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "AI")
+	float EnemyVisionConeDegrees = 180.f;
+
+	/**
 	 * Health at or below which the screen-edge vignette appears (spec §4).
 	 *
 	 * Thirty of a hundred is two of a scav_pistol's hits from dead. Drawn rather
@@ -501,6 +530,122 @@ public:
 	/** How long an enemy body flashes white when it takes a hit. */
 	UPROPERTY(EditAnywhere, config, Category = "Feedback")
 	float HitFlashSeconds = 0.1f;
+
+	/**
+	 * LIMITED VISION — the master switch (vision spec §1).
+	 *
+	 * Off is the whole feature off: no dimming drawn, no enemy hidden, no trace
+	 * cast. It exists because the dim level is the spec's first named risk and
+	 * the honest way to answer "is this the thing making the game unplayable on
+	 * my phone" is one line in an .ini, not a value of 0 smuggled into
+	 * VisionDimAlpha that still pays for every trace.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Vision")
+	bool bVisionConeEnabled = true;
+
+	/**
+	 * The FULL angle of what the player can see, centred on the pawn's facing.
+	 *
+	 * 120 DEGREES, which is human vision including periphery, and the spec's own
+	 * "start generous (110-120) and tune DOWN only if play says it is too easy".
+	 * A narrow cone on a phone does not read as tension; it reads as a bug, and
+	 * the player's first response to a bug is to stop playing rather than to
+	 * start creeping.
+	 *
+	 * Clamped by SarkoVision::ClampConeDegrees to [40, 350], so no config file
+	 * can produce a keyhole or silently switch the feature off while still paying
+	 * for it — bVisionConeEnabled is the switch.
+	 *
+	 * This number is also a FAIRNESS number, not only a drawing one: it is what
+	 * decides whether an enemy is drawn at all. See EnemyVisionConeDegrees, which
+	 * is deliberately wider and deliberately not 360.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Vision")
+	float VisionConeDegrees = 120.f;
+
+	/**
+	 * How many degrees the cone's edge takes to fall off (vision spec §2).
+	 *
+	 * A hard wedge reads as a triangle somebody drew over the world; a ramp reads
+	 * as sight running out, which is the thing being pictured. 12 degrees is
+	 * about a tenth of the cone and, at the radius the fan is drawn to, a couple
+	 * of centimetres of gradient on the glass — enough that the eye reads a
+	 * boundary rather than an edge, and not so much that the cone loses its
+	 * shape.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Vision")
+	float VisionConeSoftEdgeDegrees = 12.f;
+
+	/**
+	 * HOW DARK "not now" IS. Zero is no dimming at all; the code refuses to go
+	 * past SarkoVision::MaxDimAlpha, which is 0.85 and not 1.
+	 *
+	 * 0.55 IS A COMPROMISE AND IS EXPECTED TO MOVE. On a Mac in a dim room it is
+	 * unmistakably dark and every wall, crate and extraction pad is still
+	 * followable, which is the bar the spec sets ("geometry is never hidden ...
+	 * dimming preserves navigation and still reads as 'not now'"). On a phone in
+	 * daylight the same tint reads DARKER, because the screen is fighting the sun
+	 * and the player's eyes are adapted to it — so this is the first number to
+	 * lower after a real playtest, and it is a setting rather than a constant for
+	 * exactly that reason.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Vision")
+	float VisionDimAlpha = 0.55f;
+
+	/**
+	 * The lit halo around the pawn's own feet, in unreal units.
+	 *
+	 * The cone's apex is the pawn, so without this the player's own body and
+	 * whatever they are standing next to are drawn at the full dim on three sides
+	 * — the one place in the frame a player must never have to guess about. 350
+	 * uu is about two body lengths: enough to see the crate you are opening and
+	 * the pad you are standing on, far too little to be a second, circular
+	 * vision radius that would undo the cone.
+	 *
+	 * It dims the DRAWING only. It never reveals an enemy: who is drawn is
+	 * decided by the cone and a trace, on the server, and a bot standing behind
+	 * you at arm's length is still invisible. That asymmetry is deliberate — the
+	 * halo is "you know what is under your feet", not "you have eyes in the back
+	 * of your head".
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Vision")
+	float VisionNearHaloUU = 350.f;
+
+	/**
+	 * How far the player can see an enemy, line of sight and cone permitting.
+	 * Non-positive is unlimited, which is the default and the right answer for a
+	 * world-locked overhead camera: anything on screen at all is within about
+	 * 1600 uu, so a range bound here would only ever hide something the player
+	 * can plainly see.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Vision")
+	float VisionRangeUU = 0.f;
+
+	/**
+	 * How long an enemy stays drawn after it leaves the cone.
+	 *
+	 * NOT A MEMORY LAYER (that is out of scope, vision spec §6) — a debounce. A
+	 * bot walking along the cone's edge crosses it several times a second, and
+	 * without this it strobes: the eye reads that as a rendering fault, not as
+	 * "he is at the edge of what I can see". 0.35 s is long enough to swallow the
+	 * flicker and short enough that a bot who genuinely leaves is gone before the
+	 * player could act on the stale silhouette.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Vision")
+	float VisionMemorySeconds = 0.35f;
+
+	/**
+	 * How often the server re-decides who is visible.
+	 *
+	 * One trace per living enemy per update, and the update is throttled rather
+	 * than run per frame because the answer cannot change meaningfully in 16 ms:
+	 * a pawn moves 7 uu in that time at full run. 0.05 s is 20 Hz, which against
+	 * the raid's 3-5 enemy budget is at most 100 line traces a second on the
+	 * whole game — an order of magnitude under what the AI controllers already
+	 * spend on LineOfSightTo and steering.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Vision")
+	float VisionUpdateIntervalSeconds = 0.05f;
 
 	/**
 	 * How far an enemy may open fire, in unreal units. Its own setting since the
