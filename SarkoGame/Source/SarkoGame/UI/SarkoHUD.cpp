@@ -1247,7 +1247,7 @@ const FString& ASarkoHUD::ZoneNameFor(int32 ZoneIndex)
 		bZoneNamesCached = true;
 		FSarkoMapDefinition Definition;
 		FString Error;
-		if (SarkoMap::LoadDefinitionFromDisk(GetDefault<USarkoRaidSettings>()->MapId.ToString(), Definition, Error))
+		if (SarkoMap::LoadDefinitionFromDisk(GetDefault<USarkoRaidSettings>()->MapId, Definition, Error))
 		{
 			CachedZoneNames.Reserve(Definition.Extractions.Num());
 			CachedZoneOpensAfter.Reserve(Definition.Extractions.Num());

@@ -75,7 +75,7 @@ void ASarkoRaidGameState::BuildAndSpawnLayout()
 	// setting — rather than receiving geometry by replication.
 	FSarkoMapDefinition Definition;
 	FString Error;
-	if (!SarkoMap::LoadDefinitionFromDisk(Settings->MapId.ToString(), Definition, Error))
+	if (!SarkoMap::LoadDefinitionFromDisk(Settings->MapId, Definition, Error))
 	{
 		UE_LOG(LogTemp, Error, TEXT("SarkoRaidGameState: %s"), *Error);
 	}

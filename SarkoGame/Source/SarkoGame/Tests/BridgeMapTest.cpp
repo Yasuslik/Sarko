@@ -133,9 +133,9 @@ bool FSarkoBridgeMapIsValid::RunTest(const FString& Parameters)
 		FSarkoMapDefinition Configured;
 		FString ConfiguredError;
 		const bool bConfiguredLoaded = SarkoMap::LoadDefinitionFromDisk(
-			Settings->MapId.ToString(), Configured, ConfiguredError);
+			Settings->MapId, Configured, ConfiguredError);
 		TestTrue(FString::Printf(TEXT("the configured map '%s' exists on disk: %s"),
-			*Settings->MapId.ToString(), *ConfiguredError), bConfiguredLoaded);
+			*Settings->MapId, *ConfiguredError), bConfiguredLoaded);
 		if (bConfiguredLoaded)
 		{
 			TestEqual(TEXT("MapExtent agrees with the map file's extentUU"),

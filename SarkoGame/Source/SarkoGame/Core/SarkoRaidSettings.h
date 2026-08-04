@@ -32,7 +32,14 @@ public:
 
 	/** Which file under Data/Maps to load. */
 	UPROPERTY(EditAnywhere, config, Category = "Map")
-	FName MapId = TEXT("bridge");
+	// FString, not FName, and the reason is a device-only bug that cost an
+	// afternoon: FName folds case, so MapId.ToString() came back as "Bridge"
+	// once anything registered that spelling, and the loader asked the OS for
+	// Data/Maps/Bridge.json. macOS is case-insensitive and answered; iOS is not
+	// and did not, so the map silently failed to load, the world was never
+	// built, and the pawn fell out of an empty level. A file name must survive
+	// round-tripping exactly as authored.
+	FString MapId = TEXT("bridge");
 
 	/**
 	 * How close the local pawn has to get to a tree before that tree's canopy

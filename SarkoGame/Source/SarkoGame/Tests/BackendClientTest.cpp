@@ -175,7 +175,10 @@ bool FSarkoBackendSettingsAreShippable::RunTest(const FString& Parameters)
 	// map_locked. It stays a separate setting from MapId so the local data-file
 	// name and the wire id can diverge again without a code change.
 	TestEqual(TEXT("the wire map id is the tier-none map"), Settings.BackendMapId, FString(TEXT("bridge")));
-	TestEqual(TEXT("the local data file is still bridge"), Settings.MapId, FName(TEXT("bridge")));
+	// FString and case-sensitive on purpose: MapId names a file, and iOS's
+	// filesystem is case-sensitive where macOS's is not. This assertion is what
+	// catches a capital letter creeping back in.
+	TestEqual(TEXT("the local data file is still bridge"), Settings.MapId, FString(TEXT("bridge")));
 
 	// The grace margin exists so the client's clock ends before the server's
 	// deadline: RAID_TTL is 20m and GRACE_BUFFER 2m on the deployed service, and

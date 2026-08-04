@@ -95,7 +95,7 @@ void ASarkoRaidGameMode::InitGame(const FString& MapName, const FString& Options
 	// both exist.
 	FSarkoMapDefinition Definition;
 	FString Error;
-	if (SarkoMap::LoadDefinitionFromDisk(GetDefault<USarkoRaidSettings>()->MapId.ToString(), Definition, Error))
+	if (SarkoMap::LoadDefinitionFromDisk(GetDefault<USarkoRaidSettings>()->MapId, Definition, Error))
 	{
 		CachedDefinition = Definition;
 		CachedLayout = SarkoMap::ToLayout(Definition);
