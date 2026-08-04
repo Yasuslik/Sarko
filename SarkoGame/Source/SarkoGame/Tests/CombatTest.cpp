@@ -581,21 +581,34 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSarkoHoldTheAimStickToFire::RunTest(const FString& Parameters)
 {
-	// Spec §4.2: hold past the dead zone and it keeps firing; a quick flick that
-	// never crosses the dead zone still fires once on release.
-	const float DeadZone = 0.35f;
+	// Spec §4.2: hold past the threshold and it keeps firing. Holding SHORT of it
+	// aims and fires nothing — and that half of the sentence is new. Lifting the
+	// thumb fires nothing either, at any deflection; see
+	// Sarko.Input.ReleasingTheAimStickNeverFires for why the flick's shot went.
+	//
+	// The threshold is read from the settings rather than written here, so a test
+	// against a literal cannot go on passing while the shipped rule moves. It is
+	// 0.70; it was 0.35 until the first phone playtest.
+	const float DeadZone = GetDefault<USarkoRaidSettings>()->AimFireDeadZone;
 	TestFalse(TEXT("a resting thumb does not fire"),
 		SarkoInput::ShouldFireWhileHeld(FVector2D::ZeroVector, DeadZone));
-	TestFalse(TEXT("a re-grip inside the dead zone aims but does not fire"),
+	TestFalse(TEXT("a re-grip does not fire"),
 		SarkoInput::ShouldFireWhileHeld(FVector2D(0.2f, 0.f), DeadZone));
-	TestTrue(TEXT("past the dead zone it fires"),
+	// THE ONE THAT CHANGED. 0.4 of the travel used to be a burst; it is now the
+	// middle of the aim band, and the difference is an eight-round magazine.
+	TestFalse(TEXT("a deflection that only means 'look over there' does not fire"),
 		SarkoInput::ShouldFireWhileHeld(FVector2D(0.4f, 0.f), DeadZone));
+	TestFalse(TEXT("...nor does one just short of the ring"),
+		SarkoInput::ShouldFireWhileHeld(FVector2D(0.69f, 0.f), DeadZone));
+	TestTrue(TEXT("past the threshold it fires"),
+		SarkoInput::ShouldFireWhileHeld(FVector2D(0.8f, 0.f), DeadZone));
 	TestTrue(TEXT("full deflection fires"),
 		SarkoInput::ShouldFireWhileHeld(FVector2D(0.f, -1.f), DeadZone));
 
-	// The firing threshold must be HIGHER than the movement dead zone: an
-	// accidental small deflection while re-gripping should aim, never shoot.
-	TestTrue(TEXT("the fire dead zone is above the move dead zone"),
+	// The firing threshold must be HIGHER than the movement dead zone, and by
+	// enough to leave a band you can hold: an accidental small deflection while
+	// re-gripping should aim, and so should a deliberate large one.
+	TestTrue(TEXT("the fire threshold is above the move dead zone"),
 		GetDefault<USarkoRaidSettings>()->AimFireDeadZone
 			> GetDefault<USarkoRaidSettings>()->MoveStickDeadZone);
 	return true;

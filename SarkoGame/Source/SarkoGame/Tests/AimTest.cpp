@@ -167,11 +167,14 @@ bool FSarkoStickRadiusIsTheSameSizeOnEveryScreen::RunTest(const FString& Paramet
 			RadiusPx / Scale >= 44.f);
 
 		// The fire threshold and the walk/run boundary are fractions of it, so
-		// they inherit the fix. 0.35 of 52 pt is 18 pt — a deliberate push, where
-		// 11.6 pt was inside a thumb's own contact patch.
+		// they inherit the fix. 0.70 of 52 pt is 36 pt — past halfway out, a
+		// distance a thumb has to mean to travel. It read 0.35 here (18 pt) until
+		// the first phone playtest, where 18 pt turned out to be the ordinary
+		// sweep of a thumb that was only trying to turn, and the magazine went
+		// into the scenery.
 		const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
-		TestTrue(*FString::Printf(TEXT("%s: the fire threshold is a real push"), *Where),
-			(RadiusPx * Settings.AimFireDeadZone) / Scale >= 15.f);
+		TestTrue(*FString::Printf(TEXT("%s: the fire threshold is a deliberate push"), *Where),
+			(RadiusPx * Settings.AimFireDeadZone) / Scale >= 30.f);
 		TestTrue(*FString::Printf(TEXT("%s: the quiet-walk band is a holdable annulus"), *Where),
 			(RadiusPx * (Settings.NoiseRunSpeedFraction - Settings.MoveStickDeadZone)) / Scale >= 25.f);
 	}
@@ -221,43 +224,164 @@ bool FSarkoQuietRingSitsOnTheNoiseBoundary::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FSarkoADirectionlessReleaseDoesNotFire,
-	"Sarko.Input.ADirectionlessReleaseDoesNotFire",
+	FSarkoReleasingTheAimStickNeverFires,
+	"Sarko.Input.ReleasingTheAimStickNeverFires",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FSarkoADirectionlessReleaseDoesNotFire::RunTest(const FString& Parameters)
+bool FSarkoReleasingTheAimStickNeverFires::RunTest(const FString& Parameters)
 {
-	const float DeadZone = GetDefault<USarkoRaidSettings>()->MoveStickDeadZone;
+	// This test used to be Sarko.Input.ADirectionlessReleaseDoesNotFire, and it
+	// pinned SarkoInput::ShouldFireOnRelease: lifting the thumb fired one round if
+	// the hold had gone anywhere past the move dead zone. That function is gone,
+	// and the two bugs it defended against are now unreachable rather than merely
+	// handled — so the same three gestures are asked of the rule that replaced it,
+	// SarkoInput::AimZoneFor, and the answer for every one of them is the same.
+	//
+	// WHY THE RELEASE STOPPED FIRING. The flick was a fair trade at a 0.35 fire
+	// threshold: its band was 8 pt to 18 pt of a 52 pt stick, narrow enough that
+	// you only landed in it deliberately. At 0.70 that band is 8 pt to 36 pt — the
+	// whole AIM zone, where every considered turn-and-look now ends. "Release
+	// fires" would have meant every aim ending in a gunshot, which is the phone
+	// playtest's complaint moved one gesture to the left.
+	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+	const float Move = Settings.MoveStickDeadZone;
+	const float Fire = Settings.AimFireDeadZone;
 
-	// THE BUG. A zero-deflection tap on the right half used to fire a round —
-	// and along a STALE ray, because ASarkoCharacter::SetAimIntent leaves
-	// AimDirection alone when the stick is centred. A stray touch, a re-grip or a
-	// thumb steadying the phone was a gunshot, and a gunshot is the loudest event
-	// this game models: 2600 uu against a 450 uu walk.
-	TestFalse(TEXT("a touch that never moved does not fire"),
-		SarkoInput::ShouldFireOnRelease(FVector2D::ZeroVector, DeadZone));
+	using ESarkoAimZone = SarkoInput::ESarkoAimZone;
+	const auto Zone = [Move, Fire](FVector2D Value)
+	{
+		return SarkoInput::AimZoneFor(Value, Move, Fire);
+	};
 
-	// THE CANCEL. Dragged out, then back onto the anchor, then released: no
-	// shot. The genre's abort gesture, and the only one this scheme has.
-	TestFalse(TEXT("dragging back to the anchor cancels the shot"),
-		SarkoInput::ShouldFireOnRelease(FVector2D(0.05f, 0.05f), DeadZone));
-	TestFalse(TEXT("just inside the dead zone is still a cancel"),
-		SarkoInput::ShouldFireOnRelease(FVector2D(DeadZone * 0.99f, 0.f), DeadZone));
+	// THE ORIGINAL BUG, still pinned. A zero-deflection tap on the right half once
+	// fired a round along a STALE ray, because ASarkoCharacter::SetAimIntent
+	// leaves AimDirection alone when the stick is centred. A stray touch, a
+	// re-grip or a thumb steadying the phone was a gunshot — the loudest event
+	// this game models, 2600 uu against a 450 uu walk. It is not in the Fire zone,
+	// and nothing but the Fire zone fires.
+	TestTrue(TEXT("a touch that never moved is at rest, not firing"),
+		Zone(FVector2D::ZeroVector) == ESarkoAimZone::Rest);
 
-	// AND THE FLICK STILL FIRES. A real tap — past the move dead zone, short of
-	// the 0.35 fire threshold — is the aimed single shot, and it must survive
-	// both rules above or the scheme loses its only precise attack.
-	TestTrue(TEXT("a flick with a direction still fires"),
-		SarkoInput::ShouldFireOnRelease(FVector2D(0.25f, 0.f), DeadZone));
-	TestTrue(TEXT("a full-deflection release fires"),
-		SarkoInput::ShouldFireOnRelease(FVector2D(0.f, -1.f), DeadZone));
+	// THE CANCEL, still pinned. Dragged out, then back onto the anchor, then
+	// released: no shot. It is now the same statement as the one above — the
+	// thumb is back at rest, and rest fires nothing.
+	TestTrue(TEXT("dragging back to the anchor lands back at rest"),
+		Zone(FVector2D(0.05f, 0.05f)) == ESarkoAimZone::Rest);
+	TestTrue(TEXT("just inside the move dead zone is still rest"),
+		Zone(FVector2D(Move * 0.99f, 0.f)) == ESarkoAimZone::Rest);
 
-	// The cancel band is the MOVE dead zone and not the fire one, or the tap
-	// gesture would have nowhere to live: everything below 0.35 would cancel and
-	// everything above it would already have fired on the hold.
-	TestTrue(TEXT("the cancel band is below the fire threshold"),
-		GetDefault<USarkoRaidSettings>()->MoveStickDeadZone
-			< GetDefault<USarkoRaidSettings>()->AimFireDeadZone);
+	// AND THE FLICK NO LONGER FIRES — the honest change. A quick drag to a quarter
+	// or a half of the travel is AIMING. The pawn turns, the cone follows, the
+	// magazine is untouched, and lifting the thumb there does nothing at all.
+	TestTrue(TEXT("a flick to a quarter of the travel aims and does not fire"),
+		Zone(FVector2D(0.25f, 0.f)) == ESarkoAimZone::Aim);
+	TestTrue(TEXT("...and so does a much larger one, right up to the ring"),
+		Zone(FVector2D(0.f, -(Fire - 0.01f))) == ESarkoAimZone::Aim);
+
+	// THE SINGLE AIMED SHOT SURVIVES, in the one place the player can see. Push
+	// past the ring and lift: the crossing frame fires once and the next round is
+	// MinFireIntervalSeconds away, so a push-and-lift spends exactly one.
+	TestTrue(TEXT("a push past the ring is the deliberate single shot"),
+		Zone(FVector2D(0.f, -1.f)) == ESarkoAimZone::Fire);
+	TestTrue(TEXT("one push cannot spend two rounds inside the fire interval"),
+		Settings.MinFireIntervalSeconds > 0.f);
+
+	// The zones have to nest in this order or one of them has no width, and the
+	// one that would vanish is the AIM zone this whole change exists to create.
+	TestTrue(TEXT("rest, then aim, then fire — in that order and all non-empty"),
+		Move > 0.f && Move < Fire && Fire < 1.f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoTheAimStickHasTwoZones,
+	"Sarko.Input.TheAimStickHasTwoZones",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoTheAimStickHasTwoZones::RunTest(const FString& Parameters)
+{
+	// THE FINDING THIS EXISTS FOR. The first time this game was played on a real
+	// iPhone the owner emptied an eight-round magazine into nothing on his way to
+	// a target: "стрельба сделана плохо, я выстрелял сразу все патроны в никуда —
+	// возможно нужно стик прицела разделить на 2 части, типа когда я довожу до
+	// 70% то он стреляет". He was right, and 0.70 is his number.
+	//
+	// The pure rule, at the boundaries, independent of any screen.
+	const USarkoRaidSettings& Settings = *GetDefault<USarkoRaidSettings>();
+	using ESarkoAimZone = SarkoInput::ESarkoAimZone;
+
+	// THE SHIPPED THRESHOLD. It was 0.35, which is why aiming without shooting was
+	// not a thing this control scheme offered.
+	TestTrue(TEXT("the fire boundary ships at 0.70"),
+		FMath::IsNearlyEqual(Settings.AimFireDeadZone, 0.70f, 0.001f));
+
+	// EXACT BOUNDARIES, with the settings' own numbers rather than literals, so
+	// this keeps testing the rule if the tuning moves.
+	const float Move = Settings.MoveStickDeadZone;
+	const float Fire = Settings.AimFireDeadZone;
+
+	TestTrue(TEXT("dead centre is rest"),
+		SarkoInput::AimZoneFor(FVector2D::ZeroVector, Move, Fire) == ESarkoAimZone::Rest);
+	TestTrue(TEXT("exactly on the move dead zone, aiming begins"),
+		SarkoInput::AimZoneFor(FVector2D(Move, 0.f), Move, Fire) == ESarkoAimZone::Aim);
+	TestTrue(TEXT("a hair short of the fire ring is still only aiming"),
+		SarkoInput::AimZoneFor(FVector2D(Fire * 0.999f, 0.f), Move, Fire) == ESarkoAimZone::Aim);
+	TestTrue(TEXT("exactly on the fire ring, it fires"),
+		SarkoInput::AimZoneFor(FVector2D(Fire, 0.f), Move, Fire) == ESarkoAimZone::Fire);
+	TestTrue(TEXT("full deflection fires"),
+		SarkoInput::AimZoneFor(FVector2D(0.f, -1.f), Move, Fire) == ESarkoAimZone::Fire);
+
+	// The zone is a function of the DISTANCE and not of either axis, or a diagonal
+	// thumb would be judged by a different rule than a vertical one.
+	const float Diagonal = Fire / FMath::Sqrt(2.f);
+	TestTrue(TEXT("a diagonal at the ring's distance fires"),
+		SarkoInput::AimZoneFor(FVector2D(Diagonal, Diagonal), Move, Fire) == ESarkoAimZone::Fire);
+	TestTrue(TEXT("...and one just inside it does not"),
+		SarkoInput::AimZoneFor(FVector2D(Diagonal * 0.99f, Diagonal * 0.99f), Move, Fire)
+			== ESarkoAimZone::Aim);
+
+	// A ZERO SETTING MUST NOT MAKE A RESTING THUMB SHOOT. Both bounds are floored
+	// at KINDA_SMALL_NUMBER, so the worst a mistyped .ini can do is remove the aim
+	// band — not fire a weapon nobody touched.
+	TestTrue(TEXT("a zero threshold still does not fire an untouched stick"),
+		SarkoInput::AimZoneFor(FVector2D::ZeroVector, 0.f, 0.f) == ESarkoAimZone::Rest);
+
+	// ShouldFireWhileHeld is the same rule and not a second one — it is what the
+	// tick asks, and it must agree with the classifier the ring is drawn from.
+	TestEqual(TEXT("the boolean the tick asks agrees with the zone, inside"),
+		SarkoInput::ShouldFireWhileHeld(FVector2D(Fire * 0.99f, 0.f), Fire), false);
+	TestEqual(TEXT("...and outside"),
+		SarkoInput::ShouldFireWhileHeld(FVector2D(Fire, 0.f), Fire), true);
+
+	// AND THE RING IS THE RULE, DRAWN. ASarkoHUD::DrawStick puts the aim stick's
+	// inner ring at exactly this fraction of the stick's own resolved radius, the
+	// same way the move stick's sits on NoiseRunSpeedFraction. Neither number is
+	// written in the HUD. What the geometry has to deliver is a boundary a thumb
+	// can find and then STOP at, on every screen.
+	const FVector2D Screens[] = { FVector2D(2556.f, 1179.f), FVector2D(1560.f, 720.f) };
+	for (const FVector2D& Screen : Screens)
+	{
+		const float Scale = SarkoUI::PointScaleForViewport(Screen);
+		const float RadiusPx = SarkoInput::StickRadiusPxForViewport(Screen);
+		const float FireRingPt = (RadiusPx * Fire) / Scale;
+		const FString Where = FString::Printf(TEXT("at %.0fx%.0f"), Screen.X, Screen.Y);
+
+		// 0.70 of 52 pt = 36.4 pt, the same distance on every screen — which is
+		// what makes it a place a thumb can learn rather than a place it discovers.
+		TestTrue(*FString::Printf(TEXT("%s: the fire ring is 36.4 pt out"), *Where),
+			FMath::IsNearlyEqual(FireRingPt, SarkoInput::StickRadiusPt * Fire, 0.01f));
+		TestTrue(*FString::Printf(TEXT("%s: it is drawn strictly inside the stick's ring"), *Where),
+			FireRingPt < RadiusPx / Scale);
+
+		// THE AIM ZONE IS A PLACE YOU CAN REST. 8 pt to 36 pt is a 28 pt band —
+		// wider than a thumb's own contact patch, which is what "aiming without
+		// shooting" needs in order to be a pose rather than a balancing act. At the
+		// old 0.35 it was 8 pt to 18 pt: a 10 pt band, narrower than the thumb
+		// holding it, and that is the bug in one number.
+		const float AimBandPt = FireRingPt - (RadiusPx * Move) / Scale;
+		TestTrue(*FString::Printf(TEXT("%s: the aim band is %.1f pt, wide enough to hold"), *Where, AimBandPt),
+			AimBandPt >= 25.f);
+	}
 	return true;
 }
 

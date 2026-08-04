@@ -95,21 +95,35 @@ private:
 
 	/**
 	 * A floating stick: the ring at the thumb's anchor, the dot at its current
-	 * position, and — on the MOVE stick only — a second, dimmer ring at the
-	 * walk/run boundary.
+	 * position, and an INNER RING at the one fraction of the travel where that
+	 * stick's behaviour changes.
 	 *
-	 * That second ring is the noise model's only interface. The server splits
-	 * quiet from audible at USarkoRaidSettings::NoiseRunSpeedFraction of the
-	 * stick's deflection (450 uu heard against 1100 uu heard), which makes
-	 * "choose to be quiet" the most interesting verb in the game — and until now
-	 * the boundary existed nowhere but the diagnostic log. The fraction is READ
-	 * FROM THE SETTINGS and never written here, so the drawn ring cannot drift
-	 * from the rule the server applies.
+	 * BOTH sticks have such a fraction, and drawing it is the only interface
+	 * either rule has:
 	 *
-	 * Both radii come off the stick itself (FSarkoTouchStick::RadiusPx, resolved
+	 *   move — USarkoRaidSettings::NoiseRunSpeedFraction, the walk/run boundary
+	 *          the server splits quiet from audible at (450 uu heard against
+	 *          1100 uu). "Choose to be quiet" is the most interesting verb in the
+	 *          game and used to exist nowhere but the diagnostic log.
+	 *   aim  — USarkoRaidSettings::AimFireDeadZone, where aiming becomes SHOOTING.
+	 *          Added after the first phone playtest, where a player with no way to
+	 *          see that line crossed it on the way to a target and spent the whole
+	 *          magazine. The aim stick used to pass bDrawQuietRing=false, on the
+	 *          reasoning that a second ring would teach the wrong rule twice; the
+	 *          reasoning was right and the conclusion was wrong — it needed its
+	 *          OWN boundary drawn, not the move stick's.
+	 *
+	 * BoundaryFraction is read from the settings by the caller and never written
+	 * here, so neither drawn ring can drift from the rule it pictures; a fraction
+	 * outside (0, 1) draws nothing. BoundaryColour is passed in already resolved
+	 * because the two boundaries do not mean the same thing and must not look as
+	 * though they do.
+	 *
+	 * Every radius comes off the stick itself (FSarkoTouchStick::RadiusPx, resolved
 	 * from points at anchor), so the picture and the rule are one number.
 	 */
-	void DrawStick(const struct FSarkoTouchStick& Stick, const FLinearColor& Colour, bool bDrawQuietRing);
+	void DrawStick(const struct FSarkoTouchStick& Stick, const FLinearColor& Colour,
+		float BoundaryFraction, const FLinearColor& BoundaryColour);
 
 	/** One circle, in segments. Both stick rings and nothing else — a second
 	 *  hand-rolled loop is a second chance to draw a ring the input rule does not

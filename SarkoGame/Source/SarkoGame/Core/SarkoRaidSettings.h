@@ -129,17 +129,41 @@ public:
 	float MinFireIntervalSeconds = 0.15f;
 
 	/**
-	 * How far the aim thumb must be deflected before the weapon fires (spec §4.2:
-	 * "Hold the aim stick past the dead zone to fire").
+	 * WHERE THE AIM STICK'S TWO ZONES MEET — the fraction of full deflection past
+	 * which holding the stick fires (spec §4.2).
 	 *
-	 * Higher than MoveStickDeadZone on purpose, and Sarko.Input.HoldTheAimStickToFire
-	 * asserts it: a movement dead zone only has to reject a resting thumb's drift,
-	 * but a FIRING one has to reject a deliberate small deflection — re-gripping,
-	 * or turning to face a noise — because a shot the player did not mean to take
-	 * gives away their position and empties a magazine they were saving.
+	 * Inside it the stick AIMS and does nothing else: the pawn turns, the aim cone
+	 * follows, no round leaves the barrel. Past it the weapon fires, and keeps
+	 * firing at MinFireIntervalSeconds while the thumb stays out there. Those are
+	 * the only two things the aim stick does, and SarkoInput::AimZoneFor is the one
+	 * place that decides which of them is happening.
+	 *
+	 * **0.70, and it was 0.35.** The first time this game was played on a phone the
+	 * owner emptied an eight-round magazine into nothing on his way to a target, and
+	 * the number is why: 0.35 of a 52 pt stick is 18 pt of thumb travel, which is
+	 * roughly the sweep of a thumb that is only trying to TURN. Aiming without
+	 * shooting was not a thing the control scheme offered, and with a manual-only
+	 * reload one careless drag cost the whole magazine — and, because a shot is the
+	 * loudest event this game models (2600 uu against a 450 uu walk), the player's
+	 * position as well. 0.70 is his own number, and it puts the boundary at 36 pt:
+	 * past halfway out, a place a thumb has to mean to reach, and far enough from
+	 * the dead zone that the aiming band (8 pt to 36 pt) is somewhere you can rest.
+	 *
+	 * It is drawn. ASarkoHUD::DrawStick puts a ring on this exact fraction of the
+	 * aim stick's radius, the same way the move stick's dimmer ring sits on
+	 * NoiseRunSpeedFraction — read from here, never written in the HUD, so the
+	 * boundary the player sees cannot drift from the one the input applies.
+	 *
+	 * Still higher than MoveStickDeadZone, and Sarko.Input.HoldTheAimStickToFire
+	 * still asserts it: a movement dead zone only has to reject a resting thumb's
+	 * drift, a FIRING one has to reject every deflection the player meant as aim.
+	 *
+	 * (It equals NoiseRunSpeedFraction today by coincidence and not by
+	 * construction. They are two settings about two sticks; moving one must not
+	 * move the other.)
 	 */
 	UPROPERTY(EditAnywhere, config, Category = "Combat")
-	float AimFireDeadZone = 0.35f;
+	float AimFireDeadZone = 0.70f;
 
 	/**
 	 * The pocket grid, in cells (spec §1.2). 2x2 — always present, never lost
