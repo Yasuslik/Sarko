@@ -66,6 +66,21 @@ public:
 	 */
 	void ApplyArchetypeAndPost(FName ArchetypeId, const FVector& PostPos, float LeashUU);
 
+	/**
+	 * SERVER ONLY: world seconds this bot was last inside a player's vision cone
+	 * with line of sight (vision spec §3). Negative until it has been.
+	 *
+	 * Owned by ASarkoRaidGameMode::UpdateEnemyVisibility and read by nothing
+	 * else. It lives on the pawn rather than in a map on the game mode because it
+	 * is one float per bot with exactly the bot's own lifetime — a map keyed on
+	 * weak pointers would need pruning, and pruning a container on a tick path is
+	 * the sort of bookkeeping that outlives the reason for it.
+	 *
+	 * NOT REPLICATED and never to be: "when was I last seen" is a fact about the
+	 * player's screen, and a client that knew it would know it was hidden.
+	 */
+	float LastSeenByPlayerSeconds = -1000.f;
+
 protected:
 	void HandleDeath(AActor* Killer);
 

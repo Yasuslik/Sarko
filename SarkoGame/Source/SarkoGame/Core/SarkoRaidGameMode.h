@@ -294,6 +294,40 @@ private:
 	/** The nearest living player pawn, or null. The encounter system measures against this. */
 	class APawn* FindNearestLivingPlayerPawn() const;
 
+	/**
+	 * WHO THE PLAYER CAN SEE — the enemy half of limited vision (vision spec §3),
+	 * decided here and nowhere else.
+	 *
+	 * An enemy is drawn when it is inside the player's cone AND in line of sight.
+	 * Both halves are evaluated on the SERVER, from the server's own copies of
+	 * both pawns, and the answer is pushed out as AActor::bHidden — which is a
+	 * replicated property, so a remote client receives "you may not draw this"
+	 * rather than the position of a body it is supposed to be surprised by. The
+	 * client draws; it never decides. A client that draws an enemy it should not
+	 * see is a cheat surface even in the single-player raid this game ships, and
+	 * this project already keeps loot rolls, damage and outcomes on the authority
+	 * for exactly the same reason.
+	 *
+	 * Throttled to USarkoRaidSettings::VisionUpdateIntervalSeconds rather than run
+	 * per frame: one trace per living enemy per update against a 3-5 enemy budget
+	 * is the whole cost, and the answer cannot change meaningfully inside 16 ms.
+	 *
+	 * ONE PLAYER. The visibility of an actor is a per-actor fact, not a
+	 * per-viewer one, so with two players in a raid the first one's cone would
+	 * decide what the second one sees. The shipped raid is standalone and
+	 * single-player; a co-op raid needs per-connection relevancy
+	 * (AActor::IsNetRelevantFor, or a per-viewer replication condition) and that
+	 * is a networking change, not a drawing one. The refusal is explicit and
+	 * logged rather than silent — see the implementation.
+	 */
+	void UpdateEnemyVisibility(float DeltaSeconds);
+
+	/** Seconds since the last visibility pass. See UpdateEnemyVisibility. */
+	float VisionUpdateAccumulator = 0.f;
+
+	/** So the multi-player refusal above is said once per raid, not per tick. */
+	bool bVisionMultiPlayerWarned = false;
+
 	/** Per-encounter server state, index-aligned with CachedDefinition.Encounters. */
 	TArray<SarkoEncounter::FEncounterRuntime> EncounterRuntimes;
 
