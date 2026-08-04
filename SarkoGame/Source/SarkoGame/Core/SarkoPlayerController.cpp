@@ -86,37 +86,43 @@ FVector2D SarkoInput::AimStickHome(FBox2D Frame, float PointScale)
 		Frame.Max.Y - StickHomeBottomPt * PointScale);
 }
 
-FBox2D SarkoInput::ReloadButtonRect(FBox2D Frame, float PointScale)
+FVector2D SarkoInput::ThumbArcCentre(FBox2D Frame, float PointScale, float DegreesInwardFromUp)
 {
 	const FVector2D Home = AimStickHome(Frame, PointScale);
-	const float Radius = ReloadButtonDiameterPt * 0.5f * PointScale;
+	const float Radians = FMath::DegreesToRadians(DegreesInwardFromUp);
+	const float Radius = ThumbArcRadiusPt * PointScale;
 
-	// Straight up from the home, by exactly: the home ring, the standard gap, and
-	// this button's own radius. Written as that sum rather than as a single offset
-	// so the clearance between the drawn ring and the drawn button IS
-	// ThumbButtonGapPt — the number, not a value someone once measured and typed.
-	const float CentreY = Home.Y
-		- (StickHomeRingPt + ThumbButtonGapPt + ReloadButtonDiameterPt * 0.5f) * PointScale;
+	// Canvas space: X grows right and Y grows DOWN. "Up" is therefore -Y, and
+	// "inward" for the right thumb is -X — the arc swings from above the home
+	// toward the middle of the screen, which is the only quadrant with room in it
+	// (the home sits 90 pt from the side edge and 60 pt from the bottom).
+	//
+	// Sine and cosine of one angle rather than a table of two hand-placed offsets:
+	// the two buttons then provably share a radius, which is the whole claim the
+	// arc makes to the thumb.
+	return FVector2D(Home.X - FMath::Sin(Radians) * Radius,
+		Home.Y - FMath::Cos(Radians) * Radius);
+}
 
-	return FBox2D(FVector2D(Home.X - Radius, CentreY - Radius),
-		FVector2D(Home.X + Radius, CentreY + Radius));
+FBox2D SarkoInput::ThumbArcButtonRect(FBox2D Frame, float PointScale, float DegreesInwardFromUp, float DiameterPt)
+{
+	const FVector2D Centre = ThumbArcCentre(Frame, PointScale, DegreesInwardFromUp);
+	const float Radius = DiameterPt * 0.5f * PointScale;
+	return FBox2D(Centre - FVector2D(Radius, Radius), Centre + FVector2D(Radius, Radius));
+}
+
+FBox2D SarkoInput::ReloadButtonRect(FBox2D Frame, float PointScale)
+{
+	return ThumbArcButtonRect(Frame, PointScale, ReloadButtonArcDegrees, ThumbButtonDiameterPt);
 }
 
 FBox2D SarkoInput::InteractButtonRect(FBox2D Frame, float PointScale)
 {
-	const float HalfWidth = InteractButtonWidthPt * 0.5f * PointScale;
-	const float Height = InteractButtonHeightPt * PointScale;
-
-	// Measured off the reload button rather than off the frame, so the 12 pt gap
-	// is the gap and cannot drift if either size changes; and centred on the same
-	// column, because that column is the aim thumb's line now rather than the
-	// frame's right edge.
-	const FBox2D Reload = ReloadButtonRect(Frame, PointScale);
-	const float CentreX = Reload.GetCenter().X;
-	const float Bottom = Reload.Min.Y - ThumbButtonGapPt * PointScale;
-
-	return FBox2D(FVector2D(CentreX - HalfWidth, Bottom - Height),
-		FVector2D(CentreX + HalfWidth, Bottom));
+	// The SAME arc and the SAME diameter as the reload button, at its own angle,
+	// and taking no game state at all. That is the reserved slot: this rect is the
+	// same rect on the frame where nothing is in reach and the button is drawn
+	// blank, so nothing about the reload button can depend on whether it is lit.
+	return ThumbArcButtonRect(Frame, PointScale, InteractButtonArcDegrees, ThumbButtonDiameterPt);
 }
 
 SarkoInput::ESarkoAimZone SarkoInput::AimZoneFor(FVector2D AimValue, float MoveDeadZone, float FireThreshold)
@@ -1303,6 +1309,16 @@ void ASarkoPlayerController::SarkoDebugAmmo(int32 Rounds)
 	Pawn->WeaponComponent->ResetForTest(FMath::Max(0, Rounds));
 	UE_LOG(LogTemp, Display, TEXT("SarkoDebugAmmo: magazine now %d"),
 		Pawn->WeaponComponent->GetAmmoInMagazine());
+#endif
+}
+
+void ASarkoPlayerController::SarkoDebugInteract(int32 Action)
+{
+#if !UE_BUILD_SHIPPING
+	// Drawing only. The rect, the hit test and what a press does are all untouched,
+	// so a frame taken under this still shows the button where it really is.
+	DebugInteractAction = Action;
+	UE_LOG(LogTemp, Display, TEXT("SarkoDebugInteract: interact button forced to face %d"), Action);
 #endif
 }
 

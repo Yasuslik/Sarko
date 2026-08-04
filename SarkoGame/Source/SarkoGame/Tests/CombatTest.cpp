@@ -542,48 +542,145 @@ bool FSarkoThumbControlsDoNotOverlap::RunTest(const FString& Parameters)
 		// separation, so this also rejects two buttons flush against each other.
 		TestFalse(*FString::Printf(TEXT("%s: they do not overlap"), *Where),
 			Reload.Intersect(Interact));
-		TestTrue(*FString::Printf(TEXT("%s: interact is ABOVE reload, in the same column"), *Where),
-			Interact.Max.Y < Reload.Min.Y);
-		// They used to be right-aligned to the frame's edge, which is a weaker
-		// statement than it looked: two rects can share a right edge and still sit
-		// over two different thumbs when their widths differ. The column is the aim
-		// thumb's centre line now, and both buttons are centred on it.
-		TestTrue(*FString::Printf(TEXT("%s: both are centred on the same column"), *Where),
-			FMath::IsNearlyEqual(Interact.GetCenter().X, Reload.GetCenter().X, 0.01f));
+		// One gap between them, at least. They no longer share a column — they sit
+		// at two angles on one arc — so the separation is measured as a distance
+		// between the two hit squares rather than as "one is above the other".
+		const float BetweenButtons = FMath::Sqrt(Reload.ComputeSquaredDistanceToPoint(Interact.GetCenter()))
+			- Interact.GetSize().X * 0.5f;
+		TestTrue(*FString::Printf(TEXT("%s: %.0f pt of daylight between the two buttons"), *Where,
+				BetweenButtons / Scale),
+			BetweenButtons / Scale >= SarkoInput::ThumbButtonGapPt);
 
-		// The reload button is ROUND, so its rect is the square the circle is
+		// BOTH buttons are ROUND now, so both rects are the square the circle is
 		// inscribed in. A rect that stopped being square would be a circle drawn
 		// somewhere other than where it is pressed.
 		TestTrue(*FString::Printf(TEXT("%s: the reload rect is square, for a round button"), *Where),
 			FMath::IsNearlyEqual(Reload.GetSize().X, Reload.GetSize().Y, 0.01f));
+		TestTrue(*FString::Printf(TEXT("%s: and so is the interact rect — it is round too now"), *Where),
+			FMath::IsNearlyEqual(Interact.GetSize().X, Interact.GetSize().Y, 0.01f));
+		TestTrue(*FString::Printf(TEXT("%s: one size for both, so one reach to learn"), *Where),
+			FMath::IsNearlyEqual(Interact.GetSize().X, Reload.GetSize().X, 0.01f));
 
 		// Both inside the safe frame, or a notch eats a control.
 		TestTrue(*FString::Printf(TEXT("%s: both are inside the safe frame"), *Where),
 			Safe.IsInside(Reload) && Safe.IsInside(Interact));
 
-		// The thumb arc. Reload is inside the aim thumb's ~45 pt travel, so it is
-		// pressed without the thumb leaving its post; interact is deliberately
-		// OUTSIDE it, so working the stick can never brush it, and still inside a
-		// landscape thumb's full reach. That asymmetry is the design: reload is a
-		// mid-fight reflex, interact is a decision you have already stopped to make.
+		// THE THUMB'S KEEP-OUT, and this is the rule that moved both buttons.
 		//
-		// Measured from the aim stick's HOME, which is the same point the old
-		// RightThumbAnchor named and is now also the origin the two rects are
-		// derived from — so this is no longer two numbers agreeing by luck.
+		// The aim stick floats: the thumb lands somewhere inside the 26 pt home
+		// ring and drives the stick up to 52 pt from wherever it landed, so every
+		// position it can legitimately hold while aiming is inside a 78 pt disc
+		// around the home. Reload used to sit 38 pt out — inside that disc, i.e.
+		// under a thumb at full deflection — which is the half of spec §4.3
+		// ("clear of the stick's own travel") that was false.
+		//
+		// Measured on the HIT SQUARE and not on the drawn circle, because it is the
+		// square that steals a touch from the stick.
 		const FVector2D Anchor = SarkoInput::AimStickHome(Safe, Scale);
 		const float ToReload = FMath::Sqrt(Reload.ComputeSquaredDistanceToPoint(Anchor)) / Scale;
 		const float ToInteract = FMath::Sqrt(Interact.ComputeSquaredDistanceToPoint(Anchor)) / Scale;
-		TestTrue(*FString::Printf(TEXT("%s: reload is %.0f pt from the thumb, inside its arc"), *Where, ToReload),
-			ToReload <= 45.f);
-		TestTrue(*FString::Printf(TEXT("%s: interact is %.0f pt away, outside the stick's arc"), *Where, ToInteract),
-			ToInteract > 45.f);
-		TestTrue(*FString::Printf(TEXT("%s: ...but still reachable"), *Where), ToInteract <= 150.f);
+		const float KeepOut = SarkoInput::ThumbTravelKeepOutPt + SarkoInput::ThumbButtonGapPt;
+		TestTrue(*FString::Printf(TEXT("%s: reload is %.0f pt out, clear of the thumb's travel"), *Where, ToReload),
+			ToReload >= KeepOut);
+		TestTrue(*FString::Printf(TEXT("%s: interact is %.0f pt out, clear of it too"), *Where, ToInteract),
+			ToInteract >= KeepOut);
+		// Still one rotation of the thumb, not a re-grip. The old column already
+		// asked for 114 pt to reach the interact button; neither of these asks more.
+		TestTrue(*FString::Printf(TEXT("%s: ...and both are still reachable"), *Where),
+			ToReload <= 114.f && ToInteract <= 114.f);
 
 		// Neither rect depends on game state — there is nothing to pass. That is
 		// what makes "the interact button appearing must not shift the reload
 		// button" structural rather than a promise.
 		TestEqual(*FString::Printf(TEXT("%s: the reload rect is a pure function of the frame"), *Where),
 			SarkoInput::ReloadButtonRect(Safe, Scale).Min.Y, Reload.Min.Y);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoThumbButtonsSitOnOneArc,
+	"Sarko.Input.ThumbButtonsSitOnOneArc",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoThumbButtonsSitOnOneArc::RunTest(const FString& Parameters)
+{
+	// THE OWNER'S THIRD PLAYTEST: "the action one should be a round button, not a
+	// square — it can all be placed around the aim stick's home." A thumb pivots
+	// about where it rests, so two controls at ONE radius from that rest are the
+	// same reach apart from a rotation; a column is one easy button and one you
+	// stretch for.
+	//
+	// This is the geometric half of that sentence. That the cluster READS as
+	// designed, and that the two buttons are tellable apart at a glance, is a
+	// screenshot and a pair of eyes — the same division this project draws
+	// everywhere around the HUD.
+	const TArray<FVector2D> Viewports = {
+		FVector2D(2556.f, 1179.f),   // iPhone 14/15 Pro landscape
+		FVector2D(1280.f, 720.f),    // a small desktop window
+		FVector2D(1560.f, 720.f),    // a cheap phone at 2x
+	};
+
+	for (const FVector2D& Viewport : Viewports)
+	{
+		const FBox2D Safe = SarkoInput::SafeFrame(Viewport);
+		const float Scale = SarkoUI::PointScaleForViewport(Viewport);
+		const FVector2D Home = SarkoInput::AimStickHome(Safe, Scale);
+		const FBox2D Reload = SarkoInput::ReloadButtonRect(Safe, Scale);
+		const FBox2D Interact = SarkoInput::InteractButtonRect(Safe, Scale);
+		const FString Where = FString::Printf(TEXT("at %.0fx%.0f"), Viewport.X, Viewport.Y);
+
+		// ONE RADIUS. Measured to the centres, because that is what the arc is; the
+		// buttons are the same size, so equal centres mean equal rims too.
+		const float ToReload = FVector2D::Distance(Reload.GetCenter(), Home) / Scale;
+		const float ToInteract = FVector2D::Distance(Interact.GetCenter(), Home) / Scale;
+		TestTrue(*FString::Printf(TEXT("%s: reload is on the arc (%.1f pt)"), *Where, ToReload),
+			FMath::IsNearlyEqual(ToReload, SarkoInput::ThumbArcRadiusPt, 0.05f));
+		TestTrue(*FString::Printf(TEXT("%s: interact is on the SAME arc (%.1f pt)"), *Where, ToInteract),
+			FMath::IsNearlyEqual(ToInteract, SarkoInput::ThumbArcRadiusPt, 0.05f));
+
+		// TWO ANGLES, and each is the one the constant says it is. Canvas Y grows
+		// downward and inward is -X, so this reverses SarkoInput::ThumbArcCentre
+		// rather than restating it.
+		auto DegreesInwardFromUp = [&Home, Scale](const FBox2D& Button)
+		{
+			const FVector2D Offset = (Button.GetCenter() - Home) / Scale;
+			return FMath::RadiansToDegrees(FMath::Atan2(-Offset.X, -Offset.Y));
+		};
+		TestTrue(*FString::Printf(TEXT("%s: reload sits %.1f deg in from straight up"), *Where,
+				DegreesInwardFromUp(Reload)),
+			FMath::IsNearlyEqual(DegreesInwardFromUp(Reload), SarkoInput::ReloadButtonArcDegrees, 0.05f));
+		TestTrue(*FString::Printf(TEXT("%s: interact sits %.1f deg in"), *Where,
+				DegreesInwardFromUp(Interact)),
+			FMath::IsNearlyEqual(DegreesInwardFromUp(Interact), SarkoInput::InteractButtonArcDegrees, 0.05f));
+
+		// The arc is derived from the keep-out and not chosen, and it is sized off
+		// the square's half-DIAGONAL: a corner of a hit square reaches nearer the
+		// home than its edge does at every angle that is not on an axis, and sizing
+		// this off the half-side left the reload square's corner one point inside
+		// the thumb's travel.
+		TestTrue(TEXT("the arc clears the keep-out by a gap, at any angle"),
+			SarkoInput::ThumbArcRadiusPt - SarkoInput::ThumbButtonDiameterPt * 0.5f * UE_SQRT_2
+				>= SarkoInput::ThumbTravelKeepOutPt + SarkoInput::ThumbButtonGapPt - 0.01f);
+
+		// THE RESERVED SLOT. The interact button is contextual — it lights up when a
+		// crate is in reach and goes blank when it is not — and its rect is computed
+		// from the frame alone, so there is no state to pass and nothing that could
+		// make the reload button move under a thumb when it appears. Asserted as
+		// identity across repeated calls, which is the only shape "pure" has here.
+		for (int32 Repeat = 0; Repeat < 3; ++Repeat)
+		{
+			TestTrue(*FString::Printf(TEXT("%s: the interact slot is reserved whether or not it is shown"), *Where),
+				SarkoInput::InteractButtonRect(Safe, Scale).Min.Equals(Interact.Min, 0.001f));
+			TestTrue(*FString::Printf(TEXT("%s: and the reload button never moves for it"), *Where),
+				SarkoInput::ReloadButtonRect(Safe, Scale).Min.Equals(Reload.Min, 0.001f));
+		}
+
+		// Neither button may sit in the LEFT half, which belongs to the move thumb
+		// and to the container panel. The arc swings inward, so this is the bound
+		// the angles are actually spending.
+		TestTrue(*FString::Printf(TEXT("%s: the whole cluster stays in the right half"), *Where),
+			Reload.Min.X > Viewport.X * 0.5f && Interact.Min.X > Viewport.X * 0.5f);
 	}
 	return true;
 }
@@ -647,23 +744,33 @@ bool FSarkoStickHomesArePlacedAndClear::RunTest(const FString& Parameters)
 		TestTrue(*FString::Printf(TEXT("%s: the home mark is at least 44 pt across"), *Where),
 			(Ring * 2.f) / Scale >= 44.f);
 
-		// THE DERIVATION. The reload button has no coordinates of its own: it is the
-		// aim home plus a ring, a gap and a radius, straight up. So it cannot drift
-		// away from the stick it belongs to, and "above the aim stick's default
-		// position" is arithmetic.
+		// THE DERIVATION. Neither button has coordinates of its own: each is the aim
+		// home plus one angle on one arc, and the arc itself is the stick's own
+		// travel plus a gap plus the button's half-diagonal. So they cannot drift
+		// away from the stick they belong to, and "around the aim stick's default
+		// position" is arithmetic rather than a promise.
 		const FBox2D Reload = SarkoInput::ReloadButtonRect(Safe, Scale);
 		const FBox2D Interact = SarkoInput::InteractButtonRect(Safe, Scale);
-		TestTrue(*FString::Printf(TEXT("%s: the reload button is centred on the aim home"), *Where),
-			FMath::IsNearlyEqual(Reload.GetCenter().X, AimHome.X, 0.01f));
-		TestTrue(*FString::Printf(TEXT("%s: and sits above it"), *Where),
+		TestTrue(*FString::Printf(TEXT("%s: the reload button is inward of the aim home"), *Where),
+			Reload.GetCenter().X < AimHome.X);
+		TestTrue(*FString::Printf(TEXT("%s: and its whole square sits above it"), *Where),
 			Reload.Max.Y < AimHome.Y);
+		// The interact button is further round the SAME arc, level with the home
+		// rather than above it — which is what makes the two tellable apart by
+		// position alone, before either picture is read.
+		TestTrue(*FString::Printf(TEXT("%s: the interact button is further inward still"), *Where),
+			Interact.GetCenter().X < Reload.GetCenter().X);
+		TestTrue(*FString::Printf(TEXT("%s: and level with the home rather than above it"), *Where),
+			FMath::IsNearlyEqual(Interact.GetCenter().Y, AimHome.Y, 0.01f));
 
-		// Exactly one gap between the drawn ring and the drawn button — the constant
-		// itself, not a number someone measured once and typed in.
+		// The home ring is nowhere near either of them any more. It used to clear
+		// the reload button by exactly one 12 pt gap, back when the button sat 38 pt
+		// out and INSIDE the stick's travel; the arc is sized off the travel now, so
+		// the clearance from the ring is a consequence rather than the rule.
 		const float ToReload = FMath::Sqrt(Reload.ComputeSquaredDistanceToPoint(AimHome)) / Scale;
 		TestTrue(*FString::Printf(TEXT("%s: the home ring clears the reload button by %.1f pt"), *Where,
 				ToReload - SarkoInput::StickHomeRingPt),
-			FMath::IsNearlyEqual(ToReload - SarkoInput::StickHomeRingPt, SarkoInput::ThumbButtonGapPt, 0.05f));
+			ToReload - SarkoInput::StickHomeRingPt >= SarkoInput::ThumbButtonGapPt);
 
 		// NOTHING SITS WHERE THE THUMB RESTS. Both buttons are strictly outside the
 		// mark, so a thumb settling onto its home cannot land on a control.

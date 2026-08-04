@@ -83,70 +83,95 @@ namespace SarkoInput
 	FVector2D AimStickHome(FBox2D Frame, float PointScale);
 
 	/**
-	 * The thumb column, in points on the 844x390 landscape canvas.
+	 * ONE DIAMETER FOR BOTH THUMB BUTTONS, in points on the 844x390 landscape
+	 * canvas.
 	 *
 	 * Sized in POINTS and not as a fraction of the frame, which is what the
 	 * interact rect used to be: a fraction is unfalsifiable against a rule written
 	 * in points (">= 44 pt"), and the old max(96 px, shorter axis * 0.14) gave 52
 	 * pt on a phone and 32 pt in a small window while looking like one number.
 	 *
-	 * The reload button is a DIAMETER now, not a side: it is round (spec §4.3, and
-	 * the owner asked for "a round button with a reload icon"). 64 pt rather than
-	 * the old 56 pt square because a circle has to carry both the drawn icon and
-	 * the magazine|reserve pair without either crowding the other — see
-	 * ASarkoHUD::DrawReload for how the two share it.
+	 * A DIAMETER, because both buttons are round (spec §4.3, and the owner's third
+	 * playtest: "the action one should be a round button, not a square — it can
+	 * all be placed around the aim stick's home"). 64 pt because the reload circle
+	 * has to carry both a drawn icon and the magazine|reserve pair without either
+	 * crowding the other, and because two controls under one thumb that are the
+	 * same size are two controls a player can learn the reach of once.
+	 *
+	 * The INTERACT button is the same 64 pt and no longer a 96x48 rectangle. Its
+	 * word did not fit in a circle and does not have to: the circle carries a
+	 * contextual glyph and the word is set beside it — see ASarkoHUD::DrawInteract.
 	 */
-	constexpr float ReloadButtonDiameterPt = 64.f;
-	constexpr float InteractButtonWidthPt = 96.f;
-	constexpr float InteractButtonHeightPt = 48.f;
+	constexpr float ThumbButtonDiameterPt = 64.f;
 
-	/** Between any two things in the thumb column — the home ring and the reload
-	 *  button, the reload button and the interact button. They must NEVER overlap
-	 *  (spec §5), and 12 pt is also enough that a thumb aiming at one cannot clip
-	 *  the other. */
+	/** Between any two things in the thumb cluster — the home ring and a button,
+	 *  one button and the other, a button and the far edge of the stick's travel.
+	 *  They must NEVER overlap (spec §5), and 12 pt is also enough that a thumb
+	 *  aiming at one cannot clip the other. */
 	constexpr float ThumbButtonGapPt = 12.f;
 
 	/**
-	 * The reload button: right thumb, directly above the aim stick's home, inside
-	 * the thumb's arc.
+	 * ONE BUTTON ON THE THUMB'S ARC, at DegreesInwardFromUp around the aim home.
+	 *
+	 * THE ARC IS THE LAYOUT. The owner, playing on a phone: "the action one should
+	 * be a round button, not a square — it can all be placed around the aim
+	 * stick's home". The reasoning is sound and it is why this replaced the
+	 * stacked column: a thumb pivots about where it rests, so every point at one
+	 * radius from that rest is reached by the same rotation and none of them cost
+	 * the thumb any travel. A column, by contrast, is one easy button and one that
+	 * has to be stretched to.
+	 *
+	 * Angles are degrees from STRAIGHT UP, positive turning INWARD — toward the
+	 * middle of the screen, i.e. anticlockwise on the glass for the right thumb.
+	 * Zero is above the home, ninety is level with it and one screen-width in.
+	 * Stated that way rather than in canvas radians because "40 degrees in from
+	 * straight up" is a sentence about a thumb and `-0.9 rad` is not.
+	 *
+	 * The returned rect is the SQUARE the circle is inscribed in, and it is the
+	 * hit target: ASarkoPlayerController::UpdateSticks tests this box, so the
+	 * corners are slop in the player's favour. Every clearance in this cluster is
+	 * measured on the box and not on the circle, so that slop can never reach a
+	 * neighbouring control.
+	 *
+	 * A pure function of the safe frame, the scale and its own two numbers, and of
+	 * NOTHING else — no game state, no argument a caller could get wrong. That is
+	 * what makes "the interact button appearing must not shift the reload button"
+	 * structural rather than a promise someone has to keep: the interact slot is
+	 * computed the same way whether or not anything is drawn in it.
+	 */
+	FVector2D ThumbArcCentre(FBox2D Frame, float PointScale, float DegreesInwardFromUp);
+	FBox2D ThumbArcButtonRect(FBox2D Frame, float PointScale, float DegreesInwardFromUp, float DiameterPt);
+
+	/**
+	 * The reload button: right thumb, up and inward from the aim stick's home.
 	 *
 	 * A dedicated button because reloading is a decision with a cost and the
 	 * player must be able to make it BEFORE the magazine runs out —
 	 * auto-reload-when-empty is the thing that gets you killed (spec §4.3).
 	 *
-	 * DERIVED FROM AimStickHome and from nothing else: same centre X, and a centre
-	 * Y one home ring plus one gap plus its own radius above it. Before the homes
-	 * existed this rect was measured off the safe frame's corner and the aim thumb
-	 * was measured off the same corner separately — two independent numbers that
-	 * happened to agree. Now the button cannot drift away from the stick it
-	 * belongs to, because it has no coordinates of its own.
-	 *
-	 * The returned rect is the SQUARE the circle is inscribed in, and it is the
-	 * hit target: ASarkoPlayerController::UpdateSticks tests this box, so the
-	 * corners are slop in the player's favour. The gaps above and below are
-	 * measured on the box and not on the circle, so that slop never reaches a
-	 * neighbouring control.
-	 *
-	 * A pure function of the safe frame and the scale, and of NOTHING else. That
-	 * is what makes "the interact button appearing must not shift the reload
-	 * button" structural rather than a promise someone has to keep.
+	 * DERIVED FROM AimStickHome and from nothing else: an angle and a radius, and
+	 * both of those are derived in turn from the stick's own travel. Before the
+	 * homes existed this rect was measured off the safe frame's corner and the aim
+	 * thumb was measured off the same corner separately — two independent numbers
+	 * that happened to agree. It cannot drift away from the stick it belongs to,
+	 * because it has no coordinates of its own.
 	 */
 	FBox2D ReloadButtonRect(FBox2D Frame, float PointScale);
 
 	/**
-	 * The interact button: one 12 pt gap above the reload button, on the same
-	 * centre line, contextual in its LABEL but never in its position.
-	 *
-	 * Centred on the column rather than right-aligned to the frame's edge, which
-	 * is what it was when the column was measured from that edge. The column is
-	 * measured from the aim home now, so aligning to the edge would put the two
-	 * buttons on two different vertical lines above one thumb.
+	 * The interact button: the far end of the same arc, contextual in its GLYPH
+	 * and its word but never in its position.
 	 *
 	 * It used to shift left when a container panel covered its usual place. The
 	 * panel is in the other half now (spec §4.5), so the shifted rect and the
 	 * function that chose between the two are both gone — and with them the class
 	 * of bug where the button is drawn in one place and pressed in another, which
 	 * the owner experiences as "the button doesn't work".
+	 *
+	 * ITS SLOT IS RESERVED WHETHER OR NOT IT IS SHOWN. This function takes no
+	 * game state, so the reload button — placed by the same arc, at its own angle
+	 * — cannot move when a crate comes into reach and this one lights up. A
+	 * control that moves is a control you mis-press.
 	 *
 	 * ONE authority: ASarkoHUD::DrawInteract draws this rect and
 	 * ASarkoPlayerController::UpdateSticks hit-tests this rect. There is no second
@@ -209,6 +234,87 @@ namespace SarkoInput
 	 * thumb sweeps, which the reload button's placement already assumes.
 	 */
 	constexpr float StickRadiusPt = 52.f;
+
+	/**
+	 * WHERE THE AIM THUMB ACTUALLY IS, and therefore where no button may be.
+	 *
+	 * The stick FLOATS: it anchors wherever the thumb lands, and the home ring is
+	 * a 26 pt invitation to land inside it — so a thumb that has taken the hint is
+	 * somewhere in a 26 pt disc, and from there it drives the stick up to 52 pt in
+	 * any direction. The union of every position that thumb can legitimately be in
+	 * while aiming is therefore a disc of 78 pt around the home, and that is the
+	 * keep-out.
+	 *
+	 * This number is why the layout changed. The old column put the reload button
+	 * 38 pt from the home — INSIDE the travel, so a full deflection straight up
+	 * planted the thumb and the drawn stick dot on top of the reload button. It
+	 * could not misfire (a touch is classified once, at press time, so a stick
+	 * already anchored never presses anything), but it is exactly the picture that
+	 * teaches a player their thumb is about to hit a button, and it is the half of
+	 * spec §4.3 — "inside its arc, clear of the stick's own travel" — that was
+	 * quietly false. The other half of that sentence is what had to give: nothing
+	 * can be both inside a 45 pt arc and clear of a 78 pt keep-out.
+	 */
+	constexpr float ThumbTravelKeepOutPt = StickHomeRingPt + StickRadiusPt;
+
+	/**
+	 * THE ARC BOTH THUMB BUTTONS SIT ON, as a radius from the aim home to a
+	 * button's CENTRE.
+	 *
+	 * Derived and not chosen: the keep-out, one standard gap, and the button's own
+	 * half-DIAGONAL. Written as that sum so the clearance between the far edge of
+	 * the thumb's travel and the nearest pixel of either button is at least
+	 * ThumbButtonGapPt — the constant, rather than a number someone measured once
+	 * and typed in.
+	 *
+	 * The half-diagonal and not the half-side, which is the one piece of this that
+	 * is easy to get wrong. A button is drawn as a circle but HIT-TESTED as the
+	 * square it is inscribed in, and at an angle off the axes it is a corner of
+	 * that square that reaches nearest the home — 45 pt from the centre, not 32.
+	 * Sizing the arc off the half-side put the reload square's corner 77 pt out
+	 * against a 78 pt keep-out: one point inside the region a thumb can be in, and
+	 * therefore one point of thumb that would have stolen a touch from the stick.
+	 * Using the circumscribed circle makes the clearance hold at EVERY angle, so
+	 * moving a button around the arc can never quietly break it.
+	 *
+	 * 135 pt on the design canvas: 103 pt from the home to a drawn rim, 90 pt to
+	 * the nearest hit-tested pixel. That is a longer reach than the 40-45 pt swing
+	 * spec §4 describes, and the spec is wrong about it — the same document gives
+	 * the stick 52 pt of travel, which a 45 pt arc cannot contain. It is about 23
+	 * mm on a 6.1" phone, a rotation of the thumb rather than a re-grip, and the
+	 * cluster is SHORTER than the column it replaces: the old interact button's
+	 * top edge stood 162 pt above the home and nothing here goes past 136. The
+	 * fan spreads sideways instead of stacking upward, which is where a landscape
+	 * screen has room.
+	 */
+	constexpr float ThumbArcRadiusPt =
+		ThumbTravelKeepOutPt + ThumbButtonGapPt + ThumbButtonDiameterPt * 0.5f * UE_SQRT_2;
+
+	/**
+	 * WHERE ON THE ARC EACH BUTTON SITS, in degrees inward from straight up.
+	 *
+	 * Reload at 40: up and inward is the direction a right thumb EXTENDS from a
+	 * bottom-corner rest, it keeps the whole button above the home ring (its
+	 * lowest pixel is 72 pt up), and it keeps "the button above the aim stick" —
+	 * the sentence in spec §4.3, the first-raid hint, and two builds of muscle
+	 * memory — true.
+	 *
+	 * Interact at 90: straight inward, level with the home, at the far end of the
+	 * fan. It is the deliberate press — you have already stopped moving to make it
+	 * — so it gets the position that has to be aimed at rather than the one the
+	 * thumb falls onto. It is also the only angle with a clear horizontal run of
+	 * empty screen beside it, which is where its word goes: a caption under the
+	 * disc would fall off the bottom of the safe frame and one above it would
+	 * collide with the reload disc.
+	 *
+	 * The 50 degrees between them is not slack. It leaves 50 pt of daylight
+	 * between the two drawn rims and 40 pt between the two hit squares — four
+	 * times the minimum gap, which is what makes them read as two controls rather
+	 * than as a bar, and what leaves the word beside the interact button a lane of
+	 * its own.
+	 */
+	constexpr float ReloadButtonArcDegrees = 40.f;
+	constexpr float InteractButtonArcDegrees = 90.f;
 
 	/**
 	 * That radius in pixels, for a viewport of this size. **The one authority.**
@@ -481,6 +587,30 @@ public:
 	void SarkoDebugAmmo(int32 Rounds);
 
 	/**
+	 * Debug only: forces the interact button's contextual state, so all four of its
+	 * faces can be photographed.
+	 *
+	 * Same reason SarkoDebugAmmo exists and the same shipping guard. A headless run
+	 * has no fingers: Close needs a container panel opened by a held touch, and
+	 * Extract is not reachable by playing AT ALL — it is declared and deliberately
+	 * not wired, because an extraction is a dwell rather than a press
+	 * (SarkoUI::EInteractAction). Its glyph nevertheless has to be looked at by
+	 * somebody before it ships, and this is the only way a still frame can carry it.
+	 *
+	 * 0 None, 1 Search, 2 Close, 3 Extract; anything negative hands the button back
+	 * to the game. Affects the DRAWING only — the rect, the hit test and what a
+	 * press does are all untouched, so this cannot make a frame that lies about
+	 * where the control is.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugInteract(int32 Action);
+
+	/** Which interact face SarkoDebugInteract forced, or a negative for "none —
+	 *  the game decides". Always negative in a shipping build, where the exec
+	 *  above compiles to nothing. */
+	int32 GetDebugInteractAction() const { return DebugInteractAction; }
+
+	/**
 	 * Debug only: puts a named weapon in the possessed pawn's hand, so the one
 	 * question this art pass exists to answer — can you tell a rifle from a
 	 * pistol from 1400 uu straight up — can be photographed.
@@ -683,6 +813,11 @@ private:
 
 	/** Which touch slot is holding the interact button, or INDEX_NONE. Claimed before stick classification. */
 	int32 InteractTouchIndex = INDEX_NONE;
+
+	/** SarkoDebugInteract's override. Never written outside a non-shipping build
+	 *  and never read outside one either, so it is INDEX_NONE for the whole life
+	 *  of a shipped controller. */
+	int32 DebugInteractAction = INDEX_NONE;
 
 #if !UE_BUILD_SHIPPING
 	/**
