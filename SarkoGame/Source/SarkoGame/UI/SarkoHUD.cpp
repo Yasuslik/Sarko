@@ -117,6 +117,42 @@ namespace
 	constexpr float QuietRingAlphaScale = 0.55f;
 
 	/**
+	 * THE HOME RING while a finger is on that stick.
+	 *
+	 * At rest it is drawn at the stick's FULL colour — the whole point is that a
+	 * player who has touched nothing can see it, and dimming the one mark that
+	 * answers "where are the controls" would be re-committing the bug. Once the
+	 * thumb is down the live stick is the thing being read, and the home drops
+	 * back so it cannot be mistaken for a second control.
+	 */
+	constexpr float HomeRingActiveAlphaScale = 0.45f;
+
+	/** The home ring's drop shadow, offset like every readout's: these two rings
+	 *  are on screen over an arbitrary world for the whole raid, and a pale patch
+	 *  of ground is exactly where the player most needs to see them. */
+	const FLinearColor HomeRingShadow(0.f, 0.f, 0.f, 0.55f);
+
+	/**
+	 * THE RELOAD GLYPH, in points on the 64 pt button.
+	 *
+	 * 26 pt of radius puts the arc 6 pt inside the rim and clear of the
+	 * magazine|reserve pair in the middle: the pair is 20 pt type, about 39 pt
+	 * wide at a realistic "8|24" and 50 pt at an absurd "8|720", against 52 pt of
+	 * clear width across the arc's diameter.
+	 *
+	 * A 70 degree gap centred on straight up, with the arrowhead arriving at the
+	 * far side of it: a broken ring with a head is a circular arrow, and an
+	 * unbroken one is just an outline. 20 segments over 290 degrees is smooth at
+	 * 3x. The stroke is heavier than the sticks' 1.5 pt because this one is a
+	 * glyph read at a glance rather than a boundary read against a thumb.
+	 */
+	constexpr float ReloadIconRadiusPt = 26.f;
+	constexpr float ReloadIconStrokePt = 2.5f;
+	constexpr float ReloadIconGapDegrees = 70.f;
+	constexpr float ReloadIconHeadPt = 9.f;
+	constexpr int32 ReloadIconSegments = 20;
+
+	/**
 	 * THE FIRE RING, on the aim stick, at USarkoRaidSettings::AimFireDeadZone of
 	 * its travel: cross this and you are shooting.
 	 *
@@ -318,15 +354,30 @@ void ASarkoHUD::DrawHUD()
 	// threshold was a number in an .ini that the player could only locate by
 	// crossing it, which on a phone, with an eight-round magazine and a manual
 	// reload, costs the magazine and gives away the position.
+	//
+	// BOTH STICKS ALSO GET THEIR HOME DRAWN, which is what makes them findable at
+	// all: they float, so before this there was nothing on screen at raid start to
+	// say a control lived under either thumb. See DrawStick.
 	const USarkoRaidSettings& StickSettings = *GetDefault<USarkoRaidSettings>();
+
+	// The move stick's home is hidden while the stick itself is suppressed, which
+	// today is exactly "a container panel is open" (spec §4.5). The panel sits over
+	// the bottom-left, i.e. over that very home, and a mark inviting a thumb onto a
+	// control that is switched off is worse than no mark at all. Asked of the same
+	// pure function ASarkoPlayerController::UpdateSticks asks, from the pawn's own
+	// mirror of what is open, so the two cannot disagree about it.
+	const ASarkoCharacter* StickPawn = Cast<ASarkoCharacter>(GetOwningPawn());
+	const bool bMoveHomeVisible = !SarkoInput::IsMoveStickSuppressed(
+		StickPawn && StickPawn->GetOpenContainerIndex() != INDEX_NONE);
 
 	const FLinearColor MoveColour(1.f, 1.f, 1.f, 0.35f);
 	FLinearColor QuietColour = MoveColour;
 	QuietColour.A *= QuietRingAlphaScale;
-	DrawStick(PC->GetMoveStick(), MoveColour, StickSettings.NoiseRunSpeedFraction, QuietColour);
+	DrawStick(PC->GetMoveStick(), SarkoInput::MoveStickHome(Safe, PointScale), bMoveHomeVisible,
+		MoveColour, StickSettings.NoiseRunSpeedFraction, QuietColour);
 
-	DrawStick(PC->GetAimStick(), FLinearColor(1.f, 0.85f, 0.2f, 0.45f),
-		StickSettings.AimFireDeadZone, FireRingColour);
+	DrawStick(PC->GetAimStick(), SarkoInput::AimStickHome(Safe, PointScale), /*bShowHome*/ true,
+		FLinearColor(1.f, 0.85f, 0.2f, 0.45f), StickSettings.AimFireDeadZone, FireRingColour);
 	DrawAimCone();
 	DrawTopBar();
 	DrawHealth();
@@ -405,25 +456,108 @@ void ASarkoHUD::DrawTextPt(const FString& Text, const FLinearColor& Colour, floa
 	Canvas->DrawItem(Item);
 }
 
-void ASarkoHUD::DrawRing(FVector2D Centre, float Radius, const FLinearColor& Colour)
+void ASarkoHUD::DrawArc(FVector2D Centre, float Radius, float StartRadians, float EndRadians,
+	int32 Segments, const FLinearColor& Colour, float Thickness)
 {
-	constexpr int32 Segments = 24;
-	for (int32 i = 0; i < Segments; ++i)
+	const int32 Count = FMath::Max(1, Segments);
+	for (int32 i = 0; i < Count; ++i)
 	{
-		const float A0 = (2.f * PI * i) / Segments;
-		const float A1 = (2.f * PI * (i + 1)) / Segments;
+		const float A0 = FMath::Lerp(StartRadians, EndRadians, static_cast<float>(i) / Count);
+		const float A1 = FMath::Lerp(StartRadians, EndRadians, static_cast<float>(i + 1) / Count);
 		DrawLine(
 			Centre.X + FMath::Cos(A0) * Radius,
 			Centre.Y + FMath::Sin(A0) * Radius,
 			Centre.X + FMath::Cos(A1) * Radius,
 			Centre.Y + FMath::Sin(A1) * Radius,
-			Colour, Px(StickStrokePt));
+			Colour, Thickness);
 	}
 }
 
-void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, const FLinearColor& Colour,
-	float BoundaryFraction, const FLinearColor& BoundaryColour)
+void ASarkoHUD::DrawRing(FVector2D Centre, float Radius, const FLinearColor& Colour)
 {
+	DrawArc(Centre, Radius, 0.f, 2.f * PI, 24, Colour, Px(StickStrokePt));
+}
+
+void ASarkoHUD::DrawDisc(FVector2D Centre, float Radius, const FLinearColor& Colour)
+{
+	// Bands sampled in ANGLE, not in Y — see the header for why that is what makes
+	// two dozen rectangles read as a circle.
+	constexpr int32 Bands = 24;
+	for (int32 i = 0; i < Bands; ++i)
+	{
+		const float T0 = (PI * i) / Bands;
+		const float T1 = (PI * (i + 1)) / Bands;
+		const float Top = -Radius * FMath::Cos(T0);
+		const float Bottom = -Radius * FMath::Cos(T1);
+		// The chord at the band's mid-angle: half the error above the band's centre
+		// and half below it, rather than all of it on one side.
+		const float HalfWidth = Radius * FMath::Sin((T0 + T1) * 0.5f);
+		DrawRect(Colour, Centre.X - HalfWidth, Centre.Y + Top, HalfWidth * 2.f, Bottom - Top);
+	}
+}
+
+void ASarkoHUD::DrawReloadIcon(FVector2D Centre, const FLinearColor& Colour)
+{
+	const float Radius = Px(ReloadIconRadiusPt);
+	const float Stroke = Px(ReloadIconStrokePt);
+
+	// Canvas angles, with Y growing DOWNWARD: increasing angle sweeps clockwise on
+	// the glass, which is the direction every reload/refresh glyph a player has
+	// ever seen turns. The gap is centred on straight up so the arrowhead arrives
+	// at the top, where the eye lands first.
+	const float GapHalf = FMath::DegreesToRadians(ReloadIconGapDegrees * 0.5f);
+	const float StraightUp = -HALF_PI;
+	const float Start = StraightUp + GapHalf;
+	const float End = StraightUp + 2.f * PI - GapHalf;
+	DrawArc(Centre, Radius, Start, End, ReloadIconSegments, Colour, Stroke);
+
+	// THE ARROWHEAD: two barbs raked back along the direction of travel. Two lines
+	// and not a filled triangle, because a filled triangle on a UCanvas means an
+	// FCanvasTriangleItem and its TArray — a heap allocation per frame on a tick
+	// path — and because a V at this stroke reads as an arrow at every size this
+	// button is drawn at.
+	const FVector2D Tip(Centre.X + FMath::Cos(End) * Radius, Centre.Y + FMath::Sin(End) * Radius);
+	const FVector2D Travel(-FMath::Sin(End), FMath::Cos(End));
+	const FVector2D Outward(FMath::Cos(End), FMath::Sin(End));
+	const float Head = Px(ReloadIconHeadPt);
+
+	// 30 degrees either side of the shaft, which is the rake an arrow is expected
+	// to have; wider reads as a chevron and narrower disappears at 2 pt of stroke.
+	const FVector2D Back = -Travel * (Head * 0.866f);
+	const FVector2D Side = Outward * (Head * 0.5f);
+	DrawLine(Tip.X, Tip.Y, Tip.X + Back.X + Side.X, Tip.Y + Back.Y + Side.Y, Colour, Stroke);
+	DrawLine(Tip.X, Tip.Y, Tip.X + Back.X - Side.X, Tip.Y + Back.Y - Side.Y, Colour, Stroke);
+}
+
+void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, FVector2D Home, bool bShowHome,
+	const FLinearColor& Colour, float BoundaryFraction, const FLinearColor& BoundaryColour)
+{
+	// THE HOME, FIRST AND WHETHER OR NOT A FINGER IS DOWN. This function used to
+	// return here on an inactive stick, and that early return is the whole of the
+	// owner's "the sticks don't work" report: a floating control that is invisible
+	// until touched is a control nobody knows to touch.
+	//
+	// Drawn at SarkoInput::StickHomeRingPt — half the travel — because the stick
+	// FLOATS and its real extent appears under the thumb, wherever that lands. A
+	// full-radius ring here would be a picture of a boundary that does not exist.
+	if (bShowHome)
+	{
+		FLinearColor HomeColour = Colour;
+		if (Stick.bActive)
+		{
+			// The thumb is out working the live stick; the home has already said
+			// what it had to say and must not compete with the control in use.
+			HomeColour.A *= HomeRingActiveAlphaScale;
+		}
+
+		const float HomeRadius = Px(SarkoInput::StickHomeRingPt);
+		// Shadow first, offset a point, exactly as DrawTextPt shadows every readout:
+		// this ring is on screen over arbitrary ground for the whole raid.
+		const float ShadowOffset = FMath::Max(1.f, Px(1.f));
+		DrawRing(Home + FVector2D(ShadowOffset, ShadowOffset), HomeRadius, HomeRingShadow);
+		DrawRing(Home, HomeRadius, HomeColour);
+	}
+
 	if (!Stick.bActive)
 	{
 		return;
@@ -1198,9 +1332,11 @@ void ASarkoHUD::DrawReload()
 	// know they need to reload." The scarcity stage makes the reserve part of that
 	// sentence — knowing you need to reload is worth nothing if the bag is empty —
 	// so the label is the PAIR, compactly: "3|43", no spaces, because this is a
-	// 56 pt thumb button and the top-left readout is where the spaced version
-	// lives. Five characters at 20 pt is the realistic worst case ("8|720", a bag
-	// of nothing but ammo) and it fits.
+	// 64 pt round thumb button and the top-left readout is where the spaced version
+	// lives. Five characters at 20 pt is the absurd worst case ("8|720", a bag of
+	// nothing but ammo): about 50 pt against the 52 pt of clear width inside the
+	// glyph's arc, so even that grazes rather than collides. A realistic "8|24" is
+	// 39 pt and has a whole point of margin on each side.
 	//
 	// Built ONLY when one of the two numbers moves, not every frame. The pair made
 	// this matter: the old label was one FString::FromInt per frame, which was
@@ -1258,16 +1394,40 @@ void ASarkoHUD::DrawReload()
 		break;
 	}
 
-	// Dark plate first, state tint over it: see DrawInteract for why.
-	DrawRect(ThumbButtonPlate, Rect.Min.X, Rect.Min.Y, Rect.GetSize().X, Rect.GetSize().Y);
-	DrawRect(Fill, Rect.Min.X, Rect.Min.Y, Rect.GetSize().X, Rect.GetSize().Y);
+	// ROUND. The rect is the square the circle is inscribed in — the hit target
+	// stays the square (SarkoInput::ReloadButtonRect and UpdateSticks both use it),
+	// so the four corners are slop in the player's favour, and every gap in the
+	// thumb column is measured on the square rather than on the circle so that slop
+	// can never reach a neighbouring control.
+	//
+	// A circle and not a rounded rectangle because the interact button 12 pt above
+	// it is a rectangle: two controls under one thumb, told apart by shape before
+	// either is read. That matters most in the moment the button exists for — a
+	// magazine running out while something is shooting at you.
+	const FVector2D Centre = Rect.GetCenter();
+	const float Radius = Rect.GetSize().X * 0.5f;
 
+	// Dark plate first, state tint over it: see DrawInteract for why.
+	DrawDisc(Centre, Radius, ThumbButtonPlate);
+	DrawDisc(Centre, Radius, Fill);
+
+	// The glyph on the rim, in the state's own ink, so a dry button is a red icon
+	// as well as a red number. Drawn and not imported: this project authors no
+	// binary assets, so there is no texture and no icon font to reach for.
+	DrawReloadIcon(Centre, Ink);
+
+	// THE NUMBERS STAY IN THE MIDDLE, at the size they already were. Spec §4.3 puts
+	// the magazine count on this button so the player never has to look at two
+	// places to know they need to reload, and the middle of a round button is where
+	// the eye goes — so the icon moved out to the rim rather than the pair moving
+	// off centre or shrinking to share it.
+	//
 	// Both the string and its measurement were built above, on the frame one of the
 	// two numbers moved. DrawHUD is a tick path and an uncached MeasurePt per frame
 	// is the allocation this HUD spent two commits removing.
 	DrawTextPt(CachedReloadLabel, Ink,
-		Rect.GetCenter().X - CachedReloadLabelWidth * 0.5f,
-		Rect.GetCenter().Y - CachedReloadLabelHeight * 0.5f,
+		Centre.X - CachedReloadLabelWidth * 0.5f,
+		Centre.Y - CachedReloadLabelHeight * 0.5f,
 		ReloadLabelPt);
 }
 

@@ -94,9 +94,29 @@ private:
 	float Px(float Points) const { return Points * PointScale; }
 
 	/**
-	 * A floating stick: the ring at the thumb's anchor, the dot at its current
-	 * position, and an INNER RING at the one fraction of the travel where that
-	 * stick's behaviour changes.
+	 * A floating stick: its HOME, the ring at the thumb's anchor, the dot at its
+	 * current position, and an INNER RING at the one fraction of the travel where
+	 * that stick's behaviour changes.
+	 *
+	 * THE HOME IS WHY THIS FUNCTION NO LONGER RETURNS EARLY ON AN INACTIVE STICK.
+	 * It used to, and that was the whole of the owner's second-playtest report:
+	 * "only the movement sticks work, as if there are two kinds — the ones drawn
+	 * initially seem dead". Nothing was drawn initially. A fresh raid showed two
+	 * buttons on the right and bare ground under both thumbs, so the two controls
+	 * that were actually there were the two he could not see, and the two he could
+	 * see were the ones that did not move the pawn.
+	 *
+	 * The home is a dim ring at SarkoInput::MoveStickHome / ::AimStickHome, drawn
+	 * whether or not a finger is down — dimmer while one is, because the live
+	 * stick is then the thing that matters and the home has already done its job.
+	 * It is a HINT AND NOT A CAGE: the stick still anchors wherever the thumb
+	 * lands, which is why the ring is drawn at StickHomeRingPt and not at the
+	 * stick's own radius. A full-travel ring at a fixed point would be a picture
+	 * of a boundary that is not there.
+	 *
+	 * bShowHome is the one thing that hides it, and today that is exactly "the
+	 * move stick is suppressed under an open container panel" — a control that is
+	 * switched off must not advertise itself.
 	 *
 	 * BOTH sticks have such a fraction, and drawing it is the only interface
 	 * either rule has:
@@ -122,13 +142,59 @@ private:
 	 * Every radius comes off the stick itself (FSarkoTouchStick::RadiusPx, resolved
 	 * from points at anchor), so the picture and the rule are one number.
 	 */
-	void DrawStick(const struct FSarkoTouchStick& Stick, const FLinearColor& Colour,
-		float BoundaryFraction, const FLinearColor& BoundaryColour);
+	void DrawStick(const struct FSarkoTouchStick& Stick, FVector2D Home, bool bShowHome,
+		const FLinearColor& Colour, float BoundaryFraction, const FLinearColor& BoundaryColour);
 
-	/** One circle, in segments. Both stick rings and nothing else — a second
-	 *  hand-rolled loop is a second chance to draw a ring the input rule does not
-	 *  have. */
+	/**
+	 * ONE ARC LOOP, for everything on this HUD that curves.
+	 *
+	 * The stick rings, the home rings and the reload button's circular arrow all
+	 * come out of here. A second hand-rolled sweep is a second chance to draw a
+	 * ring the input rule does not have — which is the note DrawRing carried when
+	 * it WAS the loop, and the reason the reload icon extends this vocabulary
+	 * instead of inventing one.
+	 *
+	 * Angles are in radians in canvas space, where Y grows DOWNWARD: increasing
+	 * angle therefore sweeps clockwise on the glass. Sweeps past 2*PI are fine and
+	 * are how the arrow's near-full turn is expressed.
+	 */
+	void DrawArc(FVector2D Centre, float Radius, float StartRadians, float EndRadians,
+		int32 Segments, const FLinearColor& Colour, float Thickness);
+
+	/** One closed circle at the stick stroke — DrawArc all the way round. */
 	void DrawRing(FVector2D Centre, float Radius, const FLinearColor& Colour);
+
+	/**
+	 * A FILLED CIRCLE, as bands of DrawRect sampled uniformly in ANGLE.
+	 *
+	 * The round reload button needs a fill and a UCanvas has no circle. Sampling
+	 * in angle rather than in Y is what makes 24 rectangles look round: the bands
+	 * are thin exactly where the silhouette turns fastest (the caps) and wide
+	 * where it barely moves (the equator), so the worst radial error is about a
+	 * fifth of a pixel at 3x. Sampled in Y instead, the same 24 bands would put a
+	 * flat 40-pixel chord across the top of a 193-pixel circle.
+	 *
+	 * DrawRect and not FCanvasNGonItem, which is the engine's filled polygon and
+	 * would be one line: it builds a TArray of triangles and heap-allocates an
+	 * FCanvasTriangleItem every time it is constructed. DrawHUD is a tick path.
+	 */
+	void DrawDisc(FVector2D Centre, float Radius, const FLinearColor& Colour);
+
+	/**
+	 * THE RELOAD GLYPH: a circular arrow, drawn rather than imported.
+	 *
+	 * No binary assets exist in this project and none may be created, so there is
+	 * no icon texture and no font that carries one. It is an arc with a gap at the
+	 * top and a two-barb arrowhead at the end of the sweep — Canvas primitives
+	 * only, at the same stroke vocabulary the sticks use.
+	 *
+	 * Drawn out near the button's RIM (ReloadIconRadiusPt of a
+	 * SarkoInput::ReloadButtonDiameterPt circle) rather than in the middle,
+	 * because the middle belongs to the magazine|reserve pair and always has. The
+	 * icon says what the control IS; the number says what pressing it is worth.
+	 * Neither had to shrink to make room for the other.
+	 */
+	void DrawReloadIcon(FVector2D Centre, const FLinearColor& Colour);
 
 	void DrawAimCone();
 
@@ -245,13 +311,20 @@ private:
 	void DrawInteract();
 
 	/**
-	 * The reload button: a rounded plate carrying the magazine count, amber below
-	 * a third and pulsing at empty (spec §4.3).
+	 * The reload button: a ROUND plate carrying a drawn reload glyph and the
+	 * magazine|reserve pair, amber below a third, pulsing at empty and static red
+	 * when the bag is empty too (spec §4.3).
+	 *
+	 * Round since the second playtest, on the owner's instruction — "reload is a
+	 * separate round button with a reload icon, above the aim stick's default
+	 * position". Both halves of that sentence are structural now: the shape is a
+	 * circle inscribed in SarkoInput::ReloadButtonRect, and that rect is derived
+	 * from SarkoInput::AimStickHome rather than from the frame's corner.
 	 *
 	 * A dedicated control because reloading is a decision with a cost and the
-	 * player must be able to make it BEFORE the magazine runs out. Its rect is
-	 * SarkoInput::ReloadButtonRect and takes no game state, so it can never move —
-	 * a control that moves is a control you mis-press.
+	 * player must be able to make it BEFORE the magazine runs out. Its rect takes
+	 * no game state, so it can never move — a control that moves is a control you
+	 * mis-press.
 	 */
 	void DrawReload();
 
