@@ -807,6 +807,8 @@ void ASarkoRaidGameMode::UpdateEnemyVisibility(float DeltaSeconds)
 
 	const double StartCycles = FPlatformTime::Seconds();
 	int32 Traces = 0;
+	int32 Living = 0;
+	int32 Drawn = 0;
 
 	for (TActorIterator<ASarkoEnemyCharacter> It(World); It; ++It)
 	{
@@ -830,6 +832,7 @@ void ASarkoRaidGameMode::UpdateEnemyVisibility(float DeltaSeconds)
 			continue;
 		}
 
+		++Living;
 		const FVector EnemyLocation = Enemy->GetActorLocation();
 		const FVector Offset = EnemyLocation - ViewerLocation;
 		const FVector2D ToTarget(Offset.X, Offset.Y);
@@ -863,21 +866,28 @@ void ASarkoRaidGameMode::UpdateEnemyVisibility(float DeltaSeconds)
 		// otherwise strobe, which reads as a rendering fault rather than as "he is
 		// at the edge of what I can see".
 		const bool bDraw = bVisible || (Now - Enemy->LastSeenByPlayerSeconds) <= Memory;
+		Drawn += bDraw ? 1 : 0;
 		if (Enemy->IsHidden() == bDraw)
 		{
 			Enemy->SetActorHiddenInGame(!bDraw);
 		}
 	}
 
-	// The cost, said out loud rather than assumed. Off by default with every
-	// other AI diagnostic; on, it is one line a second and it is the only honest
-	// answer to "what did the traces cost".
-	if (Settings.bLogAIDiagnostics && Traces > 0)
+	// THE COST AND THE DECISION, said out loud rather than assumed. Off with
+	// every other AI diagnostic; on, it is the only honest answer to both "what
+	// did the traces cost" and "why is that bot not on my screen".
+	//
+	// The three counts are the funnel, and reading them apart is the whole
+	// diagnostic: living is everything alive, TRACED is what survived the angle
+	// test (so living minus traced is what the cone rejected for nothing), and
+	// drawn is what survived the trace as well (so traced minus drawn is what
+	// cover took).
+	if (Settings.bLogAIDiagnostics && Living > 0)
 	{
+		const double ElapsedMicros = (FPlatformTime::Seconds() - StartCycles) * 1000000.0;
 		UE_LOG(LogTemp, Display,
-			TEXT("SarkoVision: %d trace(s) in %.1f us (%.2f us/trace), interval %.3f s"),
-			Traces, (FPlatformTime::Seconds() - StartCycles) * 1000000.0,
-			((FPlatformTime::Seconds() - StartCycles) * 1000000.0) / Traces, Interval);
+			TEXT("SarkoVision: %d living, %d in the cone, %d drawn — %d trace(s) in %.1f us, interval %.3f s"),
+			Living, Traces, Drawn, Traces, ElapsedMicros, Interval);
 	}
 }
 
