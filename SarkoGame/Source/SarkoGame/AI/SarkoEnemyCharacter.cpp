@@ -2,6 +2,7 @@
 
 #include "Pawn/SarkoBody.h"
 #include "Pawn/SarkoCharacterAnim.h"
+#include "Pawn/SarkoWeaponVisuals.h"
 
 #include "AI/SarkoAIController.h"
 #include "AI/SarkoBotArchetypes.h"
@@ -61,6 +62,13 @@ void ASarkoEnemyCharacter::BeginPlay()
 	// above — a different body from the player's Manny, not the same one
 	// recoloured, so friend/foe survives even if the tint does nothing.
 	SarkoBody::AttachCharacterMesh(*this, SarkoBody::ESide::Enemy);
+
+	// A scav with a gun in its hand, for the same reason the player has one: an
+	// empty-handed pawn beside an armed one reads as a bug from above. The ПМ
+	// flatly, with no per-archetype table: `scav_pistol` is what the shipped
+	// encounters spawn, and inventing a rifle for `scav_smg` would be authoring
+	// bot loadouts, which is the next task and not this one.
+	SarkoWeaponVisuals::SetHeldWeapon(*this, FName(TEXT("pistol")));
 
 	if (HasAuthority() && HealthComponent)
 	{

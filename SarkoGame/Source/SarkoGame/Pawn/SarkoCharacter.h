@@ -132,6 +132,33 @@ public:
 	UPROPERTY(ReplicatedUsing = OnRep_AimDirection, BlueprintReadOnly, Category = "Combat")
 	FVector_NetQuantizeNormal AimDirection = FVector::ForwardVector;
 
+	/**
+	 * The catalog id of the weapon this pawn is SEEN to carry, and the only fact
+	 * every machine has to agree on to draw the right gun in its hand.
+	 *
+	 * Replicated to EVERYONE, not COND_OwnerOnly like the extraction fields:
+	 * those are private facts about my raid, this one is a thing you can see
+	 * across a yard. A client that could not read it would draw every opponent
+	 * holding the default.
+	 *
+	 * `pistol` by default because that is the ПМ every profile starts with and
+	 * what the pistol aim pose in USarkoCharacterAnimComponent already animates.
+	 * NAME_None is legal and means empty-handed.
+	 *
+	 * Cosmetic only. Damage, magazine and range are USarkoWeaponComponent's and
+	 * are NOT keyed off this — a weapon that shoots differently is a later task
+	 * (spec §5), and wiring one to the other here would smuggle balance into an
+	 * art change.
+	 */
+	UPROPERTY(ReplicatedUsing = OnRep_EquippedWeaponItem, BlueprintReadOnly, Category = "Combat")
+	FName EquippedWeaponItem = FName(TEXT("pistol"));
+
+	/**
+	 * Server only: changes which weapon this pawn is seen holding. The visual
+	 * follows on every machine — here, and through OnRep on the clients.
+	 */
+	void SetEquippedWeaponItem(FName ItemId);
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Health")
 	TObjectPtr<USarkoHealthComponent> HealthComponent;
 
@@ -207,6 +234,10 @@ public:
 protected:
 	UFUNCTION()
 	void OnRep_AimDirection() {}
+
+	/** Redraws the hand when the replicated id lands on a client. */
+	UFUNCTION()
+	void OnRep_EquippedWeaponItem();
 
 	/** Server only: stops movement and disables collision so the corpse does not block shots. */
 	void HandleDeath(AActor* Killer);

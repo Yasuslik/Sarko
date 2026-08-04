@@ -386,6 +386,19 @@ public:
 	void SarkoDebugAmmo(int32 Rounds);
 
 	/**
+	 * Debug only: puts a named weapon in the possessed pawn's hand, so the one
+	 * question this art pass exists to answer — can you tell a rifle from a
+	 * pistol from 1400 uu straight up — can be photographed.
+	 *
+	 * A headless run cannot reach it otherwise: the equipped weapon comes from a
+	 * profile fetched over HTTP, and the shipped catalog gives every profile the
+	 * same ПМ. Cosmetic only, like everything else in SarkoWeaponVisuals: it
+	 * changes nothing about what the weapon does.
+	 */
+	UFUNCTION(Exec)
+	void SarkoDebugEquipWeapon(FString ItemId, float DelaySeconds, float ShotDelay);
+
+	/**
 	 * Debug only: puts the survival meters at a chosen reading and optionally
 	 * applies damage, so a headless run can reach a state that would otherwise
 	 * take a quarter of an hour and a firefight.

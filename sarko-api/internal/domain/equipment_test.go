@@ -71,10 +71,13 @@ func TestSlotAcceptsHoldsTheCategoryRule(t *testing.T) {
 // equippable item is covered the moment it is added.
 func TestAuthoredSlotsAgreeWithCategories(t *testing.T) {
 	// The client's items.json is the authored source of the category; this list is
-	// the server's knowledge of which ids are equipment at all. Together they say
-	// that the three slots have exactly one occupant each today.
+	// the server's knowledge of which ids are equipment at all. The weapon slot
+	// has had three possible occupants since the weapon-mesh pass (2026-08-04);
+	// the two worn-gear slots still have one each.
 	want := map[string]domain.EquipSlot{
 		"pistol":   domain.SlotWeapon,
+		"rifle":    domain.SlotWeapon,
+		"shotgun":  domain.SlotWeapon,
 		"backpack": domain.SlotBackpack,
 		"jacket":   domain.SlotClothing,
 	}

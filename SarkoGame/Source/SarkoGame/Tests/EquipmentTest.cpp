@@ -1,5 +1,7 @@
 #include "Misc/AutomationTest.h"
 
+#include "Algo/AnyOf.h"
+
 #include "Loot/SarkoEquipment.h"
 #include "Loot/SarkoItemCatalog.h"
 #include "Loot/SarkoItemGrid.h"
@@ -42,6 +44,12 @@ bool FSarkoEquipSlotsAreAuthoredAndAgreeWithCategories::RunTest(const FString& P
 	struct FRow { const TCHAR* Id; ESarkoEquipSlot Slot; ESarkoItemCategory Category; };
 	static const FRow Table[] = {
 		{ TEXT("pistol"),   ESarkoEquipSlot::Weapon,   ESarkoItemCategory::Weapon },
+		// The weapon slot gained two more possible occupants with the weapon-mesh
+		// pass. Neither is obtainable — no loot table rolls them and no kit grants
+		// them — but a slot is a claim about what the catalog allows, and this test
+		// is where that claim is checked.
+		{ TEXT("rifle"),    ESarkoEquipSlot::Weapon,   ESarkoItemCategory::Weapon },
+		{ TEXT("shotgun"),  ESarkoEquipSlot::Weapon,   ESarkoItemCategory::Weapon },
 		{ TEXT("backpack"), ESarkoEquipSlot::Backpack, ESarkoItemCategory::Gear },
 		{ TEXT("jacket"),   ESarkoEquipSlot::Clothing, ESarkoItemCategory::Gear },
 	};
@@ -64,9 +72,8 @@ bool FSarkoEquipSlotsAreAuthoredAndAgreeWithCategories::RunTest(const FString& P
 	// equippable item can carry a category that contradicts its slot.
 	for (const FSarkoItemDef& Def : Catalog.Items)
 	{
-		const bool bInTable = Def.Id == FName(TEXT("pistol"))
-			|| Def.Id == FName(TEXT("backpack"))
-			|| Def.Id == FName(TEXT("jacket"));
+		const bool bInTable = Algo::AnyOf(Table,
+			[&Def](const FRow& Row) { return FName(Row.Id) == Def.Id; });
 		if (!bInTable)
 		{
 			TestEqual(*FString::Printf(TEXT("'%s' is cargo, not equipment"), *Def.Id.ToString()),

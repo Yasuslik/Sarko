@@ -49,6 +49,16 @@ public:
 	virtual void RestartPlayer(AController* NewPlayer) override;
 
 	/**
+	 * Server only: puts the profile's equipped weapon in the fresh pawn's hand.
+	 *
+	 * Here rather than in the pawn's own BeginPlay because the pawn cannot know:
+	 * the equipment lives on USarkoGameInstance, which is the host's cache of
+	 * ITS OWN player's profile — asking for it from inside a pawn would give
+	 * every pawn on a listen server the host's gun.
+	 */
+	void ShowEquippedWeapon(AController* NewPlayer);
+
+	/**
 	 * Advances every player's extraction dwell and expires the raid clock. The
 	 * server's own copy of each pawn's location is what is measured — a client
 	 * never gets to claim it is standing in a zone (same discipline as the loot
