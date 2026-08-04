@@ -43,10 +43,21 @@ fi
 rm -rf "$WORK"
 mkdir -p "$WORK"
 
+# Which packs are weapons rather than props. A weapon is scaled uniformly to its
+# real length and stood on Z=0 instead of being stretched into the -50..50 box —
+# see prepare-assets.py's header. The list is here rather than inferred from the
+# pack name because "is this a prop or a thing a pawn holds" is a decision, and a
+# decision belongs somewhere a person reads.
+WEAPON_PACKS=("UltimateGuns")
+
 for pack in "${PACKS[@]}"; do
-	echo "==> Preparing $pack"
+	MODE=prop
+	for weapon_pack in "${WEAPON_PACKS[@]}"; do
+		[[ "$pack" == "$weapon_pack" ]] && MODE=weapon
+	done
+	echo "==> Preparing $pack ($MODE)"
 	"$BLENDER" -b -P "$PROJECT_DIR/Scripts/prepare-assets.py" -- \
-		"$ART_DIR/$pack" "$WORK/$pack" "$WORK/prepared.json" 2>&1 \
+		"$ART_DIR/$pack" "$WORK/$pack" "$WORK/prepared.json" "$MODE" 2>&1 \
 		| grep -E "SARKO_PREPARE|Error|Traceback" || true
 done
 
