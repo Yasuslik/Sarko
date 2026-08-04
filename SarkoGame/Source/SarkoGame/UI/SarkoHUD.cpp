@@ -1372,7 +1372,19 @@ void ASarkoHUD::DrawInteract()
 	const FLinearColor Fill = bLive
 		? FLinearColor(0.95f, 0.8f, 0.25f, 0.55f)
 		: FLinearColor(1.f, 1.f, 1.f, 0.15f);
-	const FLinearColor Ink = bLive ? FLinearColor::White : FLinearColor(1.f, 1.f, 1.f, 0.5f);
+	// The idle rim is DIM, and the first frames of this are why: at full white it
+	// came out as bright as the move stick's home ring and much the same size —
+	// two white circles along the bottom of the screen, one a control and one a
+	// place to put a thumb, told apart by nothing. This project has already paid
+	// once for a player reading a button as a stick.
+	//
+	// Dimmed in the RGB and NOT in the alpha, which is the thing worth knowing
+	// here: AHUD::DrawLine's alpha does not survive to the glass — a 0.22-alpha
+	// white stroke measures 255,255,255 in the frame — so every stroke on this HUD
+	// is opaque whatever its colour says, and the only lever a drawn line has is
+	// its brightness. 0.26 linear is a mid grey on the dark plate: visibly a
+	// reserved slot, no longer competing with a stick home.
+	const FLinearColor Ink = bLive ? FLinearColor::White : FLinearColor(0.26f, 0.26f, 0.25f, 1.f);
 	DrawDisc(Centre, Radius, Fill);
 
 	// A DRAWN RIM, which the reload button does not have. Two circles the same size
