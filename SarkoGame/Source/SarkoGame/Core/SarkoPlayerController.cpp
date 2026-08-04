@@ -96,9 +96,32 @@ FVector2D SarkoInput::RightThumbAnchor(FBox2D Frame, float PointScale)
 	return FVector2D(Frame.Max.X - 90.f * PointScale, Frame.Max.Y - 60.f * PointScale);
 }
 
+SarkoInput::ESarkoAimZone SarkoInput::AimZoneFor(FVector2D AimValue, float MoveDeadZone, float FireThreshold)
+{
+	const float Deflection = AimValue.Size();
+
+	// Outside in, because the zones nest and the outer one wins. Both bounds are
+	// floored at KINDA_SMALL_NUMBER so a setting of zero cannot make a thumb that
+	// is not touching anything read as a thumb that is firing.
+	if (Deflection >= FMath::Max(KINDA_SMALL_NUMBER, FireThreshold))
+	{
+		return ESarkoAimZone::Fire;
+	}
+	if (Deflection >= FMath::Max(KINDA_SMALL_NUMBER, MoveDeadZone))
+	{
+		return ESarkoAimZone::Aim;
+	}
+	return ESarkoAimZone::Rest;
+}
+
 bool SarkoInput::ShouldFireWhileHeld(FVector2D AimValue, float FireDeadZone)
 {
-	return AimValue.Size() >= FMath::Max(KINDA_SMALL_NUMBER, FireDeadZone);
+	// Asked of the zone classifier and not of the vector, so there is one place
+	// the boundary lives — the same place ASarkoHUD::DrawStick draws it. The move
+	// dead zone is passed as zero because this question does not care: Rest and
+	// Aim are both "do not shoot", and only the outer bound separates them from
+	// the answer.
+	return AimZoneFor(AimValue, /*MoveDeadZone*/ 0.f, FireDeadZone) == ESarkoAimZone::Fire;
 }
 
 float SarkoInput::StickRadiusPxForViewport(FVector2D ViewportSize)
@@ -106,14 +129,6 @@ float SarkoInput::StickRadiusPxForViewport(FVector2D ViewportSize)
 	// The SAME point scale the HUD lays itself out with, so the ring drawn around
 	// the thumb and the rule that ring pictures cannot come from two numbers.
 	return StickRadiusPt * SarkoUI::PointScaleForViewport(ViewportSize);
-}
-
-bool SarkoInput::ShouldFireOnRelease(FVector2D LastAimValueWhileHeld, float MoveDeadZone)
-{
-	// See the header: "the touch never had a direction" and "the thumb was
-	// dragged back onto the anchor" are the same question asked of the same
-	// number, and both answers are "do not shoot".
-	return LastAimValueWhileHeld.Size() >= FMath::Max(KINDA_SMALL_NUMBER, MoveDeadZone);
 }
 
 bool SarkoInput::IsMoveStickSuppressed(bool bContainerPanelOpen)
@@ -238,42 +253,43 @@ void ASarkoPlayerController::PlayerTick(float DeltaTime)
 
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
 
-	// HOLD to fire (spec §4.2). There is no fire button: a dedicated one competes
-	// with the aim stick for the same thumb, and every mobile shooter that ships
-	// both ends up with players using one.
+	// THE AIM STICK'S SECOND ZONE, and the only thing in this game that fires a
+	// round (spec §4.2). There is no fire button: a dedicated one competes with
+	// the aim stick for the same thumb, and every mobile shooter that ships both
+	// ends up with players using one.
+	//
+	// Inside SarkoInput::AimZoneFor's Fire boundary the stick aims and nothing
+	// else, which is a sentence this control scheme could not say until now — the
+	// threshold was 0.35, i.e. 18 pt of a 52 pt stick, so any deflection large
+	// enough to point the pawn at something was already large enough to shoot at
+	// it. The first phone playtest spent a whole eight-round magazine finding that
+	// out, at 2600 uu of noise a round.
+	//
+	// Nothing here is edge-triggered: crossing the boundary fires on the crossing
+	// FRAME (LastLocalFireSeconds is a free-running clock, and a thumb arriving
+	// from the Aim zone has not fired for a while), then repeats at the weapon's
+	// interval. A shot has to feel like it left when the thumb got there. The cost
+	// is that the boundary must be somewhere a thumb does not wander, which is the
+	// whole point of moving it to 0.70 and of drawing it.
 	//
 	// Throttled to the weapon's own interval on this side as well as the
 	// server's, because RequestFire is a reliable RPC and a held stick would
 	// otherwise send one per frame. The server's rate limit is unchanged and
 	// still the authority; this is politeness.
+	//
+	// AND THERE IS NO SECOND PATH. Releasing the thumb fires nothing, whatever it
+	// was doing — see the note where SarkoInput::ShouldFireOnRelease used to be
+	// declared. One rule: past the ring you are shooting, inside it you are not.
+	// A single aimed shot is a push past the ring and a lift, which fires exactly
+	// once because the next round is 0.15 s away.
 	if (AimStick.bActive && SarkoInput::ShouldFireWhileHeld(AimValue, Settings.AimFireDeadZone))
 	{
 		if (Now - LastLocalFireSeconds >= Settings.MinFireIntervalSeconds)
 		{
 			LastLocalFireSeconds = Now;
-			bAimFiredThisHold = true;
 			bEverFired = true;
 			Pawn->RequestFire();
 		}
-	}
-
-	// FLICK: a quick tap that never crossed the FIRE dead zone still fires once,
-	// on release — the aimed single shot, and the only one this scheme has. A
-	// hold that has already fired gets no bonus shot when the thumb finally
-	// lifts.
-	//
-	// But it must have gone somewhere first. A release with the thumb still on
-	// (or back on) its anchor is not a shot: it either never had a direction —
-	// in which case the round used to go out along the PREVIOUS hold's aim ray,
-	// so a stray touch, a re-grip or a thumb steadying the phone fired a 2600 uu
-	// noise event at nothing — or the player dragged back to cancel, which is
-	// the genre's abort gesture and the only one this scheme offers.
-	if (bAimReleasedThisFrame && !bAimFiredThisHold
-		&& SarkoInput::ShouldFireOnRelease(LastAimValueWhileHeld, Settings.MoveStickDeadZone))
-	{
-		LastLocalFireSeconds = Now;
-		bEverFired = true;
-		Pawn->RequestFire();
 	}
 }
 
@@ -482,10 +498,13 @@ void ASarkoPlayerController::SarkoDebugAimGesture(FString Kind, float DelaySecon
 	const FVector2D Anchor = DebugThumbAnchor(/*bLeftHalf*/ false);
 	const float Radius = DebugStickRadiusPx();
 
-	// 0.25 of the radius: past MoveStickDeadZone 0.15 so it counts as a
-	// direction, short of AimFireDeadZone 0.35 so the HOLD never fires. That
-	// isolates the release rule, which is the whole question.
-	const FVector2D Out = Anchor + FVector2D(0.f, -Radius * 0.25f);
+	// 0.45 of the radius: past MoveStickDeadZone 0.15 so it counts as a real aim,
+	// short of AimFireDeadZone 0.70 so it is squarely in the AIM zone. Every
+	// gesture below except "push" lives there, and the ammo count either side of
+	// each one is the assertion — all of them must spend nothing.
+	const FVector2D Out = Anchor + FVector2D(0.f, -Radius * 0.45f);
+	// Past the ring, for the one gesture that is supposed to cost a round.
+	const FVector2D Past = Anchor + FVector2D(0.f, -Radius * 0.95f);
 	const int32 Finger = 1;
 
 	LogGestureAmmo(TEXT("before"), Kind);
@@ -497,7 +516,9 @@ void ASarkoPlayerController::SarkoDebugAimGesture(FString Kind, float DelaySecon
 	float EndAt = 0.4f;
 	if (Kind == TEXT("flick"))
 	{
-		// Out, and lifted there. The one gesture that must still fire.
+		// Out into the AIM zone, and lifted there. It used to be the one gesture
+		// that fired; it is now the one that must NOT, because that band is where
+		// every deliberate turn-and-look now ends. Ammo before == ammo after.
 		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Moved), Out, 0.15f);
 		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Ended), Out, 0.4f);
 	}
@@ -508,6 +529,14 @@ void ASarkoPlayerController::SarkoDebugAimGesture(FString Kind, float DelaySecon
 		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Moved), Anchor, 0.4f);
 		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Ended), Anchor, 0.6f);
 		EndAt = 0.6f;
+	}
+	else if (Kind == TEXT("push"))
+	{
+		// PAST the ring and lifted straight away: the deliberate single shot, and
+		// the only gesture in this list that is allowed to cost anything. Exactly
+		// one round — the crossing frame fires, and the next is 0.15 s out.
+		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Moved), Past, 0.15f);
+		ScheduleTouch(Finger, static_cast<uint8>(ETouchType::Ended), Past, 0.25f);
 	}
 	else
 	{
@@ -523,14 +552,10 @@ void ASarkoPlayerController::SarkoDebugAimGesture(FString Kind, float DelaySecon
 
 void ASarkoPlayerController::UpdateSticks()
 {
-	bAimReleasedThisFrame = false;
-
 	int32 ViewportX = 0;
 	int32 ViewportY = 0;
 	GetViewportSize(ViewportX, ViewportY);
 	const FVector2D Viewport(static_cast<float>(ViewportX), static_cast<float>(ViewportY));
-
-	const bool bWasAiming = AimStick.bActive;
 
 	bool bMoveTouchStillDown = false;
 	bool bAimTouchStillDown = false;
@@ -698,12 +723,11 @@ void ASarkoPlayerController::UpdateSticks()
 				AimStick.Current = Position;
 				AimStick.RadiusPx = StickRadiusPx;
 				bAimTouchStillDown = true;
-				// A new hold has fired nothing yet, so a flick that never leaves
-				// the FIRE dead zone still gets its one shot on release.
-				bAimFiredThisHold = false;
-				// And it starts with no direction, so a fresh tap can never be
-				// fired by the deflection the PREVIOUS hold ended on.
-				LastAimValueWhileHeld = FVector2D::ZeroVector;
+				// A stick anchors AT the finger, so a fresh hold starts at zero
+				// deflection — in the Rest zone, whatever the previous hold ended
+				// on. There is nothing to reset: a touch cannot arrive already
+				// past the fire boundary, and no state survives a release that
+				// could fire on its own.
 			}
 		}
 	}
@@ -713,13 +737,11 @@ void ASarkoPlayerController::UpdateSticks()
 		MoveStick = FSarkoTouchStick();
 		MoveTouchIndex = INDEX_NONE;
 	}
-	// Latched while the finger is still down, because the release edge and the
-	// deflection it has to judge are one frame apart — the stick below is gone
-	// by the time PlayerTick asks. See SarkoInput::ShouldFireOnRelease.
-	if (bAimTouchStillDown)
-	{
-		LastAimValueWhileHeld = AimStick.Value();
-	}
+	// Nothing is latched off the release edge any more. The controller used to
+	// carry the last deflection across the frame the finger lifted, because a
+	// flick fired its shot there; the release fires nothing now, so the value has
+	// no reader and keeping it would be one more piece of state that could
+	// disagree with the stick.
 	if (!bAimTouchStillDown)
 	{
 		AimStick = FSarkoTouchStick();
@@ -733,10 +755,6 @@ void ASarkoPlayerController::UpdateSticks()
 	{
 		ReloadTouchIndex = INDEX_NONE;
 	}
-
-	// Release of the aim thumb is the FLICK's fire signal. Holding it past the
-	// dead zone fires continuously (spec §4.2); PlayerTick owns both.
-	bAimReleasedThisFrame = bWasAiming && !AimStick.bActive;
 }
 
 void ASarkoPlayerController::UpdateLootPanelUnderFire(ASarkoCharacter& Pawn)

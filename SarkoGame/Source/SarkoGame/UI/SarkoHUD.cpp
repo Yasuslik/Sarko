@@ -116,6 +116,25 @@ namespace
 	 *  the stick, not a second stick. */
 	constexpr float QuietRingAlphaScale = 0.55f;
 
+	/**
+	 * THE FIRE RING, on the aim stick, at USarkoRaidSettings::AimFireDeadZone of
+	 * its travel: cross this and you are shooting.
+	 *
+	 * Not the dimming the move stick's boundary gets, because the two rings answer
+	 * different questions. The walk/run line is information you consult — it can
+	 * afford to recede. This one is the difference between aiming at a bot and
+	 * emptying eight rounds at it, so it has to be legible in the half-second a
+	 * thumb takes to get there.
+	 *
+	 * A hot orange-red against the stick's amber (1, 0.85, 0.2): the same family,
+	 * so it reads as part of this control and not as an alert pasted over it, but
+	 * far enough round the hue wheel that "the inner ring is the hot one" survives
+	 * a glance, a thumb half-covering it, and daylight on a phone. It carries the
+	 * aim ring's own alpha rather than more — a peer of the outline it sits inside,
+	 * which is what keeps it from shouting. Hue does the talking, not brightness.
+	 */
+	const FLinearColor FireRingColour(1.f, 0.22f, 0.10f, 0.45f);
+
 	/** The snap-target bracket: four corner ticks on a 12 pt box, at the same
 	 *  weight as the aim cone it belongs to. */
 	constexpr float BracketSizePt = 12.f;
@@ -287,11 +306,27 @@ void ASarkoHUD::DrawHUD()
 	DrawDamageArcs();
 	DrawHitMarker();
 
-	// The quiet ring is the MOVE stick's alone: it is a movement-noise boundary,
-	// and the aim stick's fractions (the 0.35 fire threshold) mean something else
-	// entirely — two rings drawn on both would teach the wrong rule twice.
-	DrawStick(PC->GetMoveStick(), FLinearColor(1.f, 1.f, 1.f, 0.35f), /*bDrawQuietRing*/ true);
-	DrawStick(PC->GetAimStick(), FLinearColor(1.f, 0.85f, 0.2f, 0.45f), /*bDrawQuietRing*/ false);
+	// EACH STICK GETS ITS OWN BOUNDARY DRAWN, and only its own. The move stick's
+	// is the walk/run noise line; the aim stick's is where aiming becomes
+	// shooting. Both fractions are read from the settings here and handed to a
+	// drawing function that knows nothing about either rule, so a change to
+	// either setting moves the ring with it.
+	//
+	// The aim stick used to get no inner ring at all — the reasoning being that
+	// drawing the move stick's fraction on it would teach the wrong rule twice.
+	// True, and beside the point: it needed its OWN line. Without it the fire
+	// threshold was a number in an .ini that the player could only locate by
+	// crossing it, which on a phone, with an eight-round magazine and a manual
+	// reload, costs the magazine and gives away the position.
+	const USarkoRaidSettings& StickSettings = *GetDefault<USarkoRaidSettings>();
+
+	const FLinearColor MoveColour(1.f, 1.f, 1.f, 0.35f);
+	FLinearColor QuietColour = MoveColour;
+	QuietColour.A *= QuietRingAlphaScale;
+	DrawStick(PC->GetMoveStick(), MoveColour, StickSettings.NoiseRunSpeedFraction, QuietColour);
+
+	DrawStick(PC->GetAimStick(), FLinearColor(1.f, 0.85f, 0.2f, 0.45f),
+		StickSettings.AimFireDeadZone, FireRingColour);
 	DrawAimCone();
 	DrawTopBar();
 	DrawHealth();
@@ -386,7 +421,8 @@ void ASarkoHUD::DrawRing(FVector2D Centre, float Radius, const FLinearColor& Col
 	}
 }
 
-void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, const FLinearColor& Colour, bool bDrawQuietRing)
+void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, const FLinearColor& Colour,
+	float BoundaryFraction, const FLinearColor& BoundaryColour)
 {
 	if (!Stick.bActive)
 	{
@@ -405,23 +441,24 @@ void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, const FLinearColor& Col
 	// because it is drawn from the same number the input maths divides by.
 	DrawRing(Stick.Origin, Stick.RadiusPx, Colour);
 
-	// THE WALK/RUN BOUNDARY, move stick only. Inside this ring the pawn is heard
-	// at 450 uu; outside it, at 1100 uu — five times the area, and the difference
-	// between crossing a compound unnoticed and pulling two bots onto you. The
-	// server has always drawn that line; nothing ever showed the player where it
-	// was, so the game's most interesting choice was invisible.
+	// THE BOUNDARY THIS STICK CHANGES BEHAVIOUR AT — the walk/run line on the move
+	// stick, the aim/fire line on the aim stick. One ring, drawn from the fraction
+	// the caller read out of the settings, so the rule and its picture are the same
+	// number in both cases.
 	//
-	// Dimmer, and inside: it reads as a band within the stick rather than as a
-	// second control.
-	if (bDrawQuietRing)
+	// Inside the outer ring, always: it reads as a band within the stick rather
+	// than as a second control. Whether it is dimmer or merely different is the
+	// caller's to say — the walk/run line is information, the fire line is a
+	// warning, and they should not look alike.
+	//
+	// Guarded rather than clamped. A fraction of 0 or 1 would put the ring exactly
+	// on the dot or exactly on the stick's own outline, where it says nothing and
+	// only muddies what is there; drawing nothing is the honest picture of a
+	// boundary that has no width to sit in.
+	const float Fraction = BoundaryFraction;
+	if (Fraction > KINDA_SMALL_NUMBER && Fraction < 1.f)
 	{
-		const float Fraction = FMath::Clamp(GetDefault<USarkoRaidSettings>()->NoiseRunSpeedFraction, 0.f, 1.f);
-		if (Fraction > KINDA_SMALL_NUMBER && Fraction < 1.f)
-		{
-			FLinearColor Quiet = Colour;
-			Quiet.A *= QuietRingAlphaScale;
-			DrawRing(Stick.Origin, Stick.RadiusPx * Fraction, Quiet);
-		}
+		DrawRing(Stick.Origin, Stick.RadiusPx * Fraction, BoundaryColour);
 	}
 
 	const float Dot = Px(StickDotPt);

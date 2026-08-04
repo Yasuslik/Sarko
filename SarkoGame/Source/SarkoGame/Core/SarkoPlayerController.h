@@ -93,9 +93,40 @@ namespace SarkoInput
 	 */
 	FVector2D RightThumbAnchor(FBox2D Frame, float PointScale);
 
-	/** Whether the aim thumb is deflected far enough to be firing. Pure, because
-	 *  it is the difference between a weapon that shoots when you meant to aim and
-	 *  one that does not. */
+	/**
+	 * WHAT THE AIM THUMB IS DOING, in the only three answers there are.
+	 *
+	 * The aim stick is TWO CONTROLS sharing one thumb, and this names the split:
+	 *
+	 *   Rest — below MoveStickDeadZone. A thumb resting on the glass, a re-grip, a
+	 *          finger steadying the phone. No direction was established, so nothing
+	 *          happens at all.
+	 *   Aim  — dead zone to fire threshold. The pawn turns and the aim cone follows
+	 *          and NO ROUND IS FIRED. This band is the whole fix: before it existed
+	 *          (fire threshold 0.35, i.e. 18 pt of a 52 pt stick) there was nowhere
+	 *          to put a thumb that meant "look over there" without also meaning
+	 *          "shoot", and the first phone playtest emptied a magazine into
+	 *          nothing discovering that.
+	 *   Fire — at or past USarkoRaidSettings::AimFireDeadZone. Firing, at the
+	 *          weapon's own interval, for as long as the thumb stays out here.
+	 *
+	 * Pure, and the ONE authority: ASarkoPlayerController::PlayerTick asks it what
+	 * to do and ASarkoHUD::DrawStick draws the Aim/Fire boundary at the same
+	 * fraction, so the ring on the screen is a picture of this function rather than
+	 * a second opinion about it.
+	 */
+	enum class ESarkoAimZone : uint8
+	{
+		Rest,
+		Aim,
+		Fire
+	};
+	ESarkoAimZone AimZoneFor(FVector2D AimValue, float MoveDeadZone, float FireThreshold);
+
+	/** Whether the aim thumb is deflected far enough to be firing — AimZoneFor's
+	 *  Fire zone, as the boolean the tick actually asks for. Pure, because it is
+	 *  the difference between a weapon that shoots when you meant to aim and one
+	 *  that does not. */
 	bool ShouldFireWhileHeld(FVector2D AimValue, float FireDeadZone);
 
 	/**
@@ -133,28 +164,31 @@ namespace SarkoInput
 	float StickRadiusPxForViewport(FVector2D ViewportSize);
 
 	/**
-	 * Whether lifting the aim thumb should fire the flick's single shot.
+	 * THERE IS NO ShouldFireOnRelease ANY MORE, and its absence is a rule.
 	 *
-	 * LastAimValueWhileHeld is the deflection on the last frame the stick was
-	 * still down — the frame after that it is gone, which is why the controller
-	 * latches it rather than reading the stick.
+	 * Lifting the aim thumb used to fire one round if the hold had gone anywhere
+	 * at all — past MoveStickDeadZone, short of the fire threshold. That was a
+	 * sound trade when the threshold was 0.35: the tap band was 8 pt to 18 pt, a
+	 * gesture narrow enough that a player only landed in it on purpose, and it was
+	 * the scheme's one precise single shot.
 	 *
-	 * Two rules, and they turn out to be one. **A touch that never established a
-	 * direction must not fire**: ASarkoCharacter::SetAimIntent leaves AimDirection
-	 * untouched when the stick is centred (correctly — a released stick must not
-	 * snap the pawn to a default facing), so a zero-deflection tap used to fire a
-	 * round along whatever the *previous* hold aimed at. A stray right-half touch
-	 * was a shot, and a shot is the loudest event this game models: 2600 uu
-	 * against a 450 uu walk. **And dragging back onto the anchor is a cancel** —
-	 * the gesture Brawl Stars and Diablo Immortal both use, and the player's only
-	 * way to abort a shot they have thought better of. Both are the same test:
-	 * where the thumb was when it left.
+	 * At 0.70 the same rule inverts. The band becomes 8 pt to 36 pt — which is
+	 * exactly the Aim zone, the place the player now spends every deliberate
+	 * turn-and-look. "Release fires" would mean every aim ends in a gunshot: the
+	 * complaint this change exists to fix, moved one gesture to the left. So the
+	 * release does nothing, ever, and the rule is a single sentence a player can
+	 * hold in their head — **past the ring you are shooting, inside it you are
+	 * not.**
 	 *
-	 * The move dead zone and not the fire dead zone, so the tap band (dead zone
-	 * to fire threshold, 8 pt to 18 pt at the radius above) stays a real gesture
-	 * rather than collapsing to nothing.
+	 * The single aimed shot survives; it moved into the Fire zone where it is
+	 * visible. Push past the ring and lift: the crossing frame fires once,
+	 * immediately, and a second round needs MinFireIntervalSeconds (0.15 s) of
+	 * holding out there. The two bugs the old release rule was hardened against —
+	 * a directionless tap firing along the PREVIOUS hold's stale ray, and a
+	 * drag-back-to-cancel that did not cancel — are not merely still fixed but
+	 * unreachable: neither gesture ever enters the Fire zone.
+	 * Sarko.Input.ReleasingTheAimStickNeverFires pins both.
 	 */
-	bool ShouldFireOnRelease(FVector2D LastAimValueWhileHeld, float MoveDeadZone);
 
 	/**
 	 * Whether the left thumb's stick must not be driven this frame.
@@ -492,14 +526,22 @@ public:
 	void SarkoDebugTouchStick(int32 Half, float DirX, float DirY, float Fraction, float HoldSeconds, float DelaySeconds);
 
 	/**
-	 * One scripted release of the aim thumb, and the three answers that matter:
+	 * One scripted use of the aim thumb, and the four answers that matter. Three
+	 * of them are the same answer, which is the point:
 	 *
 	 *   tap    — pressed and lifted without ever moving. Must NOT fire: it never
 	 *            had a direction, so the round would have gone out along the
 	 *            previous hold's ray.
-	 *   cancel — dragged out past the move dead zone, short of the fire
-	 *            threshold, then back onto the anchor and lifted. Must NOT fire.
-	 *   flick  — dragged out and lifted there. MUST fire exactly once.
+	 *   cancel — dragged out into the AIM zone, back onto the anchor, lifted.
+	 *            Must NOT fire.
+	 *   flick  — dragged out into the AIM zone and lifted there. Must NOT fire,
+	 *            and this one CHANGED: it used to be the scheme's single aimed
+	 *            shot, back when the fire boundary was 0.35 and the band below it
+	 *            was too narrow to land in by accident. At 0.70 that band is where
+	 *            every deliberate aim now lives, so firing on release would mean
+	 *            every look ends in a gunshot.
+	 *   push   — dragged PAST the fire ring and lifted. MUST fire exactly once:
+	 *            the deliberate single shot, moved to where the player can see it.
 	 *
 	 * Logs the magazine before and after, because "no shot" is only observable as
 	 * a round that was not spent and a noise event that was not reported.
@@ -642,31 +684,11 @@ private:
 	int32 MoveTouchIndex = INDEX_NONE;
 	int32 AimTouchIndex = INDEX_NONE;
 
-	/** True on the frame the aim thumb lifts — that is when the flick's shot goes off. */
-	bool bAimReleasedThisFrame = false;
-
 	/** Which touch slot is holding the reload button, or INDEX_NONE. Claimed
 	 *  before stick classification, exactly as InteractTouchIndex is — without it
 	 *  a press on the button would also start an aim drag, and with hold-to-fire
 	 *  that means the reload button shoots. */
 	int32 ReloadTouchIndex = INDEX_NONE;
-
-	/** True once this hold of the aim stick has fired at least once. What makes a
-	 *  flick fire exactly once on release, and a hold not fire a bonus shot when
-	 *  the thumb finally lifts. Reset when the stick is next pressed. */
-	bool bAimFiredThisHold = false;
-
-	/**
-	 * The aim deflection on the last frame the thumb was still down.
-	 *
-	 * Latched because the release edge and the value it has to judge are one
-	 * frame apart: UpdateSticks clears the stick the moment the finger lifts, so
-	 * by the time PlayerTick asks "did this flick have a direction, and was it
-	 * dragged back to the anchor" the answer has already been thrown away.
-	 * Zeroed when a new hold anchors, so one hold's aim can never fire the next
-	 * hold's tap. See SarkoInput::ShouldFireOnRelease for what it decides.
-	 */
-	FVector2D LastAimValueWhileHeld = FVector2D::ZeroVector;
 
 	/**
 	 * The damage serial this controller has already reacted to, or INDEX_NONE
