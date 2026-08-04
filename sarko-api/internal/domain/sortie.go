@@ -97,7 +97,7 @@ var SortieKits = []SortieKit{
 	},
 	{
 		// The coat, and one of the two honest ways into the clothing slot (the other
-		// is the `good` loot tier — see SarkoGame/Data/Loot/loot-tables.json). Spec
+		// is the `good` loot tier — see SarkoGame/Content/Data/Loot/loot-tables.json). Spec
 		// §5 keeps clothing a hook rather than a system, so a jacket is worth no more
 		// than the bandages beside it here; what it is worth is that the slot can be
 		// filled by PLAYING.

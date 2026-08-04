@@ -252,7 +252,7 @@ func TestValidateRaidItemsAcceptsSplitEntriesThatMergeUnderTheCap(t *testing.T) 
 // Disarming it now takes a deliberate, greppable environment variable, and even
 // that shouts on the way past.
 func TestKnownItemsMatchTheClientCatalog(t *testing.T) {
-	const path = "../../../SarkoGame/Data/Items/items.json"
+	const path = "../../../SarkoGame/Content/Data/Items/items.json"
 	// The escape hatch for a build that genuinely has no game directory. It is
 	// opt-IN: absence of the file must never be self-certifying.
 	const optOutEnv = "SARKO_CLIENT_CATALOG_OPTIONAL"

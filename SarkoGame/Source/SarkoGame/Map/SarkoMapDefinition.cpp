@@ -1301,7 +1301,7 @@ FSarkoMapLayout SarkoMap::ToLayout(const FSarkoMapDefinition& Definition)
 
 bool SarkoMap::LoadDefinitionFromDisk(const FString& MapId, FSarkoMapDefinition& OutDefinition, FString& OutError)
 {
-	const FString Path = FPaths::ProjectDir() / TEXT("Data") / TEXT("Maps") / (MapId + TEXT(".json"));
+	const FString Path = FPaths::ProjectContentDir() / TEXT("Data") / TEXT("Maps") / (MapId + TEXT(".json"));
 
 	FString Json;
 	if (!FFileHelper::LoadFileToString(Json, *Path))

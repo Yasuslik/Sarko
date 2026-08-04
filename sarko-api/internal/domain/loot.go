@@ -26,7 +26,7 @@ type ItemDef struct {
 }
 
 // ItemDefs is every item id the game can legitimately produce, mapped to its
-// stack size and its footprint. It mirrors SarkoGame/Data/Items/items.json,
+// stack size and its footprint. It mirrors SarkoGame/Content/Data/Items/items.json,
 // which is the authored source — the values, not the file, because domain stays
 // dependency-free and must compile in an image that ships only sarko-api/.
 // loot_test.go reads that file and fails if the ids, the stack sizes or the
@@ -86,7 +86,7 @@ var ItemDefs = map[string]ItemDef{
 	// It used to be in the catalog and in no loot table at all, which made the
 	// clothing slot fillable only by a debug exec — a slot that cannot be filled by
 	// playing is a slot that does not exist. It now has two honest ways in: the
-	// `good` loot tier at weight 3 (SarkoGame/Data/Loot/loot-tables.json), and two
+	// `good` loot tier at weight 3 (SarkoGame/Content/Data/Loot/loot-tables.json), and two
 	// of the ВИЛАЗКА kits in sortie.go. Spec §5 still keeps clothing a hook rather
 	// than a system — a coat does nothing yet — but a hook you can reach is the
 	// difference between a future feature and a dead slot.

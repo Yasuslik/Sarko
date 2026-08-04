@@ -17,7 +17,7 @@ var tierOrder = []Tier{TierNone, TierBicycle, TierMotorcycle, TierCar, TierHelic
 
 // mapsByTier lists the map each tier adds. Access is cumulative.
 // Tier none owns the bridge as the on-foot starting zone: it is the sector the
-// client actually ships (SarkoGame/Data/Maps/bridge.json), and the wire id has
+// client actually ships (SarkoGame/Content/Data/Maps/bridge.json), and the wire id has
 // to be the map the player is standing in, or /v1/raid/start answers
 // map_locked for the only sector that exists.
 var mapsByTier = map[Tier]string{

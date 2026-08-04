@@ -172,7 +172,7 @@ bool SarkoLoot::ParseItemCatalog(const FString& Json, FSarkoItemCatalog& OutCata
 
 bool SarkoLoot::LoadItemCatalogFromDisk(FSarkoItemCatalog& OutCatalog, FString& OutError)
 {
-	const FString Path = FPaths::ProjectDir() / TEXT("Data") / TEXT("Items") / TEXT("items.json");
+	const FString Path = FPaths::ProjectContentDir() / TEXT("Data") / TEXT("Items") / TEXT("items.json");
 
 	FString Json;
 	if (!FFileHelper::LoadFileToString(Json, *Path))

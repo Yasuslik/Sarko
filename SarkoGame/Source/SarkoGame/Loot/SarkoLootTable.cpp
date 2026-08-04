@@ -167,7 +167,7 @@ bool SarkoLoot::ParseLootTables(const FString& Json, const FSarkoItemCatalog& Ca
 
 bool SarkoLoot::LoadLootTablesFromDisk(const FSarkoItemCatalog& Catalog, FSarkoLootTables& OutTables, FString& OutError)
 {
-	const FString Path = FPaths::ProjectDir() / TEXT("Data") / TEXT("Loot") / TEXT("loot-tables.json");
+	const FString Path = FPaths::ProjectContentDir() / TEXT("Data") / TEXT("Loot") / TEXT("loot-tables.json");
 
 	FString Json;
 	if (!FFileHelper::LoadFileToString(Json, *Path))
