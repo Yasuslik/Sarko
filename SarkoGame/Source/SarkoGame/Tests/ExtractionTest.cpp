@@ -86,7 +86,7 @@ bool FSarkoInteractButtonAvoidsTheThumbs::RunTest(const FString& Parameters)
 		// it must not sit where a thumb DRIVES a stick. The aim thumb's working
 		// anchor is the measure of that, and the assert is that the button is far
 		// enough from it that working the stick cannot brush the button.
-		const FVector2D Anchor = SarkoInput::RightThumbAnchor(Safe, Scale);
+		const FVector2D Anchor = SarkoInput::AimStickHome(Safe, Scale);
 		const float ToThumb = FMath::Sqrt(Rect.ComputeSquaredDistanceToPoint(Anchor)) / Scale;
 		TestTrue(*FString::Printf(TEXT("the button is %.0f pt clear of the aim thumb's post"), ToThumb),
 			ToThumb > 45.f);

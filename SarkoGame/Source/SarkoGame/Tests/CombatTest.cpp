@@ -544,8 +544,18 @@ bool FSarkoThumbControlsDoNotOverlap::RunTest(const FString& Parameters)
 			Reload.Intersect(Interact));
 		TestTrue(*FString::Printf(TEXT("%s: interact is ABOVE reload, in the same column"), *Where),
 			Interact.Max.Y < Reload.Min.Y);
-		TestEqual(*FString::Printf(TEXT("%s: right-aligned to the same edge"), *Where),
-			Interact.Max.X, Reload.Max.X);
+		// They used to be right-aligned to the frame's edge, which is a weaker
+		// statement than it looked: two rects can share a right edge and still sit
+		// over two different thumbs when their widths differ. The column is the aim
+		// thumb's centre line now, and both buttons are centred on it.
+		TestTrue(*FString::Printf(TEXT("%s: both are centred on the same column"), *Where),
+			FMath::IsNearlyEqual(Interact.GetCenter().X, Reload.GetCenter().X, 0.01f));
+
+		// The reload button is ROUND, so its rect is the square the circle is
+		// inscribed in. A rect that stopped being square would be a circle drawn
+		// somewhere other than where it is pressed.
+		TestTrue(*FString::Printf(TEXT("%s: the reload rect is square, for a round button"), *Where),
+			FMath::IsNearlyEqual(Reload.GetSize().X, Reload.GetSize().Y, 0.01f));
 
 		// Both inside the safe frame, or a notch eats a control.
 		TestTrue(*FString::Printf(TEXT("%s: both are inside the safe frame"), *Where),
@@ -556,7 +566,11 @@ bool FSarkoThumbControlsDoNotOverlap::RunTest(const FString& Parameters)
 		// OUTSIDE it, so working the stick can never brush it, and still inside a
 		// landscape thumb's full reach. That asymmetry is the design: reload is a
 		// mid-fight reflex, interact is a decision you have already stopped to make.
-		const FVector2D Anchor = SarkoInput::RightThumbAnchor(Safe, Scale);
+		//
+		// Measured from the aim stick's HOME, which is the same point the old
+		// RightThumbAnchor named and is now also the origin the two rects are
+		// derived from — so this is no longer two numbers agreeing by luck.
+		const FVector2D Anchor = SarkoInput::AimStickHome(Safe, Scale);
 		const float ToReload = FMath::Sqrt(Reload.ComputeSquaredDistanceToPoint(Anchor)) / Scale;
 		const float ToInteract = FMath::Sqrt(Interact.ComputeSquaredDistanceToPoint(Anchor)) / Scale;
 		TestTrue(*FString::Printf(TEXT("%s: reload is %.0f pt from the thumb, inside its arc"), *Where, ToReload),
@@ -570,6 +584,96 @@ bool FSarkoThumbControlsDoNotOverlap::RunTest(const FString& Parameters)
 		// button" structural rather than a promise.
 		TestEqual(*FString::Printf(TEXT("%s: the reload rect is a pure function of the frame"), *Where),
 			SarkoInput::ReloadButtonRect(Safe, Scale).Min.Y, Reload.Min.Y);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSarkoStickHomesArePlacedAndClear,
+	"Sarko.Input.StickHomesArePlacedAndClear",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSarkoStickHomesArePlacedAndClear::RunTest(const FString& Parameters)
+{
+	// THE COMPLAINT THIS PINS. Both sticks float and neither was drawn until it
+	// was touched, so a player looking at a fresh raid saw two buttons on the
+	// right and nothing else — and reported that the sticks did not work. The
+	// homes are the fix: a mark at each thumb's resting place, on screen before
+	// anything is touched.
+	//
+	// Only the GEOMETRY is testable here. That the ring is actually drawn, and
+	// that it reads as a control at arm's length, is a screenshot and a pair of
+	// eyes — the same division this project already draws around the HUD.
+	const TArray<FVector2D> Viewports = {
+		FVector2D(2556.f, 1179.f),   // iPhone 14/15 Pro landscape
+		FVector2D(1280.f, 720.f),    // a small desktop window
+		FVector2D(1560.f, 720.f),    // a cheap phone at 2x
+	};
+
+	for (const FVector2D& Viewport : Viewports)
+	{
+		const FBox2D Safe = SarkoInput::SafeFrame(Viewport);
+		const float Scale = SarkoUI::PointScaleForViewport(Viewport);
+		const FVector2D MoveHome = SarkoInput::MoveStickHome(Safe, Scale);
+		const FVector2D AimHome = SarkoInput::AimStickHome(Safe, Scale);
+		const float Ring = SarkoInput::StickHomeRingPt * Scale;
+		const FString Where = FString::Printf(TEXT("at %.0fx%.0f"), Viewport.X, Viewport.Y);
+
+		// The whole mark, not just its centre, or a home indicator clips it.
+		const FBox2D MoveMark(MoveHome - FVector2D(Ring, Ring), MoveHome + FVector2D(Ring, Ring));
+		const FBox2D AimMark(AimHome - FVector2D(Ring, Ring), AimHome + FVector2D(Ring, Ring));
+		TestTrue(*FString::Printf(TEXT("%s: both home marks are inside the safe frame"), *Where),
+			Safe.IsInside(MoveMark) && Safe.IsInside(AimMark));
+
+		// One thumb each, and the halves are the classifier's own — which is the
+		// point: a touch is still routed by WHICH HALF it lands in and never by how
+		// near a home it is. The home is a hint, not a cage; the stick still floats
+		// to the thumb.
+		TestTrue(*FString::Printf(TEXT("%s: the move home is in the left half"), *Where),
+			SarkoInput::IsLeftHalf(MoveHome, Viewport));
+		TestFalse(*FString::Printf(TEXT("%s: the aim home is in the right half"), *Where),
+			SarkoInput::IsLeftHalf(AimHome, Viewport));
+		TestTrue(*FString::Printf(TEXT("%s: a touch nowhere near the move home is still a move touch"), *Where),
+			SarkoInput::IsLeftHalf(FVector2D(Safe.Min.X + 4.f, Safe.Min.Y + 4.f), Viewport));
+
+		// Mirrored. A player who learns one home has learned the other.
+		TestTrue(*FString::Printf(TEXT("%s: the two homes share a row"), *Where),
+			FMath::IsNearlyEqual(MoveHome.Y, AimHome.Y, 0.01f));
+		TestTrue(*FString::Printf(TEXT("%s: and sit the same distance in from their own edges"), *Where),
+			FMath::IsNearlyEqual(MoveHome.X - Safe.Min.X, Safe.Max.X - AimHome.X, 0.01f));
+
+		// A mark a thumb can find: 52 pt across, above the 44 pt floor this project
+		// holds its buttons to.
+		TestTrue(*FString::Printf(TEXT("%s: the home mark is at least 44 pt across"), *Where),
+			(Ring * 2.f) / Scale >= 44.f);
+
+		// THE DERIVATION. The reload button has no coordinates of its own: it is the
+		// aim home plus a ring, a gap and a radius, straight up. So it cannot drift
+		// away from the stick it belongs to, and "above the aim stick's default
+		// position" is arithmetic.
+		const FBox2D Reload = SarkoInput::ReloadButtonRect(Safe, Scale);
+		const FBox2D Interact = SarkoInput::InteractButtonRect(Safe, Scale);
+		TestTrue(*FString::Printf(TEXT("%s: the reload button is centred on the aim home"), *Where),
+			FMath::IsNearlyEqual(Reload.GetCenter().X, AimHome.X, 0.01f));
+		TestTrue(*FString::Printf(TEXT("%s: and sits above it"), *Where),
+			Reload.Max.Y < AimHome.Y);
+
+		// Exactly one gap between the drawn ring and the drawn button — the constant
+		// itself, not a number someone measured once and typed in.
+		const float ToReload = FMath::Sqrt(Reload.ComputeSquaredDistanceToPoint(AimHome)) / Scale;
+		TestTrue(*FString::Printf(TEXT("%s: the home ring clears the reload button by %.1f pt"), *Where,
+				ToReload - SarkoInput::StickHomeRingPt),
+			FMath::IsNearlyEqual(ToReload - SarkoInput::StickHomeRingPt, SarkoInput::ThumbButtonGapPt, 0.05f));
+
+		// NOTHING SITS WHERE THE THUMB RESTS. Both buttons are strictly outside the
+		// mark, so a thumb settling onto its home cannot land on a control.
+		TestFalse(*FString::Printf(TEXT("%s: the reload button does not cover the aim home"), *Where),
+			Reload.Intersect(AimMark));
+		TestFalse(*FString::Printf(TEXT("%s: nor does the interact button"), *Where),
+			Interact.Intersect(AimMark));
+		// And the left thumb's home is clear of the right thumb's cluster entirely.
+		TestFalse(*FString::Printf(TEXT("%s: the move home is clear of the thumb column"), *Where),
+			MoveMark.Intersect(Reload) || MoveMark.Intersect(Interact));
 	}
 	return true;
 }
