@@ -36,32 +36,96 @@ namespace SarkoInput
 	FBox2D SafeFrame(FVector2D ViewportSize);
 
 	/**
+	 * THE STICKS' HOMES — where each control lives while nobody is touching it.
+	 *
+	 * Added after the second phone playtest. The owner's words: "only the movement
+	 * sticks work, as if there are two kinds of them — the ones drawn initially
+	 * seem dead". Nothing was drawn initially. BOTH sticks float and
+	 * ASarkoHUD::DrawStick returned early on an inactive one, so at raid start the
+	 * only marks anywhere near the bottom corners were the reload and interact
+	 * buttons — he read those as the controls, pressed them, and the pawn did not
+	 * move. The sticks were never broken; they were invisible.
+	 *
+	 * A home is A HINT AND NOT A CAGE. The floating behaviour is untouched: a
+	 * touch anywhere in that half still anchors the stick under the thumb, which
+	 * is the thing that saves you when you grab the phone mid-fight without
+	 * looking down. The home only answers "where do the controls live" for a
+	 * player who has not touched anything yet.
+	 *
+	 * 90 pt in from the side edge and 60 pt up from the bottom is where a thumb
+	 * tip lands with the hand HOLDING the phone rather than reaching across it.
+	 * That is the point SarkoInput::RightThumbAnchor used to name for the aim
+	 * thumb alone; the aim home IS that point, and the old name is gone, because
+	 * two names for one place is how the two drift apart.
+	 */
+	constexpr float StickHomeSideInsetPt = 90.f;
+	constexpr float StickHomeBottomPt = 60.f;
+
+	/**
+	 * The radius the resting home is DRAWN at — half the stick's travel, and
+	 * deliberately not the travel itself.
+	 *
+	 * A 52 pt ring at the home would picture a boundary that does not exist: the
+	 * stick floats, so its real extent appears wherever the thumb lands and never
+	 * at the home. 26 pt reads as a thumb pad ("put it here"), leaves the reload
+	 * button its full ThumbButtonGapPt of clearance, and is still a 52 pt mark —
+	 * above the 44 pt floor this project holds its buttons to.
+	 */
+	constexpr float StickHomeRingPt = 26.f;
+
+	/**
+	 * The two homes, mirrored about the safe frame. Pure functions of the frame
+	 * and the scale, and the origin of the whole right-hand cluster: the reload
+	 * button is measured off AimStickHome, so "the reload button sits above the
+	 * aim stick's default position" is arithmetic rather than a promise.
+	 */
+	FVector2D MoveStickHome(FBox2D Frame, float PointScale);
+	FVector2D AimStickHome(FBox2D Frame, float PointScale);
+
+	/**
 	 * The thumb column, in points on the 844x390 landscape canvas.
 	 *
 	 * Sized in POINTS and not as a fraction of the frame, which is what the
 	 * interact rect used to be: a fraction is unfalsifiable against a rule written
 	 * in points (">= 44 pt"), and the old max(96 px, shorter axis * 0.14) gave 52
 	 * pt on a phone and 32 pt in a small window while looking like one number.
+	 *
+	 * The reload button is a DIAMETER now, not a side: it is round (spec §4.3, and
+	 * the owner asked for "a round button with a reload icon"). 64 pt rather than
+	 * the old 56 pt square because a circle has to carry both the drawn icon and
+	 * the magazine|reserve pair without either crowding the other — see
+	 * ASarkoHUD::DrawReload for how the two share it.
 	 */
-	constexpr float ThumbColumnRightInsetPt = 16.f;
-	constexpr float ReloadButtonSizePt = 56.f;
+	constexpr float ReloadButtonDiameterPt = 64.f;
 	constexpr float InteractButtonWidthPt = 96.f;
 	constexpr float InteractButtonHeightPt = 48.f;
 
-	/** The reload button's bottom edge, above the safe frame's. 96 pt is the room
-	 *  a resting aim thumb and its ~45 pt of stick travel need underneath it. */
-	constexpr float ReloadButtonBottomPt = 96.f;
-
-	/** Between the two buttons. They must NEVER overlap (spec §5), and 12 pt is
-	 *  also enough that a thumb aiming at one cannot clip the other. */
+	/** Between any two things in the thumb column — the home ring and the reload
+	 *  button, the reload button and the interact button. They must NEVER overlap
+	 *  (spec §5), and 12 pt is also enough that a thumb aiming at one cannot clip
+	 *  the other. */
 	constexpr float ThumbButtonGapPt = 12.f;
 
 	/**
-	 * The reload button: right thumb, above the aim stick, inside its arc.
+	 * The reload button: right thumb, directly above the aim stick's home, inside
+	 * the thumb's arc.
 	 *
 	 * A dedicated button because reloading is a decision with a cost and the
 	 * player must be able to make it BEFORE the magazine runs out —
 	 * auto-reload-when-empty is the thing that gets you killed (spec §4.3).
+	 *
+	 * DERIVED FROM AimStickHome and from nothing else: same centre X, and a centre
+	 * Y one home ring plus one gap plus its own radius above it. Before the homes
+	 * existed this rect was measured off the safe frame's corner and the aim thumb
+	 * was measured off the same corner separately — two independent numbers that
+	 * happened to agree. Now the button cannot drift away from the stick it
+	 * belongs to, because it has no coordinates of its own.
+	 *
+	 * The returned rect is the SQUARE the circle is inscribed in, and it is the
+	 * hit target: ASarkoPlayerController::UpdateSticks tests this box, so the
+	 * corners are slop in the player's favour. The gaps above and below are
+	 * measured on the box and not on the circle, so that slop never reaches a
+	 * neighbouring control.
 	 *
 	 * A pure function of the safe frame and the scale, and of NOTHING else. That
 	 * is what makes "the interact button appearing must not shift the reload
@@ -70,8 +134,13 @@ namespace SarkoInput
 	FBox2D ReloadButtonRect(FBox2D Frame, float PointScale);
 
 	/**
-	 * The interact button: one 12 pt gap above the reload button, right-aligned to
-	 * the same edge, contextual in its LABEL but never in its position.
+	 * The interact button: one 12 pt gap above the reload button, on the same
+	 * centre line, contextual in its LABEL but never in its position.
+	 *
+	 * Centred on the column rather than right-aligned to the frame's edge, which
+	 * is what it was when the column was measured from that edge. The column is
+	 * measured from the aim home now, so aligning to the edge would put the two
+	 * buttons on two different vertical lines above one thumb.
 	 *
 	 * It used to shift left when a container panel covered its usual place. The
 	 * panel is in the other half now (spec §4.5), so the shifted rect and the
@@ -84,14 +153,6 @@ namespace SarkoInput
 	 * overload and no game-state argument, so they cannot disagree.
 	 */
 	FBox2D InteractButtonRect(FBox2D Frame, float PointScale);
-
-	/**
-	 * Where the aim thumb rests while working its stick. Documentary and
-	 * test-facing: it is what Sarko.Input.ThumbControlsDoNotOverlap measures the
-	 * two rects against, so "inside the thumb's arc" is a number rather than a
-	 * claim.
-	 */
-	FVector2D RightThumbAnchor(FBox2D Frame, float PointScale);
 
 	/**
 	 * WHAT THE AIM THUMB IS DOING, in the only three answers there are.
@@ -656,9 +717,9 @@ private:
 	 *  path. See SarkoDebugTouchStick for why the seam is here and not higher. */
 	void ScheduleTouch(int32 FingerIndex, uint8 TouchType, FVector2D Position, float AfterSeconds);
 
-	/** Where a thumb of that hand rests, in viewport pixels — the right one is
-	 *  SarkoInput::RightThumbAnchor, the same point the button layout is measured
-	 *  against, and the left is its mirror. */
+	/** Where a thumb of that hand rests, in viewport pixels — that stick's own
+	 *  home (SarkoInput::MoveStickHome / ::AimStickHome), which is both the mark
+	 *  the HUD draws and the point the button layout is measured against. */
 	FVector2D DebugThumbAnchor(bool bLeftHalf) const;
 
 	/** This viewport's resolved stick radius, so a debug drag is expressed in the
@@ -707,7 +768,7 @@ private:
 	 * The panel suppresses the move stick — deliberately, and that stays (spec
 	 * §4.5: you are standing still to loot anyway, and aim, fire and reload all
 	 * keep working). But the verb that gives movement back lives on the interact
-	 * button, 104 pt straight up from the aim thumb's anchor, sized and placed
+	 * button, 114 pt straight up from the aim stick's home, sized and placed
 	 * for SEARCH — a decision you have already stopped to make. Under fire it is
 	 * being used as a panic button, and it is in the wrong place for one.
 	 *

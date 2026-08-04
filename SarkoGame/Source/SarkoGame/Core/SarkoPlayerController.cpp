@@ -70,30 +70,53 @@ FBox2D SarkoInput::SafeFrame(FVector2D ViewportSize)
 		: FBox2D(FVector2D::ZeroVector, ViewportSize);
 }
 
+FVector2D SarkoInput::MoveStickHome(FBox2D Frame, float PointScale)
+{
+	// Bottom-left, in from the corner by roughly where a thumb's tip lands when
+	// the hand is holding the phone rather than reaching across it.
+	return FVector2D(Frame.Min.X + StickHomeSideInsetPt * PointScale,
+		Frame.Max.Y - StickHomeBottomPt * PointScale);
+}
+
+FVector2D SarkoInput::AimStickHome(FBox2D Frame, float PointScale)
+{
+	// The exact mirror of the left one. Two thumbs on one phone are symmetric and
+	// a player who learns one home has learned the other.
+	return FVector2D(Frame.Max.X - StickHomeSideInsetPt * PointScale,
+		Frame.Max.Y - StickHomeBottomPt * PointScale);
+}
+
 FBox2D SarkoInput::ReloadButtonRect(FBox2D Frame, float PointScale)
 {
-	const float Size = ReloadButtonSizePt * PointScale;
-	const float Right = Frame.Max.X - ThumbColumnRightInsetPt * PointScale;
-	const float Bottom = Frame.Max.Y - ReloadButtonBottomPt * PointScale;
-	return FBox2D(FVector2D(Right - Size, Bottom - Size), FVector2D(Right, Bottom));
+	const FVector2D Home = AimStickHome(Frame, PointScale);
+	const float Radius = ReloadButtonDiameterPt * 0.5f * PointScale;
+
+	// Straight up from the home, by exactly: the home ring, the standard gap, and
+	// this button's own radius. Written as that sum rather than as a single offset
+	// so the clearance between the drawn ring and the drawn button IS
+	// ThumbButtonGapPt — the number, not a value someone once measured and typed.
+	const float CentreY = Home.Y
+		- (StickHomeRingPt + ThumbButtonGapPt + ReloadButtonDiameterPt * 0.5f) * PointScale;
+
+	return FBox2D(FVector2D(Home.X - Radius, CentreY - Radius),
+		FVector2D(Home.X + Radius, CentreY + Radius));
 }
 
 FBox2D SarkoInput::InteractButtonRect(FBox2D Frame, float PointScale)
 {
-	const float Width = InteractButtonWidthPt * PointScale;
+	const float HalfWidth = InteractButtonWidthPt * 0.5f * PointScale;
 	const float Height = InteractButtonHeightPt * PointScale;
-	const float Right = Frame.Max.X - ThumbColumnRightInsetPt * PointScale;
-	// Measured off the reload button rather than off the frame, so the 12 pt gap
-	// is the gap and cannot drift if either size changes.
-	const float Bottom = ReloadButtonRect(Frame, PointScale).Min.Y - ThumbButtonGapPt * PointScale;
-	return FBox2D(FVector2D(Right - Width, Bottom - Height), FVector2D(Right, Bottom));
-}
 
-FVector2D SarkoInput::RightThumbAnchor(FBox2D Frame, float PointScale)
-{
-	// Bottom-right, in from the corner by roughly where a thumb's tip lands when
-	// the hand is holding the phone rather than reaching across it.
-	return FVector2D(Frame.Max.X - 90.f * PointScale, Frame.Max.Y - 60.f * PointScale);
+	// Measured off the reload button rather than off the frame, so the 12 pt gap
+	// is the gap and cannot drift if either size changes; and centred on the same
+	// column, because that column is the aim thumb's line now rather than the
+	// frame's right edge.
+	const FBox2D Reload = ReloadButtonRect(Frame, PointScale);
+	const float CentreX = Reload.GetCenter().X;
+	const float Bottom = Reload.Min.Y - ThumbButtonGapPt * PointScale;
+
+	return FBox2D(FVector2D(CentreX - HalfWidth, Bottom - Height),
+		FVector2D(CentreX + HalfWidth, Bottom));
 }
 
 SarkoInput::ESarkoAimZone SarkoInput::AimZoneFor(FVector2D AimValue, float MoveDeadZone, float FireThreshold)
@@ -424,10 +447,11 @@ FVector2D ASarkoPlayerController::DebugThumbAnchor(bool bLeftHalf) const
 	const FBox2D Frame = SarkoInput::SafeFrame(Viewport);
 	const float Scale = SarkoUI::PointScaleForViewport(Viewport);
 
-	const FVector2D Right = SarkoInput::RightThumbAnchor(Frame, Scale);
-	// Mirrored, so a debug drag starts where a real thumb would and the stick's
-	// whole ring stays inside the frame at either end.
-	return bLeftHalf ? FVector2D(Frame.Min.X + (Frame.Max.X - Right.X), Right.Y) : Right;
+	// The stick's own home, so a debug drag starts exactly where a real thumb is
+	// invited to start and the stick's whole ring stays inside the frame at either
+	// end. Mirroring by hand here is what this used to do, and it was a second
+	// copy of the arithmetic SarkoInput::MoveStickHome now owns.
+	return bLeftHalf ? SarkoInput::MoveStickHome(Frame, Scale) : SarkoInput::AimStickHome(Frame, Scale);
 }
 
 float ASarkoPlayerController::DebugStickRadiusPx() const
