@@ -8,7 +8,12 @@
 #include "Misc/PackageName.h"
 #include "UObject/SoftObjectPath.h"
 
-#if WITH_AUTOMATION_TESTS
+// WITH_EDITORDATA_ONLY as well as WITH_AUTOMATION_TESTS: FSarkoSurfaceTexturesAreLinearMultipliers
+// reads UTexture2D::Source, which is editor-only data. Automation tests are
+// compiled into a Development *game* target too, so without this guard the
+// whole file breaks an iOS build — found exactly that way, by the project's
+// first device build, after months of compiling fine in the editor.
+#if WITH_AUTOMATION_TESTS && WITH_EDITORONLY_DATA
 
 namespace
 {
