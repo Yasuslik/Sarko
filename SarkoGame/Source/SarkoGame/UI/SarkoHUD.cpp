@@ -1237,10 +1237,19 @@ void ASarkoHUD::DrawAimCone()
 
 	// Two edges of the cone, projected to screen. On a touchscreen there is no
 	// cursor, so without this the player is shooting blind.
+	// ProjectToScreen, not Project: the raw call returns mirrored garbage for a
+	// point behind the camera, and WeaponRangeUU is 4000 uu, so aiming down-screen
+	// pushed the far end past the camera plane and drew both guides off the TOP of
+	// the frame while the character faced down. Invisible until the vision cone
+	// landed and gave the eye a lit wedge to disagree with.
 	const auto ProjectAndDraw = [this, &Muzzle](const FVector& End, const FLinearColor& Colour)
 	{
-		const FVector Start2D = Project(Muzzle);
-		const FVector End2D = Project(End);
+		FVector2D Start2D;
+		FVector2D End2D;
+		if (!ProjectToScreen(Muzzle, Start2D) || !ProjectToScreen(End, End2D))
+		{
+			return;
+		}
 		DrawLine(Start2D.X, Start2D.Y, End2D.X, End2D.Y, Colour, Px(AimConeStrokePt));
 	};
 
