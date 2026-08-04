@@ -768,7 +768,7 @@ private:
 	 * The panel suppresses the move stick — deliberately, and that stays (spec
 	 * §4.5: you are standing still to loot anyway, and aim, fire and reload all
 	 * keep working). But the verb that gives movement back lives on the interact
-	 * button, 106 pt straight up from the aim stick's home, sized and placed
+	 * button, 114 pt straight up from the aim stick's home, sized and placed
 	 * for SEARCH — a decision you have already stopped to make. Under fire it is
 	 * being used as a panic button, and it is in the wrong place for one.
 	 *

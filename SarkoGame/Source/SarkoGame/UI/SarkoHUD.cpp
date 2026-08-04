@@ -44,10 +44,19 @@ namespace
 	constexpr float DiedPt = 40.f;
 	constexpr float OutcomeTitlePt = 46.f;
 	constexpr float ReturningPt = 17.f;
-	/** The interact button's label at 12 pt: ОБШУКАТИ is 8 Cyrillic capitals,
-	 *  ~67 pt wide inside a 96 pt button. The reload count is 20 pt, centred. */
+	/**
+	 * The interact button's label at 12 pt: ОБШУКАТИ is 8 Cyrillic capitals,
+	 * ~67 pt wide inside a 96 pt button.
+	 *
+	 * The reload count is 16 pt, centred, and it was 20 when the button was a 56 pt
+	 * SQUARE. What constrains it now is not the button's 64 pt but the inside of
+	 * the glyph's arc — 52 pt of clear width across the middle. Four characters at
+	 * 20 pt measure 50 pt on the glass, which grazed the arc, and the realistic
+	 * five ("2|120") would have run past the button's own edge. At 16 pt the five-
+	 * character worst case is 40 pt and has a point of margin all round.
+	 */
 	constexpr float InteractLabelPt = 12.f;
-	constexpr float ReloadLabelPt = 20.f;
+	constexpr float ReloadLabelPt = 16.f;
 
 	/** In from the safe frame's side edges, and down from its top. */
 	constexpr float SideInsetPt = 16.f;
@@ -117,20 +126,32 @@ namespace
 	constexpr float QuietRingAlphaScale = 0.55f;
 
 	/**
-	 * THE HOME RING while a finger is on that stick.
+	 * THE HOME RING'S WEIGHT, against its own stick's.
 	 *
-	 * At rest it is drawn at the stick's FULL colour — the whole point is that a
-	 * player who has touched nothing can see it, and dimming the one mark that
-	 * answers "where are the controls" would be re-committing the bug. Once the
-	 * thumb is down the live stick is the thing being read, and the home drops
-	 * back so it cannot be mistaken for a second control.
+	 * At rest it is drawn HALF AGAIN as opaque as the live stick's outline. The
+	 * stick's 0.35 and 0.45 were chosen for a ring that appears under a thumb the
+	 * player is already looking at; the home has to be found by a player who is
+	 * looking at the middle of the screen and has touched nothing, over whatever
+	 * ground the map put there.
+	 *
+	 * Once the thumb IS down, the live stick is the thing being read and the home
+	 * drops well back — it has already done its job, and a mark this close to the
+	 * anchor must not read as a third boundary. The stick has real boundaries
+	 * (dead zone, fire threshold) and the home is not one of them.
 	 */
-	constexpr float HomeRingActiveAlphaScale = 0.45f;
+	constexpr float HomeRingRestAlphaScale = 1.5f;
+	constexpr float HomeRingActiveAlphaScale = 0.35f;
 
-	/** The home ring's drop shadow, offset like every readout's: these two rings
-	 *  are on screen over an arbitrary world for the whole raid, and a pale patch
-	 *  of ground is exactly where the player most needs to see them. */
-	const FLinearColor HomeRingShadow(0.f, 0.f, 0.f, 0.55f);
+	/**
+	 * The home ring's drop shadow, offset like every readout's.
+	 *
+	 * NEVER MORE OPAQUE THAN THE RING IT SHADES — its alpha is taken from the ring
+	 * at draw time and this value only fixes the hue. Black at a fixed 0.55 behind
+	 * a 0.2 amber was not a shadow, it was the mark: a translucent hue over pale
+	 * ground loses to black every time, so what a resting thumb saw was a black
+	 * ring with a yellow ghost beside it.
+	 */
+	const FLinearColor HomeRingShadow(0.f, 0.f, 0.f, 1.f);
 
 	/**
 	 * THE RELOAD GLYPH, in points on the 64 pt button.
@@ -481,12 +502,19 @@ void ASarkoHUD::DrawRing(FVector2D Centre, float Radius, const FLinearColor& Col
 void ASarkoHUD::DrawDisc(FVector2D Centre, float Radius, const FLinearColor& Colour)
 {
 	// Bands sampled in ANGLE, not in Y — see the header for why that is what makes
-	// two dozen rectangles read as a circle.
-	constexpr int32 Bands = 24;
+	// a stack of rectangles read as a circle.
+	//
+	// The COUNT is chosen from the radius in pixels rather than fixed, so the step
+	// in the silhouette is about the same size on every screen instead of getting
+	// coarser the denser the phone: a band per 1.5 px of radius holds the worst
+	// stair (which is at the diagonals, where the outline moves fastest against
+	// both axes at once) near a point across at any scale. A fixed two dozen looked
+	// right in an editor window and showed a 9-pixel staircase at 3x.
+	const int32 Bands = FMath::Clamp(FMath::CeilToInt(Radius / 1.5f), 16, 64);
 	for (int32 i = 0; i < Bands; ++i)
 	{
-		const float T0 = (PI * i) / Bands;
-		const float T1 = (PI * (i + 1)) / Bands;
+		const float T0 = (PI * i) / static_cast<float>(Bands);
+		const float T1 = (PI * (i + 1)) / static_cast<float>(Bands);
 		const float Top = -Radius * FMath::Cos(T0);
 		const float Bottom = -Radius * FMath::Cos(T1);
 		// The chord at the band's mid-angle: half the error above the band's centre
@@ -542,19 +570,21 @@ void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, FVector2D Home, bool bS
 	// full-radius ring here would be a picture of a boundary that does not exist.
 	if (bShowHome)
 	{
+		// Heavier than the live stick's outline at rest, much lighter than it while
+		// a thumb is down. See the two constants.
 		FLinearColor HomeColour = Colour;
-		if (Stick.bActive)
-		{
-			// The thumb is out working the live stick; the home has already said
-			// what it had to say and must not compete with the control in use.
-			HomeColour.A *= HomeRingActiveAlphaScale;
-		}
+		HomeColour.A = FMath::Min(1.f, Colour.A * HomeRingRestAlphaScale)
+			* (Stick.bActive ? HomeRingActiveAlphaScale : 1.f);
+
+		// The shadow takes the ring's own alpha, so it can never out-draw it — see
+		// HomeRingShadow. One PIXEL of offset and not one point: a point is three
+		// pixels at 3x, which on a stroke four pixels wide separates into a second
+		// ring rather than reading as an edge.
+		FLinearColor ShadowColour = HomeRingShadow;
+		ShadowColour.A = HomeColour.A;
 
 		const float HomeRadius = Px(SarkoInput::StickHomeRingPt);
-		// Shadow first, offset a point, exactly as DrawTextPt shadows every readout:
-		// this ring is on screen over arbitrary ground for the whole raid.
-		const float ShadowOffset = FMath::Max(1.f, Px(1.f));
-		DrawRing(Home + FVector2D(ShadowOffset, ShadowOffset), HomeRadius, HomeRingShadow);
+		DrawRing(Home + FVector2D(1.f, 1.f), HomeRadius, ShadowColour);
 		DrawRing(Home, HomeRadius, HomeColour);
 	}
 
@@ -1333,10 +1363,10 @@ void ASarkoHUD::DrawReload()
 	// sentence — knowing you need to reload is worth nothing if the bag is empty —
 	// so the label is the PAIR, compactly: "3|43", no spaces, because this is a
 	// 64 pt round thumb button and the top-left readout is where the spaced version
-	// lives. Five characters at 20 pt is the absurd worst case ("8|720", a bag of
-	// nothing but ammo): about 50 pt against the 52 pt of clear width inside the
-	// glyph's arc, so even that grazes rather than collides. A realistic "8|24" is
-	// 39 pt and has a whole point of margin on each side.
+	// lives — at 26 pt, which is the readout a player actually glances at mid-fight.
+	// This one is the answer to "is pressing this worth anything", read while
+	// deciding to press it, and it is sized to fit inside the glyph's arc at its
+	// five-character worst case ("8|720", a bag of nothing but ammo).
 	//
 	// Built ONLY when one of the two numbers moves, not every frame. The pair made
 	// this matter: the old label was one FString::FromInt per frame, which was
@@ -1416,11 +1446,11 @@ void ASarkoHUD::DrawReload()
 	// binary assets, so there is no texture and no icon font to reach for.
 	DrawReloadIcon(Centre, Ink);
 
-	// THE NUMBERS STAY IN THE MIDDLE, at the size they already were. Spec §4.3 puts
-	// the magazine count on this button so the player never has to look at two
-	// places to know they need to reload, and the middle of a round button is where
-	// the eye goes — so the icon moved out to the rim rather than the pair moving
-	// off centre or shrinking to share it.
+	// THE NUMBERS STAY IN THE MIDDLE. Spec §4.3 puts the magazine count on this
+	// button so the player never has to look at two places to know they need to
+	// reload, and the middle of a round button is where the eye goes — so the icon
+	// went out to the rim rather than the pair moving off centre to share the
+	// middle with it. A round button has one place a number belongs.
 	//
 	// Both the string and its measurement were built above, on the frame one of the
 	// two numbers moved. DrawHUD is a tick path and an uncached MeasurePt per frame

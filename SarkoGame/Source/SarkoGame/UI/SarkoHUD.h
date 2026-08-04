@@ -168,11 +168,12 @@ private:
 	 * A FILLED CIRCLE, as bands of DrawRect sampled uniformly in ANGLE.
 	 *
 	 * The round reload button needs a fill and a UCanvas has no circle. Sampling
-	 * in angle rather than in Y is what makes 24 rectangles look round: the bands
-	 * are thin exactly where the silhouette turns fastest (the caps) and wide
-	 * where it barely moves (the equator), so the worst radial error is about a
-	 * fifth of a pixel at 3x. Sampled in Y instead, the same 24 bands would put a
-	 * flat 40-pixel chord across the top of a 193-pixel circle.
+	 * in angle rather than in Y is what makes a stack of rectangles look round: the
+	 * bands are thin exactly where the silhouette turns fastest (the caps) and wide
+	 * where it barely moves (the equator). Sampled in Y instead, two dozen bands
+	 * would put a flat 40-pixel chord across the top of a 193-pixel circle. The
+	 * count comes off the radius, so the staircase is the same size on a phone as
+	 * in a desktop window rather than three times coarser.
 	 *
 	 * DrawRect and not FCanvasNGonItem, which is the engine's filled polygon and
 	 * would be one line: it builds a TArray of triangles and heap-allocates an
