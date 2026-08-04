@@ -7,6 +7,14 @@
 
 #include "SarkoHUD.generated.h"
 
+namespace SarkoUI
+{
+	/** Forward-declared rather than pulled in: this header only needs to name the
+	 *  type in DrawInteractIcon's signature, and the enum has a fixed underlying
+	 *  type precisely so it can be declared without its definition. */
+	enum class EInteractAction : uint8;
+}
+
 /**
  * Drawn with primitives rather than UMG, because widget blueprints are binary
  * assets. Layout follows spec §9: all information along the top, because the
@@ -190,12 +198,39 @@ private:
 	 * only, at the same stroke vocabulary the sticks use.
 	 *
 	 * Drawn out near the button's RIM (ReloadIconRadiusPt of a
-	 * SarkoInput::ReloadButtonDiameterPt circle) rather than in the middle,
+	 * SarkoInput::ThumbButtonDiameterPt circle) rather than in the middle,
 	 * because the middle belongs to the magazine|reserve pair and always has. The
 	 * icon says what the control IS; the number says what pressing it is worth.
 	 * Neither had to shrink to make room for the other.
 	 */
 	void DrawReloadIcon(FVector2D Centre, const FLinearColor& Colour);
+
+	/**
+	 * THE INTERACT GLYPHS — one picture per verb, in the middle of the disc.
+	 *
+	 * The interact button is round now, and a Ukrainian verb does not fit inside a
+	 * circle: ОБШУКАТИ is eight capitals and ЕВАКУАЦІЯ is nine, against 52 pt of
+	 * clear width. So the circle carries a PICTURE and the word is set beside it —
+	 * see DrawInteract for where the word went and why it went to the side.
+	 *
+	 * CONTEXTUAL, because the button already is. Looting and leaving are different
+	 * verbs and a shared glyph would be the same guess the old generic label was:
+	 *
+	 *   Search  — an open crate: a box with both flaps splayed. Angular, which is
+	 *             the strongest thing it can be next to a round button carrying a
+	 *             round arrow.
+	 *   Extract — a doorway with an arrow leaving through it. The exit sign every
+	 *             player has already read a thousand times, minus its runner.
+	 *   Close   — a cross. Nothing else on this HUD is two straight strokes.
+	 *   None    — nothing at all. The button is drawn dim and empty when there is
+	 *             nothing in reach, which is honest and is how the player learns
+	 *             where it lives before they need it.
+	 *
+	 * Built from lines, at the same stroke weight the reload glyph uses, because
+	 * this project authors no binary assets: there is no icon texture and no font
+	 * that carries one.
+	 */
+	void DrawInteractIcon(FVector2D Centre, SarkoUI::EInteractAction Action, const FLinearColor& Colour);
 
 	void DrawAimCone();
 
@@ -308,7 +343,21 @@ private:
 	void DrawAmmo();
 	void DrawBackpack();
 
-	/** The interact button, the "search this crate" prompt and the channel's progress bar. */
+	/**
+	 * The interact button, the "search this crate" prompt and the channel's
+	 * progress bar.
+	 *
+	 * ROUND since the owner's third playtest — "the action one should be a round
+	 * button, not a square" — and the same 64 pt circle as the reload button, on
+	 * the same arc around the aim home, at its own angle. What tells the two apart
+	 * is therefore not shape: it is the angle each sits at, the picture inside
+	 * (a crate, a doorway or a cross against a circular arrow), and the fact that
+	 * this one carries a WORD beside it where the other carries digits inside it.
+	 *
+	 * Its rect is a pure function of the safe frame, so the slot exists on every
+	 * frame whether or not anything is drawn in it and the reload button cannot
+	 * shift when a crate comes into reach.
+	 */
 	void DrawInteract();
 
 	/**

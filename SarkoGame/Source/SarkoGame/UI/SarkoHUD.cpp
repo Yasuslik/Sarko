@@ -45,17 +45,24 @@ namespace
 	constexpr float OutcomeTitlePt = 46.f;
 	constexpr float ReturningPt = 17.f;
 	/**
-	 * The interact button's label at 12 pt: ОБШУКАТИ is 8 Cyrillic capitals,
-	 * ~67 pt wide inside a 96 pt button.
+	 * The interact button's word at 14 pt, and it is no longer inside the button.
+	 *
+	 * It was 12 pt because ОБШУКАТИ is eight Cyrillic capitals and had to fit
+	 * across a 96 pt rectangle. The button is a 64 pt CIRCLE now, which no
+	 * Ukrainian verb in this game fits inside at any size worth reading — so the
+	 * circle took a glyph and the word moved out beside it, where it is bounded by
+	 * nothing and can be set at a size a player reads rather than deciphers. 14 pt
+	 * is the smallest type anywhere on this HUD that is still a caption and not a
+	 * footnote; the first-raid hints are 15.
 	 *
 	 * The reload count is 16 pt, centred, and it was 20 when the button was a 56 pt
-	 * SQUARE. What constrains it now is not the button's 64 pt but the inside of
-	 * the glyph's arc — 52 pt of clear width across the middle. Four characters at
+	 * SQUARE. What constrains it is not the button's 64 pt but the inside of the
+	 * glyph's arc — 52 pt of clear width across the middle. Four characters at
 	 * 20 pt measure 50 pt on the glass, which grazed the arc, and the realistic
 	 * five ("2|120") would have run past the button's own edge. At 16 pt the five-
 	 * character worst case is 40 pt and has a point of margin all round.
 	 */
-	constexpr float InteractLabelPt = 12.f;
+	constexpr float InteractLabelPt = 14.f;
 	constexpr float ReloadLabelPt = 16.f;
 
 	/** In from the safe frame's side edges, and down from its top. */
@@ -172,6 +179,38 @@ namespace
 	constexpr float ReloadIconGapDegrees = 70.f;
 	constexpr float ReloadIconHeadPt = 9.f;
 	constexpr int32 ReloadIconSegments = 20;
+
+	/**
+	 * THE INTERACT GLYPHS, in points on the same 64 pt button.
+	 *
+	 * A 16 pt half-extent is a 32 pt picture inside a 64 pt circle, leaving 16 pt
+	 * of margin all round. It can be bigger than the reload glyph's clear width
+	 * because it shares the middle with nothing: the reload button's centre belongs
+	 * to the magazine|reserve pair, and this button's word is outside it.
+	 *
+	 * Same 2.5 pt stroke as the reload arrow, so the two read as one drawn family
+	 * rather than as an icon set someone assembled.
+	 */
+	constexpr float InteractIconExtentPt = 16.f;
+	constexpr float InteractIconStrokePt = 2.5f;
+
+	/**
+	 * The word, set OUTSIDE the button, inward of it, on the button's own centre
+	 * line.
+	 *
+	 * To the SIDE and not underneath, and that is geometry rather than taste. The
+	 * interact button sits at the far end of the thumb's arc, level with the aim
+	 * home and 32 pt above the safe frame's bottom edge: a caption under it would
+	 * fall off the frame, and one above it would land in the 40 pt of daylight
+	 * between this button and the reload button — the one piece of empty screen
+	 * that is doing a job. Inward along its own centre line is the direction with
+	 * a clear lane in it.
+	 *
+	 * Right-aligned to the button, so the word grows away from the control and its
+	 * right edge is always exactly this far from the rim. A left-aligned caption
+	 * would push ЕВАКУАЦІЯ two characters closer to the glyph than ЗАКРИТИ.
+	 */
+	constexpr float InteractLabelGapPt = 12.f;
 
 	/**
 	 * THE FIRE RING, on the aim stick, at USarkoRaidSettings::AimFireDeadZone of
@@ -555,6 +594,68 @@ void ASarkoHUD::DrawReloadIcon(FVector2D Centre, const FLinearColor& Colour)
 	const FVector2D Side = Outward * (Head * 0.5f);
 	DrawLine(Tip.X, Tip.Y, Tip.X + Back.X + Side.X, Tip.Y + Back.Y + Side.Y, Colour, Stroke);
 	DrawLine(Tip.X, Tip.Y, Tip.X + Back.X - Side.X, Tip.Y + Back.Y - Side.Y, Colour, Stroke);
+}
+
+void ASarkoHUD::DrawInteractIcon(FVector2D Centre, SarkoUI::EInteractAction Action, const FLinearColor& Colour)
+{
+	const float E = Px(InteractIconExtentPt);
+	const float Stroke = Px(InteractIconStrokePt);
+
+	// A local so the six or eight strokes below read as coordinates on a 32 pt
+	// square rather than as arithmetic. Nothing allocates: this is a lambda over
+	// three floats on a tick path.
+	auto Stroke2 = [this, Centre, E, Stroke, &Colour](float X0, float Y0, float X1, float Y1)
+	{
+		DrawLine(Centre.X + X0 * E, Centre.Y + Y0 * E,
+			Centre.X + X1 * E, Centre.Y + Y1 * E, Colour, Stroke);
+	};
+
+	switch (Action)
+	{
+	case SarkoUI::EInteractAction::Search:
+	{
+		// AN OPEN CRATE. A box across the lower two thirds, with a flap splayed up
+		// and out from each of its top corners — the silhouette of a container
+		// someone has just opened, which is exactly the verb (ОБШУКАТИ, "search
+		// it"). Angular on purpose: the button beside it is a circle carrying a
+		// circular arrow, and a straight-edged picture is the fastest difference
+		// there is.
+		Stroke2(-0.80f, -0.10f, 0.80f, -0.10f);   // the box: top, then round it
+		Stroke2(0.80f, -0.10f, 0.80f, 0.85f);
+		Stroke2(0.80f, 0.85f, -0.80f, 0.85f);
+		Stroke2(-0.80f, 0.85f, -0.80f, -0.10f);
+		Stroke2(-0.80f, -0.10f, -1.15f, -0.75f);  // the two flaps, hinged open
+		Stroke2(0.80f, -0.10f, 1.15f, -0.75f);
+		break;
+	}
+	case SarkoUI::EInteractAction::Extract:
+	{
+		// A DOORWAY WITH AN ARROW LEAVING THROUGH IT — the exit sign, minus its
+		// running figure. The frame is open on the side the arrow leaves by, so the
+		// arrow reads as passing through the opening rather than as pointing at a
+		// wall.
+		Stroke2(-0.95f, -0.90f, -0.95f, 0.90f);   // the jamb
+		Stroke2(-0.95f, -0.90f, -0.35f, -0.90f);  // lintel and threshold, part way
+		Stroke2(-0.95f, 0.90f, -0.35f, 0.90f);
+		Stroke2(-0.40f, 0.f, 0.95f, 0.f);         // the shaft, out through the gap
+		Stroke2(0.95f, 0.f, 0.45f, -0.40f);       // and a two-barb head, raked back
+		Stroke2(0.95f, 0.f, 0.45f, 0.40f);
+		break;
+	}
+	case SarkoUI::EInteractAction::Close:
+	{
+		// A CROSS. Nothing else on this HUD is two straight strokes through a
+		// centre, and "close the thing that is open" is the one action here that
+		// every player already knows the picture for.
+		Stroke2(-0.75f, -0.75f, 0.75f, 0.75f);
+		Stroke2(-0.75f, 0.75f, 0.75f, -0.75f);
+		break;
+	}
+	default:
+		// None: nothing in reach, so nothing is drawn. A picture here would be the
+		// button claiming an action it does not have.
+		break;
+	}
 }
 
 void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, FVector2D Home, bool bShowHome,
@@ -1229,26 +1330,72 @@ void ASarkoHUD::DrawInteract()
 	const ASarkoCharacter* OwningPawn = Cast<ASarkoCharacter>(GetOwningPawn());
 	const FBox2D Rect = SarkoInput::InteractButtonRect(Safe, PointScale);
 
-	// The label says what the button will DO (spec §4.4). A generic glyph in a
-	// game with two actions is a guess, and the button is always drawn — dim and
-	// BLANK when there is nothing in reach — so the player learns where it is
-	// before they need it and the empty state is honest about there being
+	// The glyph and the word say what the button will DO (spec §4.4). A generic
+	// picture in a game with two verbs is a guess, and the button is always drawn
+	// — dim and BLANK when there is nothing in reach — so the player learns where
+	// it is before they need it and the empty state is honest about there being
 	// nothing to do.
 	const ASarkoLootContainer* Target = PC->GetInteractTarget();
 	const bool bPanelOpen = OwningPawn && OwningPawn->GetOpenContainerIndex() != INDEX_NONE;
-	const SarkoUI::EInteractAction Action = bPanelOpen
+	SarkoUI::EInteractAction Action = bPanelOpen
 		? SarkoUI::EInteractAction::Close
 		: (Target ? SarkoUI::EInteractAction::Search : SarkoUI::EInteractAction::None);
+
+#if !UE_BUILD_SHIPPING
+	// The photographic seam, and nothing else: SarkoDebugInteract forces the state
+	// a -RenderOffscreen run cannot reach with no fingers. Extract in particular is
+	// unreachable by playing, because it is deliberately NOT wired (see
+	// SarkoUI::EInteractAction — an extraction is a dwell, not a press), and its
+	// glyph still has to be looked at by someone before it ships.
+	const int32 Forced = PC->GetDebugInteractAction();
+	if (Forced >= 0 && Forced <= static_cast<int32>(SarkoUI::EInteractAction::Extract))
+	{
+		Action = static_cast<SarkoUI::EInteractAction>(Forced);
+	}
+#endif
+
+	// ROUND, and the same circle as the reload button: the rect is the square the
+	// circle is inscribed in, so the four corners are slop in the player's favour
+	// and every clearance in the cluster is measured on the square.
+	const FVector2D Centre = Rect.GetCenter();
+	const float Radius = Rect.GetSize().X * 0.5f;
 
 	// A dark plate under the tint, exactly as every readout on this HUD has one:
 	// the button is drawn over an arbitrary world, and a 0.15-alpha white plate on
 	// pale ground is a control the player cannot find. See TextShadow's comment —
 	// white-on-white is the one failure that no size fixes.
-	DrawRect(ThumbButtonPlate, Rect.Min.X, Rect.Min.Y, Rect.GetSize().X, Rect.GetSize().Y);
-	const FLinearColor ButtonColour = (Action == SarkoUI::EInteractAction::None)
-		? FLinearColor(1.f, 1.f, 1.f, 0.15f)
-		: FLinearColor(0.95f, 0.8f, 0.25f, 0.55f);
-	DrawRect(ButtonColour, Rect.Min.X, Rect.Min.Y, Rect.GetSize().X, Rect.GetSize().Y);
+	DrawDisc(Centre, Radius, ThumbButtonPlate);
+	const bool bLive = Action != SarkoUI::EInteractAction::None;
+	// Amber when it means something, which is the loot family's colour — the same
+	// 0.95/0.8/0.25 the prompt's channel bar is drawn in, so the button, the prompt
+	// and the progress that joins them are one colour and one action.
+	const FLinearColor Fill = bLive
+		? FLinearColor(0.95f, 0.8f, 0.25f, 0.55f)
+		: FLinearColor(1.f, 1.f, 1.f, 0.15f);
+	// The idle rim is DIM, and the first frames of this are why: at full white it
+	// came out as bright as the move stick's home ring and much the same size —
+	// two white circles along the bottom of the screen, one a control and one a
+	// place to put a thumb, told apart by nothing. This project has already paid
+	// once for a player reading a button as a stick.
+	//
+	// Dimmed in the RGB and NOT in the alpha, which is the thing worth knowing
+	// here: AHUD::DrawLine's alpha does not survive to the glass — a 0.22-alpha
+	// white stroke measures 255,255,255 in the frame — so every stroke on this HUD
+	// is opaque whatever its colour says, and the only lever a drawn line has is
+	// its brightness. 0.26 linear is a mid grey on the dark plate: visibly a
+	// reserved slot, no longer competing with a stick home.
+	const FLinearColor Ink = bLive ? FLinearColor::White : FLinearColor(0.26f, 0.26f, 0.25f, 1.f);
+	DrawDisc(Centre, Radius, Fill);
+
+	// A DRAWN RIM, which the reload button does not have. Two circles the same size
+	// under one thumb need something that separates them before either picture is
+	// read, and the reload button's own glyph is a broken ring out near ITS rim —
+	// so a solid outline here and an interrupted one there is a difference visible
+	// at a glance and at arm's length. Inset by a pixel so the stroke lands on the
+	// disc rather than half off it.
+	DrawRing(Centre, Radius - FMath::Max(1.f, Px(1.f)), Ink);
+
+	DrawInteractIcon(Centre, Action, Ink);
 
 	const FString Label = SarkoUI::InteractLabelFor(Action);
 	if (!Label.IsEmpty())
@@ -1263,10 +1410,21 @@ void ASarkoHUD::DrawInteract()
 			CachedInteractLabelWidth = LabelSize.X;
 			CachedInteractLabelHeight = LabelSize.Y;
 		}
-		DrawTextPt(CachedInteractLabel, FLinearColor::White,
-			Rect.GetCenter().X - CachedInteractLabelWidth * 0.5f,
-			Rect.GetCenter().Y - CachedInteractLabelHeight * 0.5f,
-			InteractLabelPt);
+
+		// OUTSIDE the button, inward of it, right-aligned to its rim and centred on
+		// its row — see InteractLabelGapPt for why the side and not underneath. The
+		// word is a caption and not a target: the tap rect is the square above and
+		// does not grow to cover the text, so a longer verb can never quietly widen
+		// the control.
+		const float PlateRight = Rect.Min.X - Px(InteractLabelGapPt);
+		const float TextRight = PlateRight - Px(PlatePadXPt);
+		const float TextX = TextRight - CachedInteractLabelWidth;
+		const float TextY = Centre.Y - CachedInteractLabelHeight * 0.5f;
+		DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.45f),
+			TextX - Px(PlatePadXPt), TextY - Px(PlatePadYPt),
+			CachedInteractLabelWidth + Px(PlatePadXPt * 2.f),
+			CachedInteractLabelHeight + Px(PlatePadYPt * 2.f));
+		DrawTextPt(CachedInteractLabel, FLinearColor::White, TextX, TextY, InteractLabelPt);
 	}
 
 	// A container panel is up: this control is the CLOSE button now, and the
