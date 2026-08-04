@@ -89,6 +89,12 @@ for pack in sorted(os.listdir(PREPARED)):
             "materials": asset.get_editor_property("static_materials").__len__(),
         }
 
-unreal.EditorAssetLibrary.save_directory(CONTENT_ROOT, False, True)
+# only_if_is_dirty=True. It used to be False, which re-serialised every asset
+# under the root on every run — so importing one pack rewrote the bytes of the
+# thirty-three uassets belonging to the other three, and `git status` after a
+# one-pack import listed files the run had not changed in any way that matters.
+# A freshly imported asset is dirty by definition, so nothing this script is
+# responsible for goes unsaved.
+unreal.EditorAssetLibrary.save_directory(CONTENT_ROOT, True, True)
 
 unreal.log("SARKO_IMPORT_REPORT " + json.dumps(report, sort_keys=True))
