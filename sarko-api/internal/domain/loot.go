@@ -41,7 +41,15 @@ type ItemDef struct {
 // nor with how much room they take.
 var ItemDefs = map[string]ItemDef{
 	// Weapons and ammo.
-	"pistol":   {StackSize: 1, Width: 2, Height: 1, Slot: SlotWeapon},
+	"pistol": {StackSize: 1, Width: 2, Height: 1, Slot: SlotWeapon},
+	// Added with their meshes on 2026-08-04 and OBTAINABLE BY NOBODY yet: no loot
+	// table rolls them and no ВИЛАЗКА kit grants them, so a client submitting one
+	// today is a client that invented it. They are here regardless, because
+	// loot_test.go's drift alarm runs in both directions and a client catalog row
+	// without a mirror fails HERE. 3 wide because spec §5 makes the rifle's
+	// footprint a balance decision, not a decoration.
+	"rifle":    {StackSize: 1, Width: 3, Height: 1, Slot: SlotWeapon},
+	"shotgun":  {StackSize: 1, Width: 3, Height: 1, Slot: SlotWeapon},
 	"ammo_9mm": {StackSize: 60, Width: 1, Height: 1},
 	// Medical.
 	"medkit":      {StackSize: 3, Width: 1, Height: 1},

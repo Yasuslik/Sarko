@@ -1086,12 +1086,18 @@ void ASarkoPlayerController::SarkoDebugLoot(int32 Count)
 	// category with a VERB, so a low Count now reaches a cell that can be tapped.
 	// It replaced `painkillers`, which duplicated the medkit's hue and no longer
 	// appears anywhere on the tutorial route.
+	//
+	// `rifle` is fifth, right after the four-hue opening. It is the widest item
+	// in the catalog at 3x1 and no loot table produces it, so without a place
+	// here the only way to see a three-cell weapon in a grid would be to play a
+	// version of the game that does not exist yet. A frame of the panel holding
+	// one is what the weapon-mesh pass was checked against.
 	static const FName Mixed[] = {
 		TEXT("pistol"), TEXT("ammo_9mm"), TEXT("water_bottle"), TEXT("medkit"),
-		TEXT("toolbox"), TEXT("canned_food"), TEXT("scrap_metal"), TEXT("wheel_small"),
-		TEXT("bandage"), TEXT("vodka"), TEXT("copper_wire"), TEXT("chain"),
+		TEXT("rifle"), TEXT("toolbox"), TEXT("canned_food"), TEXT("scrap_metal"),
+		TEXT("shotgun"), TEXT("bandage"), TEXT("vodka"), TEXT("copper_wire"),
 	};
-	static const int32 Quantities[] = { 1, 47, 2, 3, 1, 3, 9, 2, 5, 2, 12, 1 };
+	static const int32 Quantities[] = { 1, 47, 2, 3, 1, 1, 3, 9, 1, 5, 2, 12 };
 
 	TArray<FSarkoItemStack> Slots;
 	const int32 Wanted = FMath::Clamp(Count, 0, UE_ARRAY_COUNT(Mixed));
@@ -1255,6 +1261,50 @@ void ASarkoPlayerController::SarkoDebugAmmo(int32 Rounds)
 	Pawn->WeaponComponent->ResetForTest(FMath::Max(0, Rounds));
 	UE_LOG(LogTemp, Display, TEXT("SarkoDebugAmmo: magazine now %d"),
 		Pawn->WeaponComponent->GetAmmoInMagazine());
+#endif
+}
+
+void ASarkoPlayerController::SarkoDebugEquipWeapon(FString ItemId, float DelaySeconds, float ShotDelay)
+{
+#if !UE_BUILD_SHIPPING
+	// -ExecCmds runs its whole list at engine init, and RestartPlayer runs
+	// AFTER it — so an immediate equip has no pawn to equip, and even if it did
+	// the spawn that follows would overwrite it with the profile's weapon. Same
+	// deferral, and the same reasoning, as SarkoDebugSurvival below.
+	if (DelaySeconds > 0.f)
+	{
+		FTimerHandle Handle;
+		GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this,
+			[this, ItemId, ShotDelay]() { SarkoDebugEquipWeapon(ItemId, 0.f, ShotDelay); }),
+			DelaySeconds, /*bLoop*/ false);
+		return;
+	}
+
+	ASarkoCharacter* Pawn = Cast<ASarkoCharacter>(GetPawn());
+	if (!Pawn)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SarkoDebugEquipWeapon: no possessed pawn"));
+		return;
+	}
+	Pawn->SetEquippedWeaponItem(FName(*ItemId));
+	UE_LOG(LogTemp, Display, TEXT("SarkoDebugEquipWeapon: now holding '%s'"), *ItemId);
+
+	if (ShotDelay <= 0.f)
+	{
+		return;
+	}
+	// The shutter is chained off the EQUIP and not off engine start, for the
+	// same reason SarkoTapContainerCell chains its own: the equip is on a timer
+	// and a boot-relative shutter would catch it only by luck.
+	//
+	// HighResShot and NOT TakeDebugShot's `Shot showui`: this frame is about the
+	// world, and `Shot` produced no file at all under -RenderOffscreen without a
+	// window, where HighResShot's scene-renderer path works headless. The HUD is
+	// not what is being photographed here.
+	FTimerHandle ShotHandle;
+	GetWorldTimerManager().SetTimer(ShotHandle, FTimerDelegate::CreateWeakLambda(this,
+		[this]() { ConsoleCommand(TEXT("HighResShot 1600x900"), /*bWriteToLog*/ true); }),
+		ShotDelay, /*bLoop*/ false);
 #endif
 }
 

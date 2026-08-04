@@ -1152,6 +1152,12 @@ bool FSarkoItemSizesMatchTheDesignTable::RunTest(const FString& Parameters)
 	struct FRow { const TCHAR* Id; int32 W; int32 H; };
 	static const FRow Table[] = {
 		{ TEXT("pistol"),       2, 1 },
+		// Spec §5's own example, and now a real row: "making the rifle 3 wide is
+		// what makes backpacks matter". A 3x1 is exactly the width of the empty
+		// weapon slot's outline (SarkoEquip::EmptyExtent), which is what that
+		// outline was drawn for.
+		{ TEXT("rifle"),        3, 1 },
+		{ TEXT("shotgun"),      3, 1 },
 		{ TEXT("ammo_9mm"),     1, 1 },
 		{ TEXT("medkit"),       1, 1 },
 		{ TEXT("bandage"),      1, 1 },

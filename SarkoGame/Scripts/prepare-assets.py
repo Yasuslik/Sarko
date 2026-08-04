@@ -23,7 +23,20 @@ prop convention as it arrives:
     purpose: a stretched prop is a bug you can see, whereas a mesh that silently
     ignores its extent is a bug you cannot.
 
-Usage: Blender -b -P prepare-assets.py -- <in-dir> <out-dir> <report.json>
+A WEAPON IS NOT A PROP, and the `weapon` mode exists because job 2 would ruin
+one. A prop is placed by the kind table, which states an extent and accepts the
+stretch that reaching it costs; a weapon is held in a hand and its whole job is
+to be recognisable in silhouette, so its proportions are the asset. Normalising
+a ПМ into the -50..50 box would hand the pawn a one-metre cube. Weapon mode
+therefore scales UNIFORMLY to an authored real-world length (see WEAPON_LENGTH_UU),
+keeps +X as the muzzle direction, and puts the origin on the ground under the
+mesh so a weapon dropped at a location stands on it rather than half through it.
+Weapon meshes are consequently NOT in the -50..50 contract and must never be
+given a prop kind — Sarko.Config.PropMeshBoundsAreNormalised walks the kind
+table, so a weapon added to it would fail there, which is the intended alarm.
+
+Usage: Blender -b -P prepare-assets.py -- <in-dir> <out-dir> <report.json> [mode]
+       mode is `prop` (default) or `weapon`.
 """
 
 import bpy
@@ -36,6 +49,23 @@ from mathutils import Vector
 # flat-colour materials after the colour, so this is the whole classification:
 # anything green (or a berry) is canopy, everything else is trunk.
 FOLIAGE_MATERIALS = {"green", "darkgreen", "berry", "leaves", "lightgreen"}
+
+# Weapon mode's authored scale, in unreal units — which are centimetres, so these
+# are the real guns' real lengths: a Makarov PM is 16.1 cm, an AKM 88 cm, a
+# pump-action 12-gauge about 105 cm. The pack does NOT model them to a shared
+# scale (its pistol is three times shorter than its AK, where the real pair is
+# five and a half times), so a single per-pack multiplier would give either a
+# toy AK or a comedy pistol. One number per file is the honest form, and it is
+# the same authoring decision the prop kind table makes with its extents.
+#
+# Deliberately real rather than flattering: at the game's 1400 uu camera a 16 cm
+# pistol is a few pixels, and the frames in LICENSES.md record what that looks
+# like. Exaggerating it here would hide the finding rather than fix it.
+WEAPON_LENGTH_UU = {
+    "Pistol_1": 16.1,
+    "AssaultRifle_2": 88.0,
+    "Shotgun_2": 105.0,
+}
 
 
 def clear_scene():
@@ -179,6 +209,50 @@ def normalise(obj):
     return lo, hi, size, centre
 
 
+def normalise_weapon(obj, name):
+    """
+    Scales the mesh UNIFORMLY to its authored real length and stands it on Z=0.
+
+    The three differences from normalise(), each with a reason:
+
+     * UNIFORM, so the proportions survive. A weapon is read by its silhouette
+       from 1400 uu up, and a stretched AK is not an AK. Nothing scales this
+       mesh by `Extent / 50` later — a held weapon is a component attached to a
+       socket at scale 1, so the asset must already be the size it is meant to
+       be, and it is: bounds in unreal units are the gun's real centimetres.
+     * ORIGIN ON THE GROUND, not at the centre. X and Y are centred; Z is put at
+       the mesh's lowest point. Dropping a weapon at a floor position then puts
+       it on the floor, and the hand offset in SarkoWeaponVisuals is written
+       against a known datum rather than against half of a bounding box.
+     * NO SPLIT. face_x() has already turned the long axis to X and these models
+       arrive muzzle-forward on it; the foliage split is a no-op on a gun.
+
+    An unlisted file is an error rather than a default, because a silent
+    fallback would give a weapon whatever size the artist happened to model it
+    at — which for this pack is a pistol nearly a third of a rifle long.
+    """
+    if name not in WEAPON_LENGTH_UU:
+        raise SystemExit("SARKO_PREPARE no authored length for weapon '%s' — add it to "
+                         "WEAPON_LENGTH_UU in Scripts/prepare-assets.py" % name)
+
+    lo, hi = measure(obj)
+    size = hi - lo
+    centre = (hi + lo) * 0.5
+
+    # One Blender unit is one unreal metre through this FBX round-trip (see
+    # normalise()), so a target in unreal units is a target in centimetres.
+    factor = (WEAPON_LENGTH_UU[name] / 100.0) / (size.x or 1.0)
+
+    obj.location = Vector((-centre.x, -centre.y, -lo.z))
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.transform_apply(location=True, rotation=False, scale=False)
+    obj.scale = (factor, factor, factor)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    return lo, hi, size, centre
+
+
 def export(obj, path):
     bpy.ops.object.select_all(action="DESELECT")
     obj.select_set(True)
@@ -191,7 +265,7 @@ def triangles(obj):
     return sum(len(p.vertices) - 2 for p in obj.data.polygons)
 
 
-def process(source, out_dir, report):
+def process(source, out_dir, report, mode):
     name = os.path.splitext(os.path.basename(source))[0]
     clear_scene()
     obj = joined_import(source)
@@ -201,17 +275,26 @@ def process(source, out_dir, report):
     # Orient BEFORE splitting, so a trunk and its canopy are turned together and
     # the offsets the report derives from their centres stay a matched pair.
     face_x(obj)
-    trunk, canopy = split_foliage(obj)
 
-    for piece, suffix in ((trunk, ""), (canopy, "_Canopy")):
+    if mode == "weapon":
+        pieces = ((obj, ""),)
+    else:
+        trunk, canopy = split_foliage(obj)
+        pieces = ((trunk, ""), (canopy, "_Canopy"))
+
+    for piece, suffix in pieces:
         if piece is None:
             continue
         out_name = name + suffix
         tris = triangles(piece)
-        lo, hi, size, centre = normalise(piece)
+        if mode == "weapon":
+            lo, hi, size, centre = normalise_weapon(piece, out_name)
+        else:
+            lo, hi, size, centre = normalise(piece)
         export(piece, os.path.join(out_dir, out_name + ".fbx"))
         report[out_name] = {
             "source": os.path.basename(source),
+            "mode": mode,
             "triangles": tris,
             # Source-space numbers, so the kind table can be authored in the
             # mesh's own proportions and a canopy can be offset above its trunk.
@@ -220,18 +303,19 @@ def process(source, out_dir, report):
             "min": [lo.x, lo.y, lo.z],
             "max": [hi.x, hi.y, hi.z],
         }
-        print("SARKO_PREPARE", out_name, "tris=%d" % tris,
+        print("SARKO_PREPARE", out_name, mode, "tris=%d" % tris,
               "size=%.3f,%.3f,%.3f" % (size.x, size.y, size.z))
 
 
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:]
     in_dir, out_dir, report_path = argv[0], argv[1], argv[2]
+    mode = argv[3] if len(argv) > 3 else "prop"
     os.makedirs(out_dir, exist_ok=True)
     report = {}
     for entry in sorted(os.listdir(in_dir)):
         if entry.lower().endswith(".fbx"):
-            process(os.path.join(in_dir, entry), out_dir, report)
+            process(os.path.join(in_dir, entry), out_dir, report, mode)
     existing = {}
     if os.path.exists(report_path):
         with open(report_path) as handle:

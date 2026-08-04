@@ -958,10 +958,44 @@ void ASarkoRaidGameMode::RestartPlayer(AController* NewPlayer)
 
 		const FTransform SpawnTransform(FRotator::ZeroRotator, CachedLayout.PlayerStarts[Index]);
 		RestartPlayerAtTransform(NewPlayer, SpawnTransform);
+		ShowEquippedWeapon(NewPlayer);
 		return;
 	}
 
 	Super::RestartPlayer(NewPlayer);
+	ShowEquippedWeapon(NewPlayer);
+}
+
+void ASarkoRaidGameMode::ShowEquippedWeapon(AController* NewPlayer)
+{
+	ASarkoCharacter* Pawn = NewPlayer ? Cast<ASarkoCharacter>(NewPlayer->GetPawn()) : nullptr;
+	if (!Pawn)
+	{
+		return;
+	}
+
+	// The SAME field the wire loadout is built from a few lines up in
+	// StartRaid — one source for "what is this player carrying", so the gun in
+	// the hand and the gun the backend was told about cannot disagree.
+	//
+	// Cosmetic only. The pawn's damage, magazine and range are untouched by
+	// this; a weapon that shoots differently is the next task.
+	FName Weapon;
+	if (const USarkoGameInstance* Instance = GetGameInstance<USarkoGameInstance>())
+	{
+		Weapon = Instance->CachedProfile.Equipment.Weapon;
+	}
+	// An empty weapon slot leaves the pawn's default ПМ rather than emptying its
+	// hands, and that is a deliberate choice about which lie is worse. Every
+	// pawn gets a USarkoWeaponComponent with a full magazine whatever the
+	// profile says — an offline run, a raid started before the profile fetch
+	// lands, and a bot all reach here with no equipment and all of them can
+	// shoot. Empty hands on a pawn that is firing is the more visible untruth,
+	// and the profile is authoritative only when it actually says something.
+	if (!Weapon.IsNone())
+	{
+		Pawn->SetEquippedWeaponItem(Weapon);
+	}
 }
 
 void ASarkoRaidGameMode::Tick(float DeltaSeconds)

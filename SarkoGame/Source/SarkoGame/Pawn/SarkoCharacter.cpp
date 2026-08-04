@@ -3,6 +3,7 @@
 #include "Pawn/SarkoBody.h"
 #include "Pawn/SarkoCharacterAnim.h"
 #include "Pawn/SarkoSurvival.h"
+#include "Pawn/SarkoWeaponVisuals.h"
 
 #include "AI/SarkoNoise.h"
 #include "Camera/CameraComponent.h"
@@ -109,6 +110,9 @@ void ASarkoCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(ASarkoCharacter, AimDirection);
+	// Everyone, deliberately — see the property's comment. What a pawn is
+	// carrying is visible across a yard, so it cannot be owner-only.
+	DOREPLIFETIME(ASarkoCharacter, EquippedWeaponItem);
 	// Owner-only for the same reason the backpack is: "that player is extracting"
 	// is the single most valuable thing an opponent could know.
 	DOREPLIFETIME_CONDITION(ASarkoCharacter, ExtractZoneIndex, COND_OwnerOnly);
@@ -123,10 +127,33 @@ void ASarkoCharacter::BeginPlay()
 	// this the player cannot see their own character at all.
 	SarkoBody::AttachCharacterMesh(*this, SarkoBody::ESide::Player);
 
+	// And something in its hand. After the body, because the weapon hangs off
+	// that mesh's `hand_r` bone and there is no bone to find before the skeletal
+	// mesh is assigned. Runs on every machine: the id is replicated, the mesh is
+	// local, and the server's own pawn gets no OnRep to do it for it.
+	SarkoWeaponVisuals::SetHeldWeapon(*this, EquippedWeaponItem);
+
 	if (HasAuthority() && HealthComponent)
 	{
 		HealthComponent->OnDied.AddUObject(this, &ASarkoCharacter::HandleDeath);
 	}
+}
+
+void ASarkoCharacter::SetEquippedWeaponItem(FName ItemId)
+{
+	if (!HasAuthority() || EquippedWeaponItem == ItemId)
+	{
+		return;
+	}
+	EquippedWeaponItem = ItemId;
+	// The server holds no OnRep for its own change, so the listen host would
+	// keep drawing the old gun without this.
+	SarkoWeaponVisuals::SetHeldWeapon(*this, EquippedWeaponItem);
+}
+
+void ASarkoCharacter::OnRep_EquippedWeaponItem()
+{
+	SarkoWeaponVisuals::SetHeldWeapon(*this, EquippedWeaponItem);
 }
 
 void ASarkoCharacter::HandleDeath(AActor* Killer)
