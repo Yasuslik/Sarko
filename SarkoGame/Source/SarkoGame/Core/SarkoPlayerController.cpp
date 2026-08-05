@@ -735,7 +735,11 @@ void ASarkoPlayerController::UpdateSticks()
 			{
 				MoveTouchIndex = Index;
 				MoveStick.bActive = true;
-				MoveStick.Origin = Position;
+				// FIXED, not the touch point: see the "no more floating" note on
+				// FSarkoTouchStick. Landing away from the drawn ring still grabs
+				// the stick, so the catch zone stays the whole half of the screen —
+				// only the pivot the deflection is measured from stopped moving.
+				MoveStick.Origin = SarkoInput::MoveStickHome(SafeFrame, PointScale);
 				MoveStick.Current = Position;
 				// The one place the point-sized radius becomes pixels for this
 				// stick: at anchor, from this frame's viewport.
@@ -749,15 +753,14 @@ void ASarkoPlayerController::UpdateSticks()
 			{
 				AimTouchIndex = Index;
 				AimStick.bActive = true;
-				AimStick.Origin = Position;
+				AimStick.Origin = SarkoInput::AimStickHome(SafeFrame, PointScale);
 				AimStick.Current = Position;
 				AimStick.RadiusPx = StickRadiusPx;
 				bAimTouchStillDown = true;
-				// A stick anchors AT the finger, so a fresh hold starts at zero
-				// deflection — in the Rest zone, whatever the previous hold ended
-				// on. There is nothing to reset: a touch cannot arrive already
-				// past the fire boundary, and no state survives a release that
-				// could fire on its own.
+				// A touch landing exactly on the home reads as zero deflection, same
+				// as a floating stick would; one landing away from it reads however
+				// far that is from home instead of from zero — the honest picture of
+				// a pivot that does not travel to meet the thumb any more.
 			}
 		}
 	}

@@ -36,21 +36,25 @@ namespace SarkoInput
 	FBox2D SafeFrame(FVector2D ViewportSize);
 
 	/**
-	 * THE STICKS' HOMES — where each control lives while nobody is touching it.
+	 * THE STICKS' HOMES — where each control lives, and, since the third
+	 * playtest, where it STAYS.
 	 *
-	 * Added after the second phone playtest. The owner's words: "only the movement
-	 * sticks work, as if there are two kinds of them — the ones drawn initially
-	 * seem dead". Nothing was drawn initially. BOTH sticks float and
-	 * ASarkoHUD::DrawStick returned early on an inactive one, so at raid start the
-	 * only marks anywhere near the bottom corners were the reload and interact
-	 * buttons — he read those as the controls, pressed them, and the pawn did not
-	 * move. The sticks were never broken; they were invisible.
+	 * Added after the second phone playtest, when a home was drawn but the stick
+	 * underneath it still floated: a touch anywhere in the half re-anchored the
+	 * stick under the thumb, wherever that landed, so the ring the owner could
+	 * see and the ring that actually moved were rarely the same circle. His
+	 * words: "тут есть 2 стика ... если я на них нажимаю то они не влияют на
+	 * игру, но если я в стороне кликаю то появляется стик который играбельный" —
+	 * two sticks, the drawn one dead, a second one born whichever a thumb landed
+	 * near. There was only ever one stick; the ring was a decoration a thumb
+	 * could stand next to without touching.
 	 *
-	 * A home is A HINT AND NOT A CAGE. The floating behaviour is untouched: a
-	 * touch anywhere in that half still anchors the stick under the thumb, which
-	 * is the thing that saves you when you grab the phone mid-fight without
-	 * looking down. The home only answers "where do the controls live" for a
-	 * player who has not touched anything yet.
+	 * The home is now the ONE pivot a stick's deflection is ever measured from
+	 * (ASarkoPlayerController::UpdateSticks writes Home into Origin at
+	 * touch-down, not the touch point). The catch zone is still the whole half
+	 * of the screen — grabbing the phone mid-fight without looking down must
+	 * keep working — but wherever the thumb lands, the maths and the drawing
+	 * both pivot at Home, so the ring on screen is the only stick there is.
 	 *
 	 * 90 pt in from the side edge and 60 pt up from the bottom is where a thumb
 	 * tip lands with the hand HOLDING the phone rather than reaching across it.
@@ -62,14 +66,15 @@ namespace SarkoInput
 	constexpr float StickHomeBottomPt = 60.f;
 
 	/**
-	 * The radius the resting home is DRAWN at — half the stick's travel, and
-	 * deliberately not the travel itself.
+	 * The radius of the small inner pivot mark drawn at Home — a thumb pad
+	 * ("put it here"), not the stick's full travel.
 	 *
-	 * A 52 pt ring at the home would picture a boundary that does not exist: the
-	 * stick floats, so its real extent appears wherever the thumb lands and never
-	 * at the home. 26 pt reads as a thumb pad ("put it here"), leaves the reload
-	 * button its full ThumbButtonGapPt of clearance, and is still a 52 pt mark —
-	 * above the 44 pt floor this project holds its buttons to.
+	 * The full StickRadiusPt ring is now drawn at Home too (ASarkoHUD::DrawStick
+	 * draws both, always: Home no longer moves, so there is no boundary left to
+	 * hide). This smaller ring stays as the pivot marker inside it — it still
+	 * leaves the reload button its full ThumbButtonGapPt of clearance, and is
+	 * still a 52 pt mark end-to-end, above the 44 pt floor this project holds
+	 * its buttons to.
 	 */
 	constexpr float StickHomeRingPt = 26.f;
 
@@ -378,7 +383,12 @@ namespace SarkoInput
 
 enum class ESarkoTakeRefusal : uint8;
 
-/** One floating virtual stick, anchored wherever the thumb first touched. */
+/**
+ * One virtual stick, anchored at its fixed home (SarkoInput::MoveStickHome /
+ * ::AimStickHome) on every touch-down. Origin no longer travels to meet the
+ * thumb — see the "THE STICKS' HOMES" comment above this struct's namespace
+ * for why the earlier floating design read as two sticks on a real phone.
+ */
 USTRUCT()
 struct FSarkoTouchStick
 {

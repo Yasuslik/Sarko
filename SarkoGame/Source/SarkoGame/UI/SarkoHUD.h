@@ -107,25 +107,22 @@ private:
 	float Px(float Points) const { return Points * PointScale; }
 
 	/**
-	 * A floating stick: its HOME, the ring at the thumb's anchor, the dot at its
-	 * current position, and an INNER RING at the one fraction of the travel where
-	 * that stick's behaviour changes.
+	 * A fixed stick: its HOME, drawn always, at its full StickRadiusPt boundary,
+	 * with a smaller pivot ring inside it, the dot at its current position while
+	 * held, and an INNER RING at the one fraction of the travel where that
+	 * stick's behaviour changes.
 	 *
-	 * THE HOME IS WHY THIS FUNCTION NO LONGER RETURNS EARLY ON AN INACTIVE STICK.
-	 * It used to, and that was the whole of the owner's second-playtest report:
-	 * "only the movement sticks work, as if there are two kinds — the ones drawn
-	 * initially seem dead". Nothing was drawn initially. A fresh raid showed two
-	 * buttons on the right and bare ground under both thumbs, so the two controls
-	 * that were actually there were the two he could not see, and the two he could
-	 * see were the ones that did not move the pawn.
-	 *
-	 * The home is a dim ring at SarkoInput::MoveStickHome / ::AimStickHome, drawn
-	 * whether or not a finger is down — dimmer while one is, because the live
-	 * stick is then the thing that matters and the home has already done its job.
-	 * It is a HINT AND NOT A CAGE: the stick still anchors wherever the thumb
-	 * lands, which is why the ring is drawn at StickHomeRingPt and not at the
-	 * stick's own radius. A full-travel ring at a fixed point would be a picture
-	 * of a boundary that is not there.
+	 * THE HOME IS WHY THIS FUNCTION NO LONGER RETURNS EARLY ON AN INACTIVE STICK
+	 * — that was the second-playtest report ("the ones drawn initially seem
+	 * dead"). It is ALSO why the full-radius ring is now drawn even at rest,
+	 * which the second fix deliberately did not do: a third playtest still
+	 * anchored the stick under wherever the thumb landed, so the dim home ring
+	 * and the live stick were two different circles more often than not — "2
+	 * стика", his words, one dead and one that appeared beside it. Home is now
+	 * the one pivot ASarkoPlayerController::UpdateSticks ever writes into
+	 * Origin, so the full boundary drawn here is not a picture of a rule that
+	 * might land somewhere else — it is where the thumb's drag is measured from,
+	 * every time.
 	 *
 	 * bShowHome is the one thing that hides it, and today that is exactly "the
 	 * move stick is suppressed under an open container panel" — a control that is
@@ -152,8 +149,12 @@ private:
 	 * because the two boundaries do not mean the same thing and must not look as
 	 * though they do.
 	 *
-	 * Every radius comes off the stick itself (FSarkoTouchStick::RadiusPx, resolved
-	 * from points at anchor), so the picture and the rule are one number.
+	 * The boundary and dot radii come off the stick itself (FSarkoTouchStick::
+	 * RadiusPx, resolved from points at anchor) while it is active, since that is
+	 * the one number Value()'s deflection maths also divides by. The at-rest
+	 * boundary — drawn whether or not a finger is down — comes straight from
+	 * SarkoInput::StickRadiusPt instead: Home never moves, so that constant IS
+	 * the ring's radius before RadiusPx has ever been resolved for this hold.
 	 */
 	void DrawStick(const struct FSarkoTouchStick& Stick, FVector2D Home, bool bShowHome,
 		const FLinearColor& Colour, float BoundaryFraction, const FLinearColor& BoundaryColour);

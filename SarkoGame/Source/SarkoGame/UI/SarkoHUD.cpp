@@ -472,9 +472,10 @@ void ASarkoHUD::DrawHUD()
 	// crossing it, which on a phone, with an eight-round magazine and a manual
 	// reload, costs the magazine and gives away the position.
 	//
-	// BOTH STICKS ALSO GET THEIR HOME DRAWN, which is what makes them findable at
-	// all: they float, so before this there was nothing on screen at raid start to
-	// say a control lived under either thumb. See DrawStick.
+	// BOTH STICKS ALSO GET THEIR HOME DRAWN, at their full radius, always: Home is
+	// now the fixed pivot every drag is measured from (ASarkoPlayerController::
+	// UpdateSticks), not a hint beside a control that floats off somewhere else.
+	// See DrawStick.
 	const USarkoRaidSettings& StickSettings = *GetDefault<USarkoRaidSettings>();
 
 	// The move stick's home is hidden while the stick itself is suppressed, which
@@ -719,59 +720,55 @@ void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, FVector2D Home, bool bS
 	const FLinearColor& Colour, float BoundaryFraction, const FLinearColor& BoundaryColour)
 {
 	// THE HOME, FIRST AND WHETHER OR NOT A FINGER IS DOWN. This function used to
-	// return here on an inactive stick, and that early return is the whole of the
-	// owner's "the sticks don't work" report: a floating control that is invisible
-	// until touched is a control nobody knows to touch.
+	// return here on an inactive stick, and that early return was the whole of
+	// the owner's second-playtest report: an invisible control is a control
+	// nobody knows to touch.
 	//
-	// Drawn at SarkoInput::StickHomeRingPt — half the travel — because the stick
-	// FLOATS and its real extent appears under the thumb, wherever that lands. A
-	// full-radius ring here would be a picture of a boundary that does not exist.
-	if (bShowHome)
-	{
-		// Heavier than the live stick's outline at rest, much lighter than it while
-		// a thumb is down. See the two constants.
-		FLinearColor HomeColour = Colour;
-		HomeColour.A = FMath::Min(1.f, Colour.A * HomeRingRestAlphaScale)
-			* (Stick.bActive ? HomeRingActiveAlphaScale : 1.f);
-
-		// The shadow takes the ring's own alpha, so it can never out-draw it — see
-		// HomeRingShadow. One PIXEL of offset and not one point: a point is three
-		// pixels at 3x, which on a stroke four pixels wide separates into a second
-		// ring rather than reading as an edge.
-		FLinearColor ShadowColour = HomeRingShadow;
-		ShadowColour.A = HomeColour.A;
-
-		const float HomeRadius = Px(SarkoInput::StickHomeRingPt);
-		DrawRing(Home + FVector2D(1.f, 1.f), HomeRadius, ShadowColour);
-		DrawRing(Home, HomeRadius, HomeColour);
-	}
-
-	if (!Stick.bActive)
+	// The FULL StickRadiusPt boundary is now drawn here too, not just the small
+	// pivot mark — the third-playtest fix (ASarkoPlayerController::UpdateSticks
+	// now writes Home, not the touch point, into Origin) means Home never moves,
+	// so this ring is not a picture of a boundary that "does not exist yet". It
+	// IS the boundary, before a thumb has ever touched it.
+	if (!bShowHome)
 	{
 		return;
 	}
 
-	// Ring at the thumb's landing point, dot at the current position.
-	//
-	// The radius is read off the STICK and not from a constant here. It used to be
-	// FSarkoTouchStick's static 100 px with a comment claiming the ring was
-	// deliberately unscaled — which was true, and was the bug: the rule itself was
-	// in pixels, so on a 3.02x phone full deflection was 33 pt of thumb travel,
-	// less than the 44 pt minimum this project asserts on its own buttons. The
-	// rule is in POINTS now (SarkoInput::StickRadiusPt), resolved to pixels once
-	// when the thumb anchors, and the ring is still an exact picture of it —
-	// because it is drawn from the same number the input maths divides by.
-	DrawRing(Stick.Origin, Stick.RadiusPx, Colour);
+	// Heavier than the live stick's outline at rest, much lighter than it while
+	// a thumb is down. See the two constants.
+	FLinearColor HomeColour = Colour;
+	HomeColour.A = FMath::Min(1.f, Colour.A * HomeRingRestAlphaScale)
+		* (Stick.bActive ? HomeRingActiveAlphaScale : 1.f);
+
+	// The shadow takes the ring's own alpha, so it can never out-draw it — see
+	// HomeRingShadow. One PIXEL of offset and not one point: a point is three
+	// pixels at 3x, which on a stroke four pixels wide separates into a second
+	// ring rather than reading as an edge.
+	FLinearColor ShadowColour = HomeRingShadow;
+	ShadowColour.A = HomeColour.A;
+
+	// Off SarkoInput::StickRadiusPt directly and not off Stick.RadiusPx: Home is
+	// fixed, so this ring must exist before RadiusPx has ever been resolved for
+	// a hold (it defaults to the unscaled point value, which would read wrong on
+	// anything but a 1x display). It is still the exact number the input maths
+	// divides by once the stick anchors — StickRadiusPxForViewport resolves the
+	// same constant through the same PointScale this HUD lays out with.
+	const float FullRadius = Px(SarkoInput::StickRadiusPt);
+	DrawRing(Home + FVector2D(1.f, 1.f), FullRadius, ShadowColour);
+	DrawRing(Home, FullRadius, HomeColour);
+
+	// The smaller pivot mark, inside the boundary it always used to picture
+	// alone — kept as the "put your thumb here" target now that the ring around
+	// it is real.
+	const float HomeRadius = Px(SarkoInput::StickHomeRingPt);
+	DrawRing(Home + FVector2D(1.f, 1.f), HomeRadius, ShadowColour);
+	DrawRing(Home, HomeRadius, HomeColour);
 
 	// THE BOUNDARY THIS STICK CHANGES BEHAVIOUR AT — the walk/run line on the move
 	// stick, the aim/fire line on the aim stick. One ring, drawn from the fraction
 	// the caller read out of the settings, so the rule and its picture are the same
-	// number in both cases.
-	//
-	// Inside the outer ring, always: it reads as a band within the stick rather
-	// than as a second control. Whether it is dimmer or merely different is the
-	// caller's to say — the walk/run line is information, the fire line is a
-	// warning, and they should not look alike.
+	// number in both cases. Drawn at rest too, for the same reason as the boundary
+	// above: the fraction is of a radius that no longer moves.
 	//
 	// Guarded rather than clamped. A fraction of 0 or 1 would put the ring exactly
 	// on the dot or exactly on the stick's own outline, where it says nothing and
@@ -780,9 +777,16 @@ void ASarkoHUD::DrawStick(const FSarkoTouchStick& Stick, FVector2D Home, bool bS
 	const float Fraction = BoundaryFraction;
 	if (Fraction > KINDA_SMALL_NUMBER && Fraction < 1.f)
 	{
-		DrawRing(Stick.Origin, Stick.RadiusPx * Fraction, BoundaryColour);
+		DrawRing(Home, FullRadius * Fraction, BoundaryColour);
 	}
 
+	if (!Stick.bActive)
+	{
+		return;
+	}
+
+	// The dot at the thumb's current position — the one thing that still needs
+	// a live finger, since a resting stick has no "current" to mark.
 	const float Dot = Px(StickDotPt);
 	DrawRect(Colour, Stick.Current.X - Dot * 0.5f, Stick.Current.Y - Dot * 0.5f, Dot, Dot);
 }
